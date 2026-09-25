@@ -6,24 +6,17 @@ Features: Automated Token-Based Timers (JWT Key System), No Database Required
 Tarifs : Mensuel 300 USD | Annuel 12 mois complets 3600 USD | Essai 7 Jours Gratuit
 ================================================================================
 """
-
 from fastapi import FastAPI, HTTPException, Security, Depends, Request
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import jwt
-import random
-import math
-import datetime
+import jwt, random, math, datetime
 from typing import List, Tuple
 
 app = FastAPI(title="Automated Precision Optimization Engine - Integrated Timers")
-
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 LIEN_MERU_PROFESSIONNEL = "https://merupay.com"
-
 IPS_ESSAIS_UTILISES = set()
-
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -103,11 +96,11 @@ async def verifier_minuteur_cle_api(request: Request, api_key: str = Depends(api
         if "7 Jours" in infos.get("type_offre", ""):
             client_ip = request.client.host
             if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its free trial. Please purchase a subscription via Meru.")
+                raise HTTPException(status_code=403, detail="Security Block: Free trial already consumed.")
             IPS_ESSAIS_UTILISES.add(client_ip)
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
@@ -132,8 +125,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
         moyenne = sum(toutes_distances) / len(toutes_distances)
         for route, dist in zip(toutes_routes, toutes_distances):
             if dist > moyenne:
-                for k in range(nb_villes):
-                    pheromones[route[k]][route[(k+1)%nb_villes]] *= 0.2
+                for k in range(nb_villes): pheromones[route[k]][route[(k+1)%nb_villes]] *= 0.2
         for _ in range(int(NB_FOURMIS / 2)):
             r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.8)
             toutes_routes.append(r); toutes_distances.append(d)
@@ -145,7 +137,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
                 if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
         if meilleure_route:
-            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
+            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%meilleure_route[0]]] += 50.0
     return meilleure_route, meilleure_distance
 
 def simuler_fourmi(nb, dists, phero, det):
@@ -166,15 +158,11 @@ def simuler_fourmi(nb, dists, phero, det):
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
-    return {
-        "status": "Success",
-        "authenticated_client": infos_cle["client"],
-        "subscription_tier": infos_cle["type_offre"],
-        "optimal_order": ordre_villes
-    }
+    return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
+
