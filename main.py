@@ -1,13 +1,13 @@
+
 """
 ================================================================================
-EXECUTIVE LOGISTICS OPTIMIZATION ENGINE (TSP SOLVER)
+SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
-Features: Automated Token-Based Timers (JWT Key System), No Database Required
-Tarifs : Mensuel 300 USD | Annuel 12 mois complets 3600 USD | Essai 7 Jours Gratuit
+Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
 ================================================================================
 """
 
-from fastapi import FastAPI, HTTPException, Security, Depends, Request
+from fastapi import FastAPI, HTTPException, Security, Depends, Request, Form
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -17,27 +17,33 @@ import math
 import datetime
 from typing import List, Tuple
 
-app = FastAPI(title="Automated Precision Optimization Engine - Integrated Timers")
+app = FastAPI(title="SwiftRoute Engine - AntStrike Logic")
 
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
+
+# --- VOS ACCÈS ADMINISTRATEUR ULTRA-SÉCURISÉS ---
+NOM_UTILISATEUR_ADMIN = "Abraham"
+MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
+
 LIEN_PROFIL_MERU = "https://merupay.com"
 
-# --- COORDONNÉES OFFICIELLES ACTIVÉES ---
 VOTRE_NUMERO_WHATSAPP = "+50941817761"
 VOTRE_GMAIL = "Abrahamdawintz410@gmail.com"
 VOTRE_ICLOUD = "Abrahamdawintz410@gmail.com"
+VOTRE_WALLET_SOLANA = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
 IPS_ESSAIS_UTILISES = set()
 
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
+# --- 1. INTERFACE CLIENT (PAGE D'ACCUEIL) ---
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_abonnements():
     html_content = f"""
     <html>
         <head>
-            <title>AntStrike Logic - Cap-Haitien</title>
+            <title>AntStrike Logic - SwiftRoute Dashboard</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body {{ font-family: 'Segoe UI', Arial, sans-serif; background-color: #0b0b0b; color: #e0e0e0; text-align: center; padding: 20px; }}
@@ -51,6 +57,9 @@ async def page_accueil_abonnements():
                 input[type="radio"] {{ transform: scale(1.4); cursor: pointer; }}
                 .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
                 .btn-meru {{ background-color: #00E5FF; color: black; }}
+                .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px dashed #9945FF; text-align: left; }}
+                .crypto-box p {{ margin: 5px 0; font-size: 13px; color: #bbb; }}
+                .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; }}
                 .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
                 .contact-list li {{ margin: 8px 0; font-size: 14px; color: #ccc; list-style: none; }}
                 .contact-list strong {{ color: #00FF00; }}
@@ -91,11 +100,20 @@ async def page_accueil_abonnements():
                 </div>
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
                     <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
-                    <p style="font-size: 13px; color: #aaa;">1. Cliquez sur le bouton ci-dessous pour effectuer votre virement sécurisé par carte bancaire. Entrez vous-même le montant correspondant à la formule choisie :</p>
+                    
+                    <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Règlement traditionnel (Carte Bancaire)</p>
+                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 10px;">Cliquez sur le lien ci-dessous, effectuez votre virement sécurisé et saisissez manuellement le montant de la formule :</p>
                     <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Ouvrir mon profil de paiement MERU</a>
                     
-                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation de votre clé d'accès :</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Une fois votre transfert effectué ou pour activer votre essai gratuit, contactez directement notre direction technique via l'un des canaux officiels ci-dessous pour recevoir votre clé d'accès sécurisée :</p>
+                    <div class="crypto-box">
+                        <p style="font-weight: bold; color: #9945FF;">Option B : Règlement Crypto Corporatif (USDC / USDT)</p>
+                        <p>Idéal pour les entreprises internationales (Uber, DHL, Startups Tech). Transférez le montant exact sur notre portefeuille officiel de l'entreprise :</p>
+                        <p><strong>Réseau :</strong> Solana (SOL / USDC / USDT)</p>
+                        <span class="wallet-address">{VOTRE_WALLET_SOLANA}</span>
+                    </div>
+                    
+                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation et support client :</p>
+                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Dès que votre transfert est effectué, contactez notre direction technique pour recevoir votre clé d'accès sécurisée :</p>
                     <ul class="contact-list">
                         <li>🟢 <strong>WhatsApp Business :</strong> <a href="https://wa.me{VOTRE_NUMERO_WHATSAPP.replace('+', '')}" target="_blank" style="color: #00FF00; text-decoration: none;">{VOTRE_NUMERO_WHATSAPP}</a></li>
                         <li>📧 <strong>Email Principal :</strong> {VOTRE_GMAIL}</li>
@@ -110,25 +128,21 @@ async def page_accueil_abonnements():
     """
     return HTMLResponse(content=html_content)
 
-async def verifier_minuteur_cle_api(request: Request, api_key: str = Depends(api_key_header)):
-    if not api_key:
-        raise HTTPException(status_code=403, detail="Access denied: API Key missing.")
-    try:
-        infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
-        if "Gratuit" in infos.get("type_offre", ""):
-            client_ip = request.client.host
-            if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its 7-day free trial.")
-            IPS_ESSAIS_UTILISES.add(client_ip)
-        return infos
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
-
-NB_FOURMIS = 30
-ALPHA, BETA, EVAPORATION, Q = 1.0, 3.0, 0.1, 100.0
-
+# --- 2. PANNEAU DE CONTRÔLE ADMINISTRATEUR SÉCURISÉ ---
+@app.get("/admin-panel", response_class=HTMLResponse)
+async def vue_panneau_admin(cle_generee: str = ""):
+    html_admin = f"""
+    <html>
+        <head>
+            <title>AntStrike Admin Panel</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {{ font-family: Arial, sans-serif; background-color: #09090b; color: #fff; text-align: center; padding: 20px; }}
+                .box-admin {{ max-width: 500px; margin: auto; background: #18181b; padding: 25px; border-radius: 10px; border: 1px solid #3f3f46; text-align: left; }}
+                h2 {{ color: #a855f7; margin-top: 0; }}
+                label {{ font-size: 13px; color: #a1a1aa; display: block; margin-top: 10px; }}
+                input, select {{ width: 100%; padding: 10px; margin-top: 5px; background: #09090b; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; box-sizing: border-box; }}
+                .btn-gen {{ background: #a855f7; color: white; font-weight: bold; border: none; padding: 12px; margin-top: 15px; width: 100%; border-radius: 6px; cursor: pointer; }}
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
 
@@ -157,14 +171,9 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
             depot = Q / max(dist, 0.1)
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
-
-
-                if dist < meilleure_distance: 
-                    meilleure_distance = dist
-                    meilleure_route = route
+                if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
         if meilleure_route:
-            for k in range(nb_villes): 
-                pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
+            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
     return meilleure_route, meilleure_distance
 
 def simuler_fourmi(nb, dists, phero, det):
@@ -185,7 +194,7 @@ def simuler_fourmi(nb, dists, phero, det):
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
