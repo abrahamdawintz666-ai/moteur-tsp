@@ -6,17 +6,29 @@ Features: Automated Token-Based Timers (JWT Key System), No Database Required
 Tarifs : Mensuel 300 USD | Annuel 12 mois complets 3600 USD | Essai 7 Jours Gratuit
 ================================================================================
 """
+
 from fastapi import FastAPI, HTTPException, Security, Depends, Request
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import jwt, random, math, datetime
+import jwt
+import random
+import math
+import datetime
 from typing import List, Tuple
 
 app = FastAPI(title="Automated Precision Optimization Engine - Integrated Timers")
+
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
-LIEN_MERU_PROFESSIONNEL = "https://merupay.com"
+LIEN_PROFIL_MERU = "https://merupay.com"
+
+# --- COORDONNÉES OFFICIELLES ACTIVÉES ---
+VOTRE_NUMERO_WHATSAPP = "+50941817761"
+VOTRE_GMAIL = "Abrahamdawintz410@gmail.com"
+VOTRE_ICLOUD = "Abrahamdawintz410@gmail.com"
+
 IPS_ESSAIS_UTILISES = set()
+
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -39,6 +51,9 @@ async def page_accueil_abonnements():
                 input[type="radio"] {{ transform: scale(1.4); cursor: pointer; }}
                 .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
                 .btn-meru {{ background-color: #00E5FF; color: black; }}
+                .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
+                .contact-list li {{ margin: 8px 0; font-size: 14px; color: #ccc; list-style: none; }}
+                .contact-list strong {{ color: #00FF00; }}
             </style>
             <script>
                 function gererSelection(nom, detail) {{
@@ -76,9 +91,16 @@ async def page_accueil_abonnements():
                 </div>
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
                     <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
-                    <p style="font-size: 13px; color: #aaa;">1. Effectuez votre transfert sur notre passerelle sécurisée :</p>
-                    <a href="{LIEN_MERU_PROFESSIONNEL}" target="_blank" class="btn btn-meru">💳 Valider le transfert via MERU</a>
-                    <p style="margin-top:15px; font-size: 12px; color: #888;">2. Une fois la notification Meru validée, votre clé API de précision vous sera transmise immédiatement.</p>
+                    <p style="font-size: 13px; color: #aaa;">1. Cliquez sur le bouton ci-dessous pour effectuer votre virement sécurisé par carte bancaire. Entrez vous-même le montant correspondant à la formule choisie :</p>
+                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Ouvrir mon profil de paiement MERU</a>
+                    
+                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation de votre clé d'accès :</p>
+                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Une fois votre transfert effectué ou pour activer votre essai gratuit, contactez directement notre direction technique via l'un des canaux officiels ci-dessous pour recevoir votre clé d'accès sécurisée :</p>
+                    <ul class="contact-list">
+                        <li>🟢 <strong>WhatsApp Business :</strong> <a href="https://wa.me{VOTRE_NUMERO_WHATSAPP.replace('+', '')}" target="_blank" style="color: #00FF00; text-decoration: none;">{VOTRE_NUMERO_WHATSAPP}</a></li>
+                        <li>📧 <strong>Email Principal :</strong> {VOTRE_GMAIL}</li>
+                        <li>☁️ <strong>Support iCloud :</strong> {VOTRE_ICLOUD}</li>
+                    </ul>
                 </div>
                 <hr style="border-color:#222; margin-top:25px;">
                 <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique de calcul (API)</a>
@@ -93,14 +115,14 @@ async def verifier_minuteur_cle_api(request: Request, api_key: str = Depends(api
         raise HTTPException(status_code=403, detail="Access denied: API Key missing.")
     try:
         infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
-        if "7 Jours" in infos.get("type_offre", ""):
+        if "Gratuit" in infos.get("type_offre", ""):
             client_ip = request.client.host
             if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: Free trial already consumed.")
+                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its 7-day free trial.")
             IPS_ESSAIS_UTILISES.add(client_ip)
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru.")
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
@@ -135,9 +157,14 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
             depot = Q / max(dist, 0.1)
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
-                if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
+
+
+                if dist < meilleure_distance: 
+                    meilleure_distance = dist
+                    meilleure_route = route
         if meilleure_route:
-            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%meilleure_route[0]]] += 50.0
+            for k in range(nb_villes): 
+                pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
     return meilleure_route, meilleure_distance
 
 def simuler_fourmi(nb, dists, phero, det):
@@ -165,4 +192,3 @@ def simuler_fourmi(nb, dists, phero, det):
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
     return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
-
