@@ -1,22 +1,26 @@
-# EXECUTIVE LOGISTICS OPTIMIZATION ENGINE (TSP SOLVER)
-🚀 **High-Precision Industrial API for Fleet Routing & Enterprise Logistics**
+# SwiftRoute API — Powered by AntStrike Logic
+🚀 **High-Precision Industrial Optimization Engine for Enterprise Fleet Logistics**
 
-Welcome to the official repository of the **4-Force Elite Ant Colony Optimization Engine**. This technology is a production-ready, cloud-deployable API designed specifically for large-scale logistics firms, transport networks, and companies managing high-volume deliveries (such as Uber, DHL, or national shipping fleets).
+Welcome to the official repository of **SwiftRoute**, a production-ready, cloud-deployable API designed for large-scale transport networks, shipping fleets, and high-volume delivery companies (such as Uber, DHL, or national logistics corporations). 
+
+SwiftRoute is engineered and owned by **AntStrike Logic**.
 
 ## 🧠 What It Does
-Our engine solves the famous *Traveling Salesperson Problem* (TSP) in milliseconds. Instead of wasting millions of dollars in fuel and unnecessary vehicle wear, this system calculates the absolute most efficient route connecting up to thousands of locations simultaneously.
+SwiftRoute solves the complex Traveling Salesperson Problem (TSP) in milliseconds. Instead of wasting millions of dollars in fuel and vehicle wear, this high-efficiency software calculates the absolute shortest and most optimal route connecting up to dozens of supply chain coordinates simultaneously.
 
 ## ⚡ The 4-Force Precision Architecture
-Unlike traditional software that relies heavily on slow brute-force calculations or chaotic random sampling, this algorithm uses an advanced, highly deterministic approach developed across four operational layers:
-1. **Wave 1 (Exploration Agents):** Scans the geographical matrix to instantly establish baseline route parameters.
-2. **Saboteur Agents (FS-):** A precision pruning algorithm that calculates moving averages and instantly annihilates suboptimal routing pathways from server memory, dramatically saving CPU cycles.
-3. **Wave 2 (High-IQ Engineers):** Operates on an 80% strict deterministic framework, locking down ultra-short connections on the newly purified dataset.
-4. **Elite Saboteurs (FS+):** Validates the single best global itinerary and injects high-priority reinforcement parameters onto that exact path, forcing rapid convergence.
+Unlike traditional slow algorithms, SwiftRoute uses an advanced, highly deterministic framework powered by four operational layers:
+1. **Wave 1 (Exploration):** Scans the geographical matrix to instantly establish baseline route parameters.
+2. **Pruning Agents (FS-):** A real-time saboteur algorithm that calculates moving averages and instantly annihilates suboptimal routing pathways from server memory, saving massive CPU cycles.
+3. **Wave 2 (High-IQ Processing):** Operates on an 80% strict deterministic framework, locking down ultra-short connections on the newly purified dataset.
+4. **Reinforcement Agents (FS+):** Validates the single best global itinerary and injects high-priority parameters to lock the absolute record.
 
-## 🔒 Security, Billing & Licensing
-This API runs as an autonomous, database-free microservice. Access is secured using time-bound, cryptographically encrypted **JWT API Keys**. 
-* **Automated Timers:** Every key features an un-tamperable expiration timestamp embedded directly into its signature.
-* **Subscription Management:** Easily handle 7-day free trials, weekly access, or permanent monthly enterprise tiers. Once a timer expires, access is securely and instantly revoked at the server level until the subscription is renewed.
+## 🔒 Security, Billing & Contact
+SwiftRoute runs as an autonomous microservice. Access is secured using time-bound, cryptographically encrypted **JWT API Keys**. 
+* **Subscription Management:** Easily handle 7-day free trials ($300 USD/month afterward) or permanent yearly corporate licenses ($3,600 USD/year).
 
+### 🟢 Contact Technical Desk (AntStrike Logic):
+* **WhatsApp Business:** +50941817761
+* **Email:** Abrahamdawintz410@gmail.com
 ---
-*Developed for high-efficiency enterprise deployment.*
+*Developed by AntStrike Logic for high-efficiency enterprise deployment.*
