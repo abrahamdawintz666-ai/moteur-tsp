@@ -85,7 +85,7 @@ async def page_accueil_abonnements():
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
                     <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
                     <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Carte Bancaire</p>
-                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">Core Profil de paiement MERU</a>
+                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">Ouvrir le Profil de paiement MERU</a>
                     <div class="crypto-box">
                         <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto (USDC / USDT)</p>
                         <p>Réseau : Solana (SOL / USDC / USDT)</p>
@@ -150,26 +150,37 @@ async def vue_panneau_admin(cle_generee: str = ""):
 @app.post("/admin-panel/generer")
 async def action_generer_cle(username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
-    while len(path) < nb:
-        act = path[-1]; probs = []; tot = 0.0; m_note, v_perf = -1, -1
-        for p in range(nb):
-            if p not in path:
-                vis = 1.0 / max(dists[act][p], 0.1)
-                note = (phero[act][p] ** ALPHA) * (vis ** BETA)
-                probs.append((p, note)); tot += note
-                if note > m_note: m_note = note; v_perf = p
-        if random.random() < det and v_perf != -1: prox = v_perf
-        else:
-            flotte = random.uniform(0, tot) if tot > 0 else 0
-            cum = 0.0; prox = probs[-1] if probs else 0
-            for v, p in probs:
-                cum += p
-                if cum >= flotte: prox = v; break
-        path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
-    return path, d_tot
+        return HTMLResponse(content="<h2>Identifiants incorrects ! Accès refusé.</h2>", status_code=403)
+    date_actuelle = datetime.datetime.utcnow()
+    if duration == 7:
+        exp_date = date_actuelle + datetime.timedelta(days=7)
+        tier = "7 Jours Gratuit"
+    elif duration == 30:
+        exp_date = date_actuelle + datetime.timedelta(days=30)
+        tier = "1 Mois Standard"
+    else:
+        exp_date = date_actuelle + datetime.timedelta(days=365)
+        tier = "1 An Corporate"
+    payload = {
+        "client": client_name,
+        "exp": int(exp_date.timestamp()),
+        "type_offre": tier
+    }
+    token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
+    return await vue_panneau_admin(cle_generee=token_client)
 
-@app.post("/optimiser-tournee/")
-async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
-    ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
-    return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
+async def verifier_minuteur_cle_api(request: Request, api_key: str = Depends(api_key_header)):
+    if not api_key:
+        raise HTTPException(status_code=403, detail="Access denied: API Key missing.")
+    try:
+        infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
+        if "Gratuit" in infos.get("type_offre", ""):
+            client_ip = request.client.host
+            if client_ip in IPS_ESSAIS_UTILISES:
+                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its 7-day free trial.")
+            IPS_ESSAIS_UTILISES.add(client_ip)
+        return infos
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
