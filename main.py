@@ -3,6 +3,7 @@
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
 Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
+Security: Anti-Cheat Free Trial IP Blocker & Dynamic Key Verification Matrix
 ================================================================================
 """
 
@@ -18,7 +19,7 @@ from typing import List, Tuple
 
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 API_KEY_NAME = "X-API-KEY"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 app = FastAPI(
     title="SwiftRoute Engine - AntStrike Logic",
@@ -56,14 +57,7 @@ async def page_accueil_abonnements():
                 .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px dashed #9945FF; text-align: left; }}
                 .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; font-weight: bold; text-align: center; }}
                 .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
-                .contact-list li {{ margin: 8px 0; font-size: 14px; color: #ccc; list-style: none; }}
             </style>
-            <script>
-                function gererSelection(nom, detail) {{
-                    document.getElementById('zone_paiement').style.display = 'block';
-                    document.getElementById('txt_choix').innerText = "Formule sélectionnée : " + nom + " (" + detail + ")";
-                }}
-            </script>
         </head>
         <body>
             <div class="container">
@@ -71,30 +65,20 @@ async def page_accueil_abonnements():
                 <div class="subtitle">Industrial Route Optimization API & High-Precision Infrastructure</div>
                 <hr style="border-color:#222;">
                 <h3 style="text-align: left; color: #fff; margin-top: 20px;">Choisissez votre formule d'accès :</h3>
-                <div class="box" onclick="gererSelection('7 Days Free Trial', 'Gratuit')">
-                    <div class="box-text"><strong>7 Days Free Trial</strong><br><span style="color:#666; font-size:12px;">Évaluation unique (Limite de 1 par flotte)</span></div>
-                    <div class="price">GRATUIT</div>
-                </div>
-                <div class="box" onclick="gererSelection('1-Month Premium', '300 USD')">
-                    <div class="box-text"><strong>1-Month Standard Subscription</strong><br><span style="color:#666; font-size:12px;">Accès professionnel illimité</span></div>
+                <div class="box" onclick="document.getElementById('zone_paiement').style.display='block';">
+                    <div class="box-text"><strong>Standard Subscription Fleet Pack</strong><br><span style="color:#666; font-size:12px;">Accès professionnel illimité</span></div>
                     <div class="price">300 $ USD</div>
                 </div>
-                <div class="box" onclick="gererSelection('1-Year Corporate', '3600 USD')">
-                    <div class="box-text"><strong>1-Year Corporate License</strong><br><span style="color:#666; font-size:12px;">12 mois complets d'optimisation</span></div>
-                    <div class="price">3600 $ USD</div>
-                </div>
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
-                    <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
                     <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Carte Bancaire</p>
                     <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Profil de paiement MERU</a>
                     <div class="crypto-box">
                         <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto (Solana Network)</p>
                         <span class="wallet-address">{VOTRE_WALLET_SOLANA}</span>
                     </div>
-                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Support Client d'Activation :</p>
                     <ul class="contact-list">
-                        <li>🟢 <strong>WhatsApp Business :</strong> {VOTRE_NUMERO_WHATSAPP}</li>
-                        <li>📧 <strong>Email :</strong> {VOTRE_GMAIL}</li>
+                        <li>🟢 WhatsApp Business : {VOTRE_NUMERO_WHATSAPP}</li>
+                        <li>📧 Email Principal : {VOTRE_GMAIL}</li>
                     </ul>
                 </div>
                 <hr style="border-color:#222; margin-top:25px;">
@@ -152,8 +136,7 @@ async def action_generer_cle(username: str = Form(...), password: str = Form(...
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
         return HTMLResponse(content="<h2>Identifiants incorrects ! Accès refusé.</h2>", status_code=403)
     date_actuelle = datetime.datetime.utcnow()
-
-        if duration == 7:
+    if duration == 7:
         exp_date = date_actuelle + datetime.timedelta(days=7)
         tier = "7 Jours Gratuit"
     elif duration == 30:
@@ -171,16 +154,18 @@ async def action_generer_cle(username: str = Form(...), password: str = Form(...
     return await vue_panneau_admin(cle_generee=token_client)
 
 async def verifier_minuteur_cle_api(request: Request, api_key: str = Security(api_key_header)):
+    if not api_key:
+        raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
     try:
         infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
         if "Gratuit" in infos.get("type_offre", ""):
             client_ip = request.client.host
             if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: 7-Day Trial already consumed.")
+                raise HTTPException(status_code=403, detail="Security Block: This IP network has already consumed its 7-day free trial.")
             IPS_ESSAIS_UTILISES.add(client_ip)
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru.")
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru or Solana.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
@@ -197,9 +182,8 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
-
-   
-    iterations = 12 if nb_villes > 60 else 30
+    
+    iterations = 10 if nb_villes > 60 else 25
     
     for _ in range(iterations):
         toutes_routes, toutes_distances = [], []
@@ -236,12 +220,10 @@ def simuler_fourmi(nb, dists, phero):
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    # LE PATH[0] ICI REBOUCLE PARFAITEMENT LE TRAJET JUSQU'AU POINT DE DÉPART :
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
     return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
-
