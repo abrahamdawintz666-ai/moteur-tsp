@@ -1,4 +1,3 @@
-
 """
 ================================================================================
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
@@ -27,6 +26,7 @@ MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 
 LIEN_PROFIL_MERU = "https://merupay.com"
 
+# --- COORDONNÉES OFFICIELLES DU SERVICE CLIENT ET PAIEMENTS ---
 VOTRE_NUMERO_WHATSAPP = "+50941817761"
 VOTRE_GMAIL = "Abrahamdawintz410@gmail.com"
 VOTRE_ICLOUD = "Abrahamdawintz410@gmail.com"
@@ -37,7 +37,7 @@ IPS_ESSAIS_UTILISES = set()
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# --- 1. INTERFACE CLIENT (PAGE D'ACCUEIL) ---
+# --- 1. INTERFACE CLIENT (PAGE D'ACCUEIL VIRTUELE) ---
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_abonnements():
     html_content = f"""
@@ -57,9 +57,9 @@ async def page_accueil_abonnements():
                 input[type="radio"] {{ transform: scale(1.4); cursor: pointer; }}
                 .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
                 .btn-meru {{ background-color: #00E5FF; color: black; }}
-                .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px dashed #9945FF; text-align: left; }}
+                .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 2px dashed #9945FF; text-align: left; }}
                 .crypto-box p {{ margin: 5px 0; font-size: 13px; color: #bbb; }}
-                .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; }}
+                .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; font-weight: bold; text-align: center; }}
                 .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
                 .contact-list li {{ margin: 8px 0; font-size: 14px; color: #ccc; list-style: none; }}
                 .contact-list strong {{ color: #00FF00; }}
@@ -106,14 +106,14 @@ async def page_accueil_abonnements():
                     <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Ouvrir mon profil de paiement MERU</a>
                     
                     <div class="crypto-box">
-                        <p style="font-weight: bold; color: #9945FF;">Option B : Règlement Crypto Corporatif (USDC / USDT)</p>
+                        <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto Corporatif (USDC / USDT)</p>
                         <p>Idéal pour les entreprises internationales (Uber, DHL, Startups Tech). Transférez le montant exact sur notre portefeuille officiel de l'entreprise :</p>
                         <p><strong>Réseau :</strong> Solana (SOL / USDC / USDT)</p>
                         <span class="wallet-address">{VOTRE_WALLET_SOLANA}</span>
                     </div>
                     
                     <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation et support client :</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Dès que votre transfert est effectué, contactez notre direction technique pour recevoir votre clé d'accès sécurisée :</p>
+                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Dès que votre transfert (Meru ou Crypto) est effectué, contactez notre direction technique pour recevoir votre clé d'accès sécurisée :</p>
                     <ul class="contact-list">
                         <li>🟢 <strong>WhatsApp Business :</strong> <a href="https://wa.me{VOTRE_NUMERO_WHATSAPP.replace('+', '')}" target="_blank" style="color: #00FF00; text-decoration: none;">{VOTRE_NUMERO_WHATSAPP}</a></li>
                         <li>📧 <strong>Email Principal :</strong> {VOTRE_GMAIL}</li>
@@ -142,7 +142,14 @@ async def vue_panneau_admin(cle_generee: str = ""):
                 h2 {{ color: #a855f7; margin-top: 0; }}
                 label {{ font-size: 13px; color: #a1a1aa; display: block; margin-top: 10px; }}
                 input, select {{ width: 100%; padding: 10px; margin-top: 5px; background: #09090b; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; box-sizing: border-box; }}
-                .btn-gen {{ background: #a855f7; color: white; font-weight: bold; border: none; padding: 12px; margin-top: 15px; width: 100%; border-radius: 6px; cursor: pointer; }}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
+
+NB_FOURMIS = 30
+ALPHA, BETA, EVAPORATION, Q = 1.0, 3.0, 0.1, 100.0
+
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
 
