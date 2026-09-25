@@ -16,12 +16,10 @@ import math
 import datetime
 from typing import List, Tuple
 
-# --- CONFIGURATION STRICTE DE LA SÉCURITÉ POUR SWAGGER UI ---
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
 
-# CETTE LIGNE DÉCLARE LE CADENAS COMPORTEMENTAL POUR LE HAUT DE LA PAGE DOCS
 app = FastAPI(
     title="SwiftRoute Engine - AntStrike Logic",
     swagger_ui_parameters={"operationsSorter": "alpha"}
@@ -33,12 +31,10 @@ LIEN_PROFIL_MERU = "https://merupay.com"
 
 VOTRE_NUMERO_WHATSAPP = "+50941817761"
 VOTRE_GMAIL = "Abrahamdawintz410@gmail.com"
-VOTRE_ICLOUD = "Abrahamdawintz410@gmail.com"
 VOTRE_WALLET_SOLANA = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
 IPS_ESSAIS_UTILISES = set()
 
-# --- 1. INTERFACE CLIENT (PAGE D'ACCUEIL VIRTUELE) ---
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_abonnements():
     html_content = f"""
@@ -58,11 +54,9 @@ async def page_accueil_abonnements():
                 .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
                 .btn-meru {{ background-color: #00E5FF; color: black; }}
                 .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px dashed #9945FF; text-align: left; }}
-                .crypto-box p {{ margin: 5px 0; font-size: 13px; color: #bbb; }}
                 .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; font-weight: bold; text-align: center; }}
                 .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
                 .contact-list li {{ margin: 8px 0; font-size: 14px; color: #ccc; list-style: none; }}
-                .contact-list strong {{ color: #00FF00; }}
             </style>
             <script>
                 function gererSelection(nom, detail) {{
@@ -91,34 +85,26 @@ async def page_accueil_abonnements():
                 </div>
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
                     <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
-                    
-                    <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Règlement traditionnel (Carte Bancaire)</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 10px;">Cliquez sur le lien ci-dessous, effectuez votre virement sécurisé et saisissez manuellement le montant de la formule :</p>
-                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Ouvrir mon profil de paiement MERU</a>
-                    
+                    <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Carte Bancaire</p>
+                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Profil de paiement MERU</a>
                     <div class="crypto-box">
-                        <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto Corporatif (USDC / USDT)</p>
-                        <p>Idéal pour les entreprises internationales (Uber, DHL, Startups Tech). Transférez le montant exact sur notre portefeuille officiel de l'entreprise :</p>
-                        <p><strong>Réseau :</strong> Solana (SOL / USDC / USDT)</p>
+                        <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto (Solana Network)</p>
                         <span class="wallet-address">{VOTRE_WALLET_SOLANA}</span>
                     </div>
-                    
-                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation et support client :</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Dès que votre transfert (Meru ou Crypto) est effectué, contactez notre direction technique pour recevoir votre clé d'accès sécurisée :</p>
+                    <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Support Client d'Activation :</p>
                     <ul class="contact-list">
                         <li>🟢 <strong>WhatsApp Business :</strong> {VOTRE_NUMERO_WHATSAPP}</li>
-                        <li>📧 <strong>Email Principal :</strong> {VOTRE_GMAIL}</li>
+                        <li>📧 <strong>Email :</strong> {VOTRE_GMAIL}</li>
                     </ul>
                 </div>
                 <hr style="border-color:#222; margin-top:25px;">
-                <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique de calcul (API)</a>
+                <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique (API)</a>
             </div>
         </body>
     </html>
     """
     return HTMLResponse(content=html_content)
 
-# --- 2. PANNEAU DE CONTRÔLE ADMINISTRATEUR SÉCURISÉ ---
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin(cle_generee: str = ""):
     html_admin = f"""
@@ -138,13 +124,20 @@ async def vue_panneau_admin(cle_generee: str = ""):
         </head>
         <body>
             <div class="box-admin">
-                <h2>🎛️ Panneau Générateur AntStrike — Abraham</h2>
-                <p style="font-size: 12px; color: #71717a; margin: 0 0 15px 0;">Entrez vos identifiants d'administration pour forger la clé API d'un abonné.</p>
+                <h2>🎛️ Panneau Générateur — Abraham</h2>
                 <form action="/admin-panel/generer" method="post">
                     <label>Identifiant Administrateur :</label>
                     <input type="text" name="username" required>
                     <label>Mot de passe Secret :</label>
-
+                    <input type="password" name="password" required>
+                    <label>Nom de l'entreprise cliente :</label>
+                    <input type="text" name="client_name" required>
+                    <label>Formule d'abonnement :</label>
+                    <select name="duration">
+                        <option value="7">Essai Gratuit (7 Jours)</option>
+                        <option value="30">Abonnement Standard (1 Mois)</option>
+                        <option value="365">Licence Corporate (1 An)</option>
+                    </select>
                     <button type="submit" class="btn-gen">⚡ Générer la Clé API Secrète</button>
                 </form>
                 {"<div class='result-box'><strong>Clé Client Générée avec Succès (Copie-la) :</strong><br><br>" + cle_generee + "</div>" if cle_generee else ""}
@@ -157,10 +150,10 @@ async def vue_panneau_admin(cle_generee: str = ""):
 @app.post("/admin-panel/generer")
 async def action_generer_cle(username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
-        return HTMLResponse(content="<h2>Identifiants Administrateur incorrects ! Accès formellement refusé.</h2>", status_code=403)
-    
+        return HTMLResponse(content="<h2>Identifiants incorrects ! Accès refusé.</h2>", status_code=403)
     date_actuelle = datetime.datetime.utcnow()
-    if duration == 7:
+
+        if duration == 7:
         exp_date = date_actuelle + datetime.timedelta(days=7)
         tier = "7 Jours Gratuit"
     elif duration == 30:
@@ -169,33 +162,30 @@ async def action_generer_cle(username: str = Form(...), password: str = Form(...
     else:
         exp_date = date_actuelle + datetime.timedelta(days=365)
         tier = "1 An Corporate"
-        
     payload = {
         "client": client_name,
         "exp": int(exp_date.timestamp()),
         "type_offre": tier
     }
-    
     token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return await vue_panneau_admin(cle_generee=token_client)
 
-# --- 3. INFRASTRUCTURE TECHNIQUE DE SÉCURITÉ ET DE CALCUL ---
 async def verifier_minuteur_cle_api(request: Request, api_key: str = Security(api_key_header)):
     try:
         infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
         if "Gratuit" in infos.get("type_offre", ""):
             client_ip = request.client.host
             if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its 7-day free trial.")
+                raise HTTPException(status_code=403, detail="Security Block: 7-Day Trial already consumed.")
             IPS_ESSAIS_UTILISES.add(client_ip)
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
-NB_FOURMIS = 30
-ALPHA, BETA, EVAPORATION, Q = 1.0, 3.0, 0.1, 100.0
+NB_FOURMIS = 15
+ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
@@ -207,51 +197,51 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
-    for _ in range(40):
+
+   
+    iterations = 12 if nb_villes > 60 else 30
+    
+    for _ in range(iterations):
         toutes_routes, toutes_distances = [], []
-        for _ in range(int(NB_FOURMIS / 2)):
-            r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.1)
+        for _ in range(NB_FOURMIS):
+            r, d = simuler_fourmi(nb_villes, distances, pheromones)
             toutes_routes.append(r); toutes_distances.append(d)
-        moyenne = sum(toutes_distances) / len(toutes_distances)
-        for route, dist in zip(toutes_routes, toutes_distances):
-            if dist > moyenne:
-                for k in range(nb_villes): pheromones[route[k]][route[(k+1)%nb_villes]] *= 0.2
-        for _ in range(int(NB_FOURMIS / 2)):
-            r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.8)
-            toutes_routes.append(r); toutes_distances.append(d)
+            if d < meilleure_distance:
+                meilleure_distance = d
+                meilleure_route = r
         for i in range(nb_villes):
             for j in range(nb_villes): pheromones[i][j] *= (1.0 - EVAPORATION)
         for route, dist in zip(toutes_routes, toutes_distances):
             depot = Q / max(dist, 0.1)
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
-                if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
-        if meilleure_route:
-            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
     return meilleure_route, meilleure_distance
 
-def simuler_fourmi(nb, dists, phero, det):
+def simuler_fourmi(nb, dists, phero):
     path = [random.randint(0, nb-1)]
     while len(path) < nb:
-        act = path[-1]; probs = []; tot = 0.0; m_note, v_perf = -1, -1
+        act = path[-1]; probs = []; tot = 0.0
         for p in range(nb):
             if p not in path:
                 vis = 1.0 / max(dists[act][p], 0.1)
                 note = (phero[act][p] ** ALPHA) * (vis ** BETA)
                 probs.append((p, note)); tot += note
-                if note > m_note: m_note = note; v_perf = p
-        if random.random() < det and v_perf != -1: prox = v_perf
+        if tot == 0:
+            restants = [x for x in range(nb) if x not in path]
+            prox = restants if restants else 0
         else:
-            flotte = random.uniform(0, tot) if tot > 0 else 0
-            cum = 0.0; prox = probs[-1] if probs else 0
+            flotte = random.uniform(0, tot)
+            cum = 0.0; prox = probs[-1]
             for v, p in probs:
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
+    # LE PATH[0] ICI REBOUCLE PARFAITEMENT LE TRAJET JUSQU'AU POINT DE DÉPART :
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
     return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
+
