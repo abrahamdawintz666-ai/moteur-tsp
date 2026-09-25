@@ -1,5 +1,15 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
+"""
+================================================================================
+EXECUTIVE LOGISTICS OPTIMIZATION ENGINE (TSP SOLVER)
+Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
+Features: Automated Token-Based Timers (JWT Key System), No Database Required
+Tarifs : Mensuel 300 USD | Annuel 12 mois complets 3600 USD | Essai 7 Jours Gratuit
+================================================================================
+"""
+
+from fastapi import FastAPI, HTTPException, Security, Depends, Request
 from fastapi.security.api_key import APIKeyHeader
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import jwt
 import random
@@ -7,38 +17,102 @@ import math
 import datetime
 from typing import List, Tuple
 
-app = FastAPI(title="Moteur d'Optimisation Automatique - Minuteur Intégré")
+app = FastAPI(title="Automated Precision Optimization Engine - Integrated Timers")
 
-# La même phrase secrète que dans ton générateur
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
+LIEN_MERU_PROFESSIONNEL = "https://merupay.com"
+
+IPS_ESSAIS_UTILISES = set()
 
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-async def verifier_minuteur_cle_api(api_key: str = Depends(api_key_header)):
-    if not api_key:
-        raise HTTPException(status_code=403, detail="Accès refusé : Clé absente.")
-    
-    try:
-        # Le serveur décrypte la clé et vérifie AUTOMATIQUEMENT le minuteur ('exp')
-        # Si le temps est dépassé, la bibliothèque lève une erreur 'ExpiredSignatureError'
-        informations_minuteur = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
-        return informations_minuteur
-        
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=402, 
-            detail="Le minuteur de votre clé a expiré ! Votre abonnement (semaine/mois) est terminé. Rechargez sur Meru."
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=403, detail="Accès refusé : Cette clé a été falsifiée ou est invalide.")
+@app.get("/", response_class=HTMLResponse)
+async def page_accueil_abonnements():
+    html_content = f"""
+    <html>
+        <head>
+            <title>AntStrike Logic - Cap-Haitien</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; background-color: #0b0b0b; color: #e0e0e0; text-align: center; padding: 20px; }}
+                .container {{ max-width: 550px; margin: auto; background: #141414; padding: 30px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,0.7); border: 1px solid #222; }}
+                h1 {{ color: #00FF00; margin-bottom: 5px; font-size: 28px; }}
+                .subtitle {{ color: #888; font-size: 14px; margin-bottom: 25px; }}
+                .box {{ border: 2px solid #222; padding: 18px; margin: 12px 0; border-radius: 8px; cursor: pointer; background: #1c1c1c; transition: 0.3s; text-align: left; display: flex; align-items: center; }}
+                .box:hover {{ border-color: #00FF00; background: #222; }}
+                .box-text {{ margin-left: 15px; flex-grow: 1; }}
+                .price {{ float: right; font-weight: bold; color: #00FF00; font-size: 18px; }}
+                input[type="radio"] {{ transform: scale(1.4); cursor: pointer; }}
+                .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
+                .btn-meru {{ background-color: #00E5FF; color: black; }}
+            </style>
+            <script>
+                function gererSelection(nom, detail) {{
+                    document.getElementById('zone_paiement').style.display = 'block';
+                    document.getElementById('txt_choix').innerText = "Formule sélectionnée : " + nom + " (" + detail + ")";
+                }}
+            </script>
+        </head>
+        <body>
+            <div class="container">
+                <h1>AntStrike Logic 🚀</h1>
+                <div class="subtitle">Industrial Route Optimization API & High-Precision Infrastructure</div>
+                <hr style="border-color:#222;">
+                <h3 style="text-align: left; color: #fff; margin-top: 20px;">Choisissez votre formule d'accès :</h3>
+                <div class="box" onclick="document.getElementById('form_test').checked = true; gererSelection('Essai Hebdomadaire', 'Gratuit');">
+                    <input type="radio" id="form_test" name="offre" value="7">
+                    <div class="box-text">
+                        <strong>7 Days Free Trial</strong><br><span style="color:#666; font-size:12px;">Évaluation technique unique pour flottes (Limite de 1 par entreprise)</span>
+                    </div>
+                    <div class="price">GRATUIT</div>
+                </div>
+                <div class="box" onclick="document.getElementById('form_month').checked = true; gererSelection('1 Mois Premium', '300 USD');">
+                    <input type="radio" id="form_month" name="offre" value="30">
+                    <div class="box-text">
+                        <strong>1-Month Standard Subscription</strong><br><span style="color:#666; font-size:12px;">Accès professionnel illimité</span>
+                    </div>
+                    <div class="price">300 $ USD</div>
+                </div>
+                <div class="box" onclick="document.getElementById('form_year').checked = true; gererSelection('1 An Corporate', '3600 USD');">
+                    <input type="radio" id="form_year" name="offre" value="365">
+                    <div class="box-text">
+                        <strong>1-Year Corporate License</strong><br><span style="color:#666; font-size:12px;">12 mois complets d'optimisation industrielle</span>
+                    </div>
+                    <div class="price">3600 $ USD</div>
+                </div>
+                <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
+                    <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
+                    <p style="font-size: 13px; color: #aaa;">1. Effectuez votre transfert sur notre passerelle sécurisée :</p>
+                    <a href="{LIEN_MERU_PROFESSIONNEL}" target="_blank" class="btn btn-meru">💳 Valider le transfert via MERU</a>
+                    <p style="margin-top:15px; font-size: 12px; color: #888;">2. Une fois la notification Meru validée, votre clé API de précision vous sera transmise immédiatement.</p>
+                </div>
+                <hr style="border-color:#222; margin-top:25px;">
+                <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique de calcul (API)</a>
+            </div>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
-# --- LES 4 FORCES DE CALCUL DE PRÉCISION ---
+async def verifier_minuteur_cle_api(request: Request, api_key: str = Depends(api_key_header)):
+    if not api_key:
+        raise HTTPException(status_code=403, detail="Access denied: API Key missing.")
+    try:
+        infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
+        if "7 Jours" in infos.get("type_offre", ""):
+            client_ip = request.client.host
+            if client_ip in IPS_ESSAIS_UTILISES:
+                raise HTTPException(status_code=403, detail="Security Block: This network has already consumed its free trial. Please purchase a subscription via Meru.")
+            IPS_ESSAIS_UTILISES.add(client_ip)
+        return infos
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
+
 NB_FOURMIS = 30
-ALPHA = 1.0
-BETA = 3.0
-EVAPORATION = 0.1
-Q = 100.0
+ALPHA, BETA, EVAPORATION, Q = 1.0, 3.0, 0.1, 100.0
 
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
@@ -50,7 +124,6 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
-    
     for _ in range(40):
         toutes_routes, toutes_distances = [], []
         for _ in range(int(NB_FOURMIS / 2)):
@@ -60,8 +133,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
         for route, dist in zip(toutes_routes, toutes_distances):
             if dist > moyenne:
                 for k in range(nb_villes):
-                    v1, v2 = route[k], route[(k+1)%nb_villes]
-                    pheromones[v1][v2] *= 0.2; pheromones[v2][v1] *= 0.2
+                    pheromones[route[k]][route[(k+1)%nb_villes]] *= 0.2
         for _ in range(int(NB_FOURMIS / 2)):
             r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.8)
             toutes_routes.append(r); toutes_distances.append(d)
@@ -71,12 +143,9 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
             depot = Q / max(dist, 0.1)
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
-                if dist < meilleure_distance:
-                    meilleure_distance = dist; meilleure_route = route
+                if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
         if meilleure_route:
-            for k in range(nb_villes):
-                pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
-
+            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
     return meilleure_route, meilleure_distance
 
 def simuler_fourmi(nb, dists, phero, det):
@@ -103,12 +172,9 @@ def simuler_fourmi(nb, dists, phero, det):
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
-    
-    # En plus du calcul, le serveur confirme l'identité décryptée
     return {
-        "statut": "Succès",
-        "client_authentifie": infos_cle["client"],
-        "formule_souscrite": infos_cle["type_offre"],
-        "message": "Miniteur valide. Calcul de précision effectué.",
-        "ordre_optimal": ordre_villes
+        "status": "Success",
+        "authenticated_client": infos_cle["client"],
+        "subscription_tier": infos_cle["type_offre"],
+        "optimal_order": ordre_villes
     }
