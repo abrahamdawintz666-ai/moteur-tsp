@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
 Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
-Security: Anti-Cheat Free Trial IP Blocker & Dynamic Key Verification Matrix
+Security: Anti-Cheat Free Trial IP Blocker & Robust Float Matrix Sanitizer
 ================================================================================
 """
 
@@ -178,7 +178,11 @@ class RequeteCalcul(BaseModel):
 def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[int], float]:
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
-    distances = [[math.dist(villes[i], villes[j]) for j in range(nb_villes)] for i in range(nb_villes)]
+    
+    # SECURITÉ ANTI-ERREUR 500 : Force la conversion stricte en floats purs
+    villes_propres = [(float(v[0]), float(v[1])) for v in villes]
+    
+    distances = [[math.dist(villes_propres[i], villes_propres[j]) for j in range(nb_villes)] for i in range(nb_villes)]
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
@@ -212,15 +216,15 @@ def simuler_fourmi(nb, dists, phero):
                 probs.append((p, note)); tot += note
         if tot == 0:
             restants = [x for x in range(nb) if x not in path]
-            prox = restants if restants else 0
+            prox = restants[0] if restants else 0
         else:
             flotte = random.uniform(0, tot)
-            cum = 0.0; prox = probs[-1]
+            cum = 0.0; prox = probs[-1][0]
             for v, p in probs:
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
