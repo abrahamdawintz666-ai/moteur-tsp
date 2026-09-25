@@ -19,25 +19,19 @@ from typing import List, Tuple
 app = FastAPI(title="SwiftRoute Engine - AntStrike Logic")
 
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
-
-# --- VOS ACCÈS ADMINISTRATEUR ULTRA-SÉCURISÉS ---
 NOM_UTILISATEUR_ADMIN = "Abraham"
 MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
-
 LIEN_PROFIL_MERU = "https://merupay.com"
 
-# --- COORDONNÉES OFFICIELLES DU SERVICE CLIENT ET PAIEMENTS ---
 VOTRE_NUMERO_WHATSAPP = "+50941817761"
 VOTRE_GMAIL = "Abrahamdawintz410@gmail.com"
 VOTRE_ICLOUD = "Abrahamdawintz410@gmail.com"
 VOTRE_WALLET_SOLANA = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
 IPS_ESSAIS_UTILISES = set()
-
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# --- 1. INTERFACE CLIENT (PAGE D'ACCUEIL VIRTUELE) ---
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_abonnements():
     html_content = f"""
@@ -54,10 +48,9 @@ async def page_accueil_abonnements():
                 .box:hover {{ border-color: #00FF00; background: #222; }}
                 .box-text {{ margin-left: 15px; flex-grow: 1; }}
                 .price {{ float: right; font-weight: bold; color: #00FF00; font-size: 18px; }}
-                input[type="radio"] {{ transform: scale(1.4); cursor: pointer; }}
                 .btn {{ background-color: #00FF00; color: black; font-weight: bold; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; box-sizing: border-box; }}
                 .btn-meru {{ background-color: #00E5FF; color: black; }}
-                .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 2px dashed #9945FF; text-align: left; }}
+                .crypto-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px dashed #9945FF; text-align: left; }}
                 .crypto-box p {{ margin: 5px 0; font-size: 13px; color: #bbb; }}
                 .wallet-address {{ font-family: monospace; background: #222; padding: 8px; border-radius: 4px; color: #ff00ff; word-break: break-all; font-size: 12px; margin-top: 5px; border: 1px solid #333; display: block; font-weight: bold; text-align: center; }}
                 .contact-list {{ text-align: left; background: #1a1a1a; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #333; }}
@@ -77,58 +70,41 @@ async def page_accueil_abonnements():
                 <div class="subtitle">Industrial Route Optimization API & High-Precision Infrastructure</div>
                 <hr style="border-color:#222;">
                 <h3 style="text-align: left; color: #fff; margin-top: 20px;">Choisissez votre formule d'accès :</h3>
-                <div class="box" onclick="document.getElementById('form_test').checked = true; gererSelection('Essai Hebdomadaire', 'Gratuit');">
-                    <input type="radio" id="form_test" name="offre" value="7">
-                    <div class="box-text">
-                        <strong>7 Days Free Trial</strong><br><span style="color:#666; font-size:12px;">Évaluation technique unique pour flottes (Limite de 1 par entreprise)</span>
-                    </div>
+                <div class="box" onclick="gererSelection('7 Days Free Trial', 'Gratuit')">
+                    <div class="box-text"><strong>7 Days Free Trial</strong><br><span style="color:#666; font-size:12px;">Évaluation unique (Limite de 1 par flotte)</span></div>
                     <div class="price">GRATUIT</div>
                 </div>
-                <div class="box" onclick="document.getElementById('form_month').checked = true; gererSelection('1 Mois Premium', '300 USD');">
-                    <input type="radio" id="form_month" name="offre" value="30">
-                    <div class="box-text">
-                        <strong>1-Month Standard Subscription</strong><br><span style="color:#666; font-size:12px;">Accès professionnel illimité</span>
-                    </div>
+                <div class="box" onclick="gererSelection('1-Month Premium', '300 USD')">
+                    <div class="box-text"><strong>1-Month Standard Subscription</strong><br><span style="color:#666; font-size:12px;">Accès professionnel illimité</span></div>
                     <div class="price">300 $ USD</div>
                 </div>
-                <div class="box" onclick="document.getElementById('form_year').checked = true; gererSelection('1 An Corporate', '3600 USD');">
-                    <input type="radio" id="form_year" name="offre" value="365">
-                    <div class="box-text">
-                        <strong>1-Year Corporate License</strong><br><span style="color:#666; font-size:12px;">12 mois complets d'optimisation industrielle</span>
-                    </div>
+                <div class="box" onclick="gererSelection('1-Year Corporate', '3600 USD')">
+                    <div class="box-text"><strong>1-Year Corporate License</strong><br><span style="color:#666; font-size:12px;">12 mois complets d'optimisation</span></div>
                     <div class="price">3600 $ USD</div>
                 </div>
                 <div id="zone_paiement" style="display:none; margin-top:25px; padding:20px; border:2px dashed #00FF00; background: #111; border-radius: 8px;">
                     <p id="txt_choix" style="font-weight:bold; color:#00FF00; margin-top:0;"></p>
-                    
-                    <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Règlement traditionnel (Carte Bancaire)</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 10px;">Cliquez sur le lien ci-dessous, effectuez votre virement sécurisé et saisissez manuellement le montant de la formule :</p>
-                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">💳 Ouvrir mon profil de paiement MERU</a>
-                    
+                    <p style="font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">Option A : Carte Bancaire</p>
+                    <a href="{LIEN_PROFIL_MERU}" target="_blank" class="btn btn-meru">Core Profil de paiement MERU</a>
                     <div class="crypto-box">
-                        <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto Corporatif (USDC / USDT)</p>
-                        <p>Idéal pour les entreprises internationales (Uber, DHL, Startups Tech). Transférez le montant exact sur notre portefeuille officiel de l'entreprise :</p>
-                        <p><strong>Réseau :</strong> Solana (SOL / USDC / USDT)</p>
+                        <p style="font-weight: bold; color: #9945FF; font-size: 14px;">Option B : Règlement Crypto (USDC / USDT)</p>
+                        <p>Réseau : Solana (SOL / USDC / USDT)</p>
                         <span class="wallet-address">{VOTRE_WALLET_SOLANA}</span>
                     </div>
-                    
                     <p style="margin-top:20px; font-size: 13px; color: #aaa; text-align: left; font-weight: bold;">2. Activation et support client :</p>
-                    <p style="font-size: 13px; color: #aaa; text-align: left; margin-bottom: 5px;">Dès que votre transfert (Meru ou Crypto) est effectué, contactez notre direction technique pour recevoir votre clé d'accès sécurisée :</p>
                     <ul class="contact-list">
-                        <li>🟢 <strong>WhatsApp Business :</strong> <a href="https://wa.me{VOTRE_NUMERO_WHATSAPP.replace('+', '')}" target="_blank" style="color: #00FF00; text-decoration: none;">{VOTRE_NUMERO_WHATSAPP}</a></li>
+                        <li>🟢 <strong>WhatsApp Business :</strong> {VOTRE_NUMERO_WHATSAPP}</li>
                         <li>📧 <strong>Email Principal :</strong> {VOTRE_GMAIL}</li>
-                        <li>☁️ <strong>Support iCloud :</strong> {VOTRE_ICLOUD}</li>
                     </ul>
                 </div>
                 <hr style="border-color:#222; margin-top:25px;">
-                <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique de calcul (API)</a>
+                <a href="/docs" class="btn" style="background:#1976D2; color:white;">⚙️ Ouvrir la console technique (API)</a>
             </div>
         </body>
     </html>
     """
     return HTMLResponse(content=html_content)
 
-# --- 2. PANNEAU DE CONTRÔLE ADMINISTRATEUR SÉCURISÉ ---
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin(cle_generee: str = ""):
     html_admin = f"""
@@ -142,49 +118,38 @@ async def vue_panneau_admin(cle_generee: str = ""):
                 h2 {{ color: #a855f7; margin-top: 0; }}
                 label {{ font-size: 13px; color: #a1a1aa; display: block; margin-top: 10px; }}
                 input, select {{ width: 100%; padding: 10px; margin-top: 5px; background: #09090b; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; box-sizing: border-box; }}
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew your subscription via Meru.")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
+                .btn-gen {{ background: #a855f7; color: white; font-weight: bold; border: none; padding: 12px; margin-top: 15px; width: 100%; border-radius: 6px; cursor: pointer; }}
+                .result-box {{ background: #27272a; padding: 15px; margin-top: 20px; border-radius: 6px; border: 1px dashed #a855f7; word-break: break-all; font-family: monospace; font-size: 12px; color: #e4e4e7; }}
+            </style>
+        </head>
+        <body>
+            <div class="box-admin">
+                <h2>🎛️ Panneau Générateur AntStrike — Abraham</h2>
+                <form action="/admin-panel/generer" method="post">
+                    <label>Identifiant Administrateur :</label>
+                    <input type="text" name="username" required>
+                    <label>Mot de passe Secret :</label>
+                    <input type="password" name="password" required>
+                    <label>Nom de l'entreprise cliente :</label>
+                    <input type="text" name="client_name" required>
+                    <label>Formule d'abonnement :</label>
+                    <select name="duration">
+                        <option value="7">Essai Gratuit (7 Jours)</option>
+                        <option value="30">Abonnement Standard (1 Mois)</option>
+                        <option value="365">Licence Corporate (1 An)</option>
+                    </select>
+                    <button type="submit" class="btn-gen">⚡ Générer la Clé API Secrète</button>
+                </form>
+                {"<div class='result-box'><strong>Clé Client Générée (Copie-la) :</strong><br><br>" + cle_generee + "</div>" if cle_generee else ""}
+            </div>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_admin)
 
-NB_FOURMIS = 30
-ALPHA, BETA, EVAPORATION, Q = 1.0, 3.0, 0.1, 100.0
-
-class RequeteCalcul(BaseModel):
-    villes: List[Tuple[float, float]]
-
-def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[int], float]:
-    nb_villes = len(villes)
-    if nb_villes < 3: return list(range(nb_villes)), 0.0
-    distances = [[math.dist(villes[i], villes[j]) for j in range(nb_villes)] for i in range(nb_villes)]
-    pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
-    meilleure_distance = float('inf')
-    meilleure_route = []
-    for _ in range(40):
-        toutes_routes, toutes_distances = [], []
-        for _ in range(int(NB_FOURMIS / 2)):
-            r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.1)
-            toutes_routes.append(r); toutes_distances.append(d)
-        moyenne = sum(toutes_distances) / len(toutes_distances)
-        for route, dist in zip(toutes_routes, toutes_distances):
-            if dist > moyenne:
-                for k in range(nb_villes): pheromones[route[k]][route[(k+1)%nb_villes]] *= 0.2
-        for _ in range(int(NB_FOURMIS / 2)):
-            r, d = simuler_fourmi(nb_villes, distances, pheromones, det=0.8)
-            toutes_routes.append(r); toutes_distances.append(d)
-        for i in range(nb_villes):
-            for j in range(nb_villes): pheromones[i][j] *= (1.0 - EVAPORATION)
-        for route, dist in zip(toutes_routes, toutes_distances):
-            depot = Q / max(dist, 0.1)
-            for k in range(nb_villes):
-                pheromones[route[k]][route[(k+1)%nb_villes]] += depot
-                if dist < meilleure_distance: meilleure_distance = dist; meilleure_route = route
-        if meilleure_route:
-            for k in range(nb_villes): pheromones[meilleure_route[k]][meilleure_route[(k+1)%nb_villes]] += 50.0
-    return meilleure_route, meilleure_distance
-
-def simuler_fourmi(nb, dists, phero, det):
-    path = [random.randint(0, nb-1)]
+@app.post("/admin-panel/generer")
+async def action_generer_cle(username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
+    if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
     while len(path) < nb:
         act = path[-1]; probs = []; tot = 0.0; m_note, v_perf = -1, -1
         for p in range(nb):
