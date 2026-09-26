@@ -302,13 +302,14 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     lat_moyenne = math.radians(sum(float(v[0]) for v in villes) / nb_villes)
     R = 6371.0
     
-    villes_planes = []
+        villes_planes = []
     for v in villes:
-        lat = math.radians(float(v[0]))
-        lon = math.radians(float(v[1]))
+        lon = math.radians(float(v[0]))  # Index 0 = Longitude (X)
+        lat = math.radians(float(v[1]))  # Index 1 = Latitude (Y)
         x = R * lon * math.cos(lat_moyenne)
         y = R * lat
         villes_planes.append((x, y))
+
         
     distances = []
     for i in range(nb_villes):
