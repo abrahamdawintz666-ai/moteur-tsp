@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
 Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
-Security: Anti-Cheat Free Trial IP Blocker & Robust Float Matrix Sanitizer
+Calibration: 0.01 Ultra-High Precision Neighborhood Matrix (Anti-Zero Crash)
 ================================================================================
 """
 
@@ -15,6 +15,7 @@ import jwt
 import random
 import math
 import datetime
+import time
 from typing import List, Tuple
 
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
@@ -132,42 +133,54 @@ async def vue_panneau_admin(cle_generee: str = ""):
     return HTMLResponse(content=html_admin)
 
 @app.post("/admin-panel/generer")
-async def action_generer_cle(username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
+async def action_generer_cle(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
         return HTMLResponse(content="<h2>Identifiants incorrects ! Accès refusé.</h2>", status_code=403)
+    
+    client_ip = request.client.host
+    if duration == 7 and client_ip in IPS_ESSAIS_UTILISES:
+        return HTMLResponse(content="<h2>Sécurité : Ce réseau Internet a déjà consommé son essai gratuit de 7 jours.</h2>", status_code=403)
+        
     date_actuelle = datetime.datetime.utcnow()
     if duration == 7:
         exp_date = date_actuelle + datetime.timedelta(days=7)
         tier = "7 Jours Gratuit"
+        IPS_ESSAIS_UTILISES.add(client_ip)
     elif duration == 30:
         exp_date = date_actuelle + datetime.timedelta(days=30)
         tier = "1 Mois Standard"
     else:
         exp_date = date_actuelle + datetime.timedelta(days=365)
         tier = "1 An Corporate"
+        
     payload = {
         "client": client_name,
         "exp": int(exp_date.timestamp()),
-        "type_offre": tier
+        "type_offre": tier,
+        "ip_security": client_ip
     }
     token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return await vue_panneau_admin(cle_generee=token_client)
 
-async def verifier_minuteur_cle_api(request: Request, api_key: str = Security(api_key_header)):
+async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
     try:
         infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
-        if "Gratuit" in infos.get("type_offre", ""):
-            client_ip = request.client.host
-            if client_ip in IPS_ESSAIS_UTILISES:
-                raise HTTPException(status_code=403, detail="Security Block: This IP network has already consumed its 7-day free trial.")
-            IPS_ESSAIS_UTILISES.add(client_ip)
         return infos
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Meru or Solana.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
+
+def calculer_distance_terrestre(v1, v2):
+    lat1, lon1 = math.radians(v1), math.radians(v1)
+    lat2, lon2 = math.radians(v2), math.radians(v2)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return 6371.0 * c 
 
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
@@ -179,10 +192,8 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
     
-    # SECURITÉ ANTI-ERREUR 500 : Force la conversion stricte en floats purs
-    villes_propres = [(float(v[0]), float(v[1])) for v in villes]
-    
-    distances = [[math.dist(villes_propres[i], villes_propres[j]) for j in range(nb_villes)] for i in range(nb_villes)]
+    villes_propres = [(float(v), float(v)) for v in villes]
+    distances = [[calculer_distance_terrestre(villes_propres[i], villes_propres[j]) for j in range(nb_villes)] for i in range(nb_villes)]
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
@@ -200,7 +211,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
         for i in range(nb_villes):
             for j in range(nb_villes): pheromones[i][j] *= (1.0 - EVAPORATION)
         for route, dist in zip(toutes_routes, toutes_distances):
-            depot = Q / max(dist, 0.1)
+            depot = Q / max(dist, 0.01)  # CALIBRATION À 0.01 POUR LA HAUTE PRÉCISION DE RUE
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
     return meilleure_route, meilleure_distance
@@ -211,23 +222,34 @@ def simuler_fourmi(nb, dists, phero):
         act = path[-1]; probs = []; tot = 0.0
         for p in range(nb):
             if p not in path:
-                vis = 1.0 / max(dists[act][p], 0.1)
+                vis = 1.0 / max(dists[act][p], 0.01)  # SENSIBILITÉ DE QUARTIER AJUSTÉE À 0.01 KM
                 note = (phero[act][p] ** ALPHA) * (vis ** BETA)
                 probs.append((p, note)); tot += note
         if tot == 0:
             restants = [x for x in range(nb) if x not in path]
-            prox = restants[0] if restants else 0
+            prox = restants if restants else 0
         else:
             flotte = random.uniform(0, tot)
-            cum = 0.0; prox = probs[-1][0]
+            cum = 0.0; prox = probs[-1]
             for v, p in probs:
                 cum += p
                 if cum >= flotte: prox = v; break
         path.append(prox)
-    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path[0]]
+    d_tot = sum(dists[path[k]][path[k+1]] for k in range(nb-1)) + dists[path[-1]][path]
     return path, d_tot
 
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
+    temps_debut = time.time()
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
-    return {"status": "Success", "authenticated_client": infos_cle["client"], "subscription_tier": infos_cle["type_offre"], "optimal_order": ordre_villes}
+    temps_fin = time.time()
+    temps_execution = temps_fin - temps_debut
+    
+    return {
+        "status": "Success",
+        "authenticated_client": infos_cle["client"],
+        "subscription_tier": infos_cle["type_offre"],
+        "execution_time_seconds": round(temps_execution, 4),
+        "total_distance_km": round(distance_optimale, 2),
+        "optimal_order": ordre_villes
+    }
