@@ -14,7 +14,6 @@ import random
 import math
 import datetime
 import time
-import httpx
 from typing import List, Tuple
 
 PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
@@ -52,6 +51,7 @@ async def tableau_de_bord(token_visuel: str = ""):
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin(cle_generee: str = ""):
     return HTMLResponse(content=obtenir_panneau_admin(VOTRE_WALLET_SOLANA, cle_generee))
+
 
 # ... Suite du fichier principal ou inclusion directe dans main.py
 
