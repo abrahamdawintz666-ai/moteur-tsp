@@ -161,7 +161,6 @@ async def action_generer_cle(request: Request, username: str = Form(...), passwo
     }
     token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return await vue_panneau_admin(cle_generee=token_client)
-
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
@@ -173,10 +172,12 @@ async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
-# CORRECTION FIXE ICI : Extraction chirurgicale des index du tuple de coordonnées
+# FORMULE CORRIGÉE DE HAVERSINE (Extraction parfaite de [0] et)
 def calculer_distance_terrestre(v1, v2):
-    lat1, lon1 = math.radians(float(v1[0])), math.radians(float(v1[1]))
-    lat2, lon2 = math.radians(v2[0]), math.radians(v2[1])
+    lat1 = math.radians(float(v1[0]))
+    lon1 = math.radians(float(v1[1]))
+    lat2 = math.radians(float(v2[0]))
+    lon2 = math.radians(float(v2[1]))
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
