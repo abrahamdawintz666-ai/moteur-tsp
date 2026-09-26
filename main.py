@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — ENTERPRISE COMMERCIAL EDITION (HYBRID VRP MATRIX)
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Planar Projection
 Adjustments: Earth Radius Coordinate Vectorization & Road Tortuosity Matrix
-Author: Abraham — Cap-Haïtien 2026 / Configuration Tiun Intégrée
+Author: Abraham — Cap-Haïtien 2026 / Configuration Tiun Spécifiée
 ================================================================================
 """
 
@@ -18,9 +18,9 @@ import datetime
 import time
 from typing import List, Tuple
 
-# Configuration de l'identifiant unique Tiun fourni
+# Configuration de votre identifiant unique Tiun en mode vivant
 TIUN_SNIPPET_ID = "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR"
-PHRASE_SECRETE_TIUN = "G3T7eFHNGen1shXiq4xPrlBTPcRoOvPI5dyiqwLRATjBi_TXK_fVZjp7VcB17KKAFdZxhzZTqi3kTgxZ"
+PHRASE_SECRETE_TIUN = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -36,6 +36,7 @@ MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 IPS_ESSAIS_UTILISES = set()
 
 class RequeteCalcul(BaseModel):
+    # Les coordonnées doivent être transmises au format précis [Longitude, Latitude]
     villes: List[Tuple[float, float]]
 
 def obtenir_page_accueil():
@@ -77,7 +78,7 @@ def obtenir_page_accueil():
                 <div class="grid-features">
                     <div class="card">
                         <h3>⚡ Projection Vectorielle</h3>
-                        <p>Conversion instantanée des coordonnées sphériques terrestres en matrices cartésiennes planes. Vitesse de traitement multipliée par 10 sur les gros volumes de villes.</p>
+                        <p>Conversion instantanée des coordonnées sphériques terrestres en matrices cartésiennes planes. Vitesse de traitement décuplée.</p>
                     </div>
                     <div class="card">
                         <h3>📦 Contraintes de Livraison (VRP)</h3>
@@ -110,7 +111,7 @@ def obtenir_panneau_admin(cle_generee: str):
         </head>
         <body>
             <div class="box-admin">
-                <h2>🎛&ufe0f; Console de Provisionnement (Privé)</h2>
+                <h2>🎛&ufe0f; Console de Provisionnement Privée</h2>
                 <p style='font-size:12px; color:#888;'>Génération manuelle de jetons d'accès client de secours.</p>
                 <form action="/admin-panel/generer" method="post">
                     <label>Identifiant Administrateur :</label><input type="text" name="username" required>
@@ -242,7 +243,9 @@ async def conditions_utilisation_serveur():
         <body style="font-family: Arial, sans-serif; background: #0c0a09; color: #f5f5f4; padding: 40px; line-height: 1.6;">
             <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border: 1px solid #2e2a24;">
                 <h1 style="color: #f59e0b;">Conditions Générales d'Utilisation (CGU)</h1>
-                <p>L'utilisation de l'API SwiftRoute Engine implique l'acceptation entière de nos règles de sécurité et de gestion de facturation commerciale déléguée à notre partenaire Tiun.</p>
+                <p>L'utilisation de l'API SwiftRoute Engine implique l'acceptation entière de nos règles de sécurité et de gestion de facturation commerciale via Tiun.</p>
+                <h3 style="color: #f59e0b;">Format des Données Obligatoire (X / Y)</h3>
+                <p>Pour garantir l'exactitude de notre moteur de projection plane, les requêtes envoyées à l'API doivent obligatoirement respecter l'ordre cartésien standard des coordonnées : <strong>[Longitude (Axe X), Latitude (Axe Y)]</strong>. Toute inversion de format faossera le calcul matriciel.</p>
             </div>
         </body>
     </html>
@@ -256,7 +259,7 @@ async def politique_confidentialite_serveur():
         <body style="font-family: Arial, sans-serif; background: #0c0a09; color: #f5f5f4; padding: 40px; line-height: 1.6;">
             <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border: 1px solid #2e2a24;">
                 <h1 style="color: #f59e0b;">Politique de Confidentialité</h1>
-                <p>Vos données et vecteurs géographiques sont traités de manière strictement temporaire en mémoire RAM pour l'exécution algorithmique. Les transactions financières mondiales et données d'identité associées sont prises en charge de bout en bout de façon chiffrée par la plateforme Tiun.</p>
+                <p>Vos coordonnées géographiques [Longitude, Latitude] sont traitées de manière temporaire en mémoire RAM pour l'exécution algorithmique et ne sont jamais stockées. Les données d'achat et de cartes bancaires sont prises en charge exclusivement de façon chiffrée par la plateforme Tiun.</p>
             </div>
         </body>
     </html>
@@ -299,17 +302,22 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
     
-    lat_moyenne = math.radians(sum(float(v[0]) for v in villes) / nb_villes)
+    # Extraction de la Latitude moyenne (v[1] correspond à l'axe Y / la Latitude)
+    lat_moyenne = math.radians(sum(float(v[1]) for v in villes) / nb_villes)
     R = 6371.0
     
-        villes_planes = []
+    villes_planes = []
     for v in villes:
-        lon = math.radians(float(v[0]))  # Index 0 = Longitude (X)
-        lat = math.radians(float(v[1]))  # Index 1 = Latitude (Y)
+        # ==========================================================
+        # CONFIGURATION DE L'EXTRACTION CARTÉSIENNE STRICTE :
+        # ==========================================================
+        lon = math.radians(float(v[0]))  # Index 0 = Axe X / Longitude
+        lat = math.radians(float(v[1]))  # Index 1 = Axe Y / Latitude
+        # ==========================================================
+        
         x = R * lon * math.cos(lat_moyenne)
         y = R * lat
         villes_planes.append((x, y))
-
         
     distances = []
     for i in range(nb_villes):
