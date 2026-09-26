@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
 Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
-Security: Anti-Cheat Free Trial IP Blocker & Inviolable JWT Matrix
+Security: Anti-Cheat Free Trial IP Blocker & Robust Float Matrix Sanitizer
 ================================================================================
 """
 
@@ -22,9 +22,11 @@ PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
+# INITIALISATION STRICTE AVEC CADENAS ET PROTOCOLE DE SECURITE INTEGRÉ
 app = FastAPI(
     title="SwiftRoute Engine - AntStrike Logic",
-    swagger_ui_parameters={"operationsSorter": "alpha"}
+    swagger_ui_parameters={"operationsSorter": "alpha"},
+    security=[{API_KEY_NAME: []}]
 )
 
 NOM_UTILISATEUR_ADMIN = "Abraham"
@@ -161,6 +163,7 @@ async def action_generer_cle(request: Request, username: str = Form(...), passwo
     }
     token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return await vue_panneau_admin(cle_generee=token_client)
+
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
@@ -172,12 +175,12 @@ async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
-# FORMULE CORRIGÉE DE HAVERSINE (Extraction parfaite de [0] et)
-def calculer_distance_terrestre(v1, v2):
-    lat1 = math.radians(float(v1[0]))
-    lon1 = math.radians(float(v1[1]))
-    lat2 = math.radians(float(v2[0]))
-    lon2 = math.radians(float(v2[1]))
+# EXTRACTION CHIRURGICALE PARFAITE DES INDEX DE COORDONNÉES RÉELLES
+def calculer_distance_terrestre(v1: Tuple[float, float], v2: Tuple[float, float]) -> float:
+    lat1 = math.radians(v1[0])
+    lon1 = math.radians(v1[1])
+    lat2 = math.radians(v2[0])
+    lon2 = math.radians(v2[1])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
@@ -194,7 +197,9 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
     
+    # Nettoyage rigoureux des formats flottants injectés depuis Pydantic
     villes_propres = [(float(v[0]), float(v[1])) for v in villes]
+    
     distances = [[calculer_distance_terrestre(villes_propres[i], villes_propres[j]) for j in range(nb_villes)] for i in range(nb_villes)]
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
@@ -243,7 +248,10 @@ def simuler_fourmi(nb, dists, phero):
 @app.post("/optimiser-tournee/")
 async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(verifier_minuteur_cle_api)):
     temps_debut = time.time()
+    
+    # Exécution du moteur d'optimisation
     ordre_villes, distance_optimale = calculer_route_precision(requete.villes)
+    
     temps_fin = time.time()
     temps_execution = temps_fin - temps_debut
     
