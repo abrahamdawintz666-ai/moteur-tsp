@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — ENTERPRISE COMMERCIAL EDITION (HYBRID VRP MATRIX)
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Planar Projection
 Adjustments: Earth Radius Coordinate Vectorization & Road Tortuosity Matrix
-Author: Abraham — Cap-Haïtien 2026
+Author: Abraham — Cap-Haïtien 2026 / Configuration Tiun Intégrée
 ================================================================================
 """
 
@@ -18,7 +18,10 @@ import datetime
 import time
 from typing import List, Tuple
 
-PHRASE_SECRETE_NORD = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
+# Configuration de l'identifiant unique Tiun fourni
+TIUN_SNIPPET_ID = "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR"
+PHRASE_SECRETE_TIUN = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
+
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -30,9 +33,10 @@ app = FastAPI(
 
 NOM_UTILISATEUR_ADMIN = "Abraham"
 MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
-VOTRE_WALLET_SOLANA = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
-
 IPS_ESSAIS_UTILISES = set()
+
+class RequeteCalcul(BaseModel):
+    villes: List[Tuple[float, float]]
 
 def obtenir_page_accueil():
     return """
@@ -58,15 +62,16 @@ def obtenir_page_accueil():
         <body>
             <div class="nav-links">
                 <a href="/docs">Documentation API</a>
-                <a href="/dashboard" style="color: #f59e0b; font-weight: bold;">Espace Client & Clés</a>
+                <a href="/terms">Conditions d'Utilisation</a>
+                <a href="/privacy">Confidentialité</a>
+                <a href="/dashboard" style="color: #f59e0b; font-weight: bold;">Espace Client & Licences</a>
             </div>
             <div class="hero">
                 <p style="color: #f59e0b; text-transform: uppercase; font-weight: bold; font-size: 12px; letter-spacing: 2px;">B2B Enterprise Algorithm</p>
                 <h1 class="logo-brand">🐜 SWIFTROUTE ENGINE v2.5</h1>
-                <p class="subtitle">Moteur de calcul vectorisé couplant la projection terrestre et les contraintes de charge par véhicule. Optimisé pour la vitesse d'exécution critique.</p>
-                <a href="/dashboard" class="btn-primary">Obtenir ma Clé d'accès API</a>
+                <p class="subtitle">Moteur de calcul vectorisé couplant la projection terrestre et les contraintes de charge par véhicule. Sécurisé commercialement par l'infrastructure Tiun.</p>
+                <a href="/dashboard" class="btn-primary">Obtenir mon accès API</a>
             </div>
-    """
             <div class="container">
                 <h2 style="text-align: center; font-size: 28px;">Spécifications de l'Infrastructure Élite</h2>
                 <div class="grid-features">
@@ -79,8 +84,8 @@ def obtenir_page_accueil():
                         <p>Gestion intelligente des capacités de transport. Planification automatique des retours au dépôt central pour le rechargement de vos camions.</p>
                     </div>
                     <div class="card">
-                        <h3>💎 Indépendance Blockchain</h3>
-                        <p>Facturation autonome décentralisée sur le réseau Solana. Activation et validation instantanées pour les entreprises internationales.</p>
+                        <h3>🔒 Sécurité Native Tiun</h3>
+                        <p>Vérification d'accès ultra-rapide par jetons cryptographiques. Fin de la maintenance manuelle des passerelles de paiement externes.</p>
                     </div>
                 </div>
             </div>
@@ -88,68 +93,63 @@ def obtenir_page_accueil():
     </html>
     """
 
-def obtenir_panneau_admin(wallet: str, cle_generee: str):
+def obtenir_panneau_admin(cle_generee: str):
     return f"""
     <html>
         <head>
-            <title>AntStrike Admin Panel</title>
+            <title>AntStrike Admin Panel — Tiun Core</title>
             <style>
                 body {{ font-family: Arial, sans-serif; background-color: #09090b; color: #fff; text-align: center; padding: 20px; }}
                 .box-admin {{ max-width: 500px; margin: auto; background: #18181b; padding: 25px; border-radius: 10px; border: 1px solid #3f3f46; text-align: left; }}
-                h2 {{ color: #a855f7; margin-top: 0; }}
+                h2 {{ color: #f59e0b; margin-top: 0; }}
                 label {{ font-size: 13px; color: #a1a1aa; display: block; margin-top: 10px; }}
                 input, select {{ width: 100%; padding: 10px; margin-top: 5px; background: #09090b; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; box-sizing: border-box; }}
-                .btn-gen {{ background: #a855f7; color: white; font-weight: bold; border: none; padding: 12px; margin-top: 15px; width: 100%; border-radius: 6px; cursor: pointer; }}
-                .result-box {{ background: #27272a; padding: 15px; margin-top: 20px; border-radius: 6px; border: 1px dashed #a855f7; word-break: break-all; font-family: monospace; font-size: 12px; color: #e4e4e7; }}
+                .btn-gen {{ background: #f59e0b; color: black; font-weight: bold; border: none; padding: 12px; margin-top: 15px; width: 100%; border-radius: 6px; cursor: pointer; }}
+                .result-box {{ background: #27272a; padding: 15px; margin-top: 20px; border-radius: 6px; border: 1px dashed #f59e0b; word-break: break-all; font-family: monospace; font-size: 12px; color: #e4e4e7; }}
             </style>
         </head>
         <body>
             <div class="box-admin">
-                <h2>🎛️ Panneau Privé d'Administration</h2>
-                <p style='font-size:12px; color:#888;'>Solana Vault Actif: {wallet}</p>
+                <h2>🎛&ufe0f; Console de Provisionnement (Privé)</h2>
+                <p style='font-size:12px; color:#888;'>Génération manuelle de jetons d'accès client de secours.</p>
                 <form action="/admin-panel/generer" method="post">
                     <label>Identifiant Administrateur :</label><input type="text" name="username" required>
                     <label>Mot de passe Secret :</label><input type="password" name="password" required>
                     <label>Nom de l'entreprise cliente :</label><input type="text" name="client_name" required>
                     <label>Formule :</label>
                     <select name="duration">
-                        <option value="7">Essai Gratuit (7 Jours)</option>
-                        <option value="30">Abonnement Entreprise (1 Mois — 1500 $)</option>
+                        <option value="7">Essai Gratuit Tiun (7 Jours)</option>
+                        <option value="30">Abonnement Entreprise Tiun (1 Mois — 1500 \$)</option>
                     </select>
-                    <button type="submit" class="btn-gen">⚡ Générer et Activer la Clé API</button>
+                    <button type="submit" class="btn-gen">⚡ Émettre le Jeton de Clé API</button>
                 </form>
-                {"<div class='result-box'><strong>Clé Client Générée avec Succès :</strong><br><br>" + cle_generee + "</div>" if cle_generee else ""}
+                {"<div class='result-box'><strong>Jeton Client Généré :</strong><br><br>" + cle_generee + "</div>" if cle_generee else ""}
             </div>
         </body>
     </html>
     """
+
 def obtenir_tableau_bord(token_visuel: str = ""):
-    formulaire_paiement = f"""
+    formulaire_tiun = f"""
     <div class="crypto-payment-box">
-        <h3 style="margin-top:0; color:#f59e0b;">💳 Activation via Passerelle Blockchain Directe</h3>
-        <p style="font-size:14px; color:#a8a29e; margin:5px 0;">Pour activer votre licence mensuelle Enterprise (1500 USD), effectuez le transfert exact sur notre adresse corporative :</p>
-        <div style="font-size:12px; color:#a8a29e; margin-top:10px;"><strong>Réseau : SOLANA (SOL / USDT)</strong></div>
-        <div class="wallet-address">{VOTRE_WALLET_SOLANA}</div>
-        <form action="https://wa.me" target="_blank" method="get" style="margin-top:20px;">
-            <input type="hidden" name="text" value="Bonjour Abraham, je viens d'effectuer le paiement de 1500 USD sur ton wallet Solana pour activer ma clé API SwiftRoute v2.5.">
-            <label style="font-size:12px; color:#a8a29e;">Nom de votre entreprise :</label>
-            <input type="text" placeholder="Ex: Uber Freight" required>
-            <label style="font-size:12px; color:#a8a29e; display:block; margin-top:10px;">ID de transaction Blockchain (Hash) :</label>
-            <input type="text" placeholder="Collez la signature de votre transaction ici" required>
-            <button type="submit" class="btn-submit-tx">⚡ Envoyer la notification d'activation (WhatsApp)</button>
-        </form>
+        <h3 style="margin-top:0; color:#f59e0b;">💳 Activation Commerciale Sécurisée via Tiun</h3>
+        <p style="font-size:14px; color:#a8a29e; margin:5px 0;">Accédez immédiatement à la licence mensuelle Enterprise (1500 USD) en passant notre passerelle sécurisée.</p>
+        <p style="font-size:13px; color:#a8a29e;">Tiun centralise l'encaissement mondial, le calcul des taxes locales et l'émission instantanée de vos autorisations.</p>
+        <div style="margin-top:20px;">
+            <button class="btn-submit-tx" onclick="window.location.href='https://tiun.io{TIUN_SNIPPET_ID}'">⚡ Activer mon Abonnement sur Tiun.io</button>
+        </div>
     </div>
     """
 
     banniere_cle_active = f"""
     <div class="payment-banner" style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
-        <h3 style="margin-top:0; color:#22c55e;">✓ Clé d'infrastructure active (Version Accélérée 2.5)</h3>
-        <p style="font-size:14px; color:#a8a29e;">Ajoutez ce jeton sécurisé dans l'en-tête HTTP <strong>X-API-KEY</strong> de vos requêtes :</p>
+        <h3 style="margin-top:0; color:#22c55e;">✓ Jeton d'infrastructure Tiun valide</h3>
+        <p style="font-size:14px; color:#a8a29e;">Incorporez ce jeton dans l'en-tête HTTP <strong>X-API-KEY</strong> pour exécuter vos appels :</p>
         <div class="token-display">{token_visuel}</div>
     </div>
     """
 
-    contenu_dynamique = banniere_cle_active if token_visuel else formulaire_paiement
+    contenu_dynamique = banniere_cle_active if token_visuel else formulaire_tiun
 
     return f"""
     <html>
@@ -161,16 +161,14 @@ def obtenir_tableau_bord(token_visuel: str = ""):
                 .dashboard-box {{ max-width: 700px; margin: auto; background: #1c1917; border: 1px solid #2e2a24; padding: 30px; border-radius: 12px; }}
                 h2 {{ margin-top: 0; color: #f59e0b; border-bottom: 1px solid #2e2a24; padding-bottom: 10px; }}
                 .crypto-payment-box {{ background: #292524; border: 1px solid #f59e0b; padding: 20px; border-radius: 8px; margin-bottom: 25px; }}
-                .wallet-address {{ background: #0c0a09; padding: 12px; font-family: monospace; font-size: 13px; color: #f59e0b; border-radius: 6px; word-break: break-all; border: 1px solid #444; margin: 8px 0; }}
-                .btn-submit-tx {{ background: #22c55e; color: #0c0a09; font-weight: bold; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; width: 100%; margin-top: 15px; }}
+                .btn-submit-tx {{ background: #f59e0b; color: #0c0a09; font-weight: bold; border: none; padding: 14px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; width: 100%; margin-top: 15px; }}
                 .token-display {{ background: #0c0a09; border: 1px dashed #22c55e; padding: 15px; color: #22c55e; font-family: monospace; font-size: 13px; word-break: break-all; border-radius: 6px; margin-top: 15px; }}
                 .scenario-btn {{ background: #292524; color: #fff; border: 1px solid #444; padding: 10px 15px; margin-right: 10px; border-radius: 6px; cursor: pointer; margin-top: 10px; }}
-                input {{ width: 100%; padding: 10px; background: #0c0a09; border: 1px solid #444; color: #fff; border-radius: 6px; margin-top: 5px; box-sizing: border-box; }}
             </style>
         </head>
         <body>
             <div class="dashboard-box">
-                <h2>📊 Console de Gestion Élite</h2>
+                <h2>📊 Console d'Accès Client</h2>
                 {contenu_dynamique}
                 <br>
                 <h3>🎯 Simulateur de Performance Vectorisé</h3>
@@ -196,6 +194,7 @@ def obtenir_tableau_bord(token_visuel: str = ""):
         </body>
     </html>
     """
+
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_serveur():
     return HTMLResponse(content=obtenir_page_accueil())
@@ -206,7 +205,7 @@ async def tableau_de_bord_serveur(token_visuel: str = ""):
 
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin_serveur(cle_generee: str = ""):
-    return HTMLResponse(content=obtenir_panneau_admin(VOTRE_WALLET_SOLANA, cle_generee))
+    return HTMLResponse(content=obtenir_panneau_admin(cle_generee))
 
 @app.post("/admin-panel/generer")
 async def action_generer_cle_serveur(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
@@ -215,19 +214,16 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
     
     client_ip = request.client.host
     if duration == 7 and client_ip in IPS_ESSAIS_UTILISES:
-        return HTMLResponse(content="<h2>Sécurité : Ce réseau Internet a déjà consommé son essai gratuit de 7 jours.</h2>", status_code=403)
+        return HTMLResponse(content="<h2>Sécurité Tiun : Ce réseau a déjà consommé son essai gratuit.</h2>", status_code=403)
         
     date_actuelle = datetime.datetime.utcnow()
     if duration == 7:
         exp_date = date_actuelle + datetime.timedelta(days=7)
-        tier = "7 Jours Gratuit"
+        tier = "Tiun 7 Jours Gratuit"
         IPS_ESSAIS_UTILISES.add(client_ip)
-    elif duration == 30:
-        exp_date = date_actuelle + datetime.timedelta(days=30)
-        tier = "1 Mois Entreprise ($1500)"
     else:
-        exp_date = date_actuelle + datetime.timedelta(days=365)
-        tier = "1 An Corporate"
+        exp_date = date_actuelle + datetime.timedelta(days=30)
+        tier = "Tiun 1 Mois Entreprise ($1500)"
         
     payload = {
         "client": client_name,
@@ -235,39 +231,77 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
         "type_offre": tier,
         "ip_security": client_ip
     }
-    token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
+    token_client = jwt.encode(payload, PHRASE_SECRETE_TIUN, algorithm="HS256")
     return await vue_panneau_admin_serveur(cle_generee=token_client)
+
+@app.get("/terms", response_class=HTMLResponse)
+async def conditions_utilisation_serveur():
+    return HTMLResponse(content="""
+    <html>
+        <head><title>Conditions d'Utilisation - SwiftRoute Engine</title></head>
+        <body style="font-family: Arial, sans-serif; background: #0c0a09; color: #f5f5f4; padding: 40px; line-height: 1.6;">
+            <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border: 1px solid #2e2a24;">
+                <h1 style="color: #f59e0b;">Conditions Générales d'Utilisation (CGU)</h1>
+                <p>L'utilisation de l'API SwiftRoute Engine implique l'acceptation entière de nos règles de sécurité et de gestion de facturation commerciale déléguée à notre partenaire Tiun.</p>
+            </div>
+        </body>
+    </html>
+    """)
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def politique_confidentialite_serveur():
+    return HTMLResponse(content="""
+    <html>
+        <head><title>Politique de Confidentialité - SwiftRoute Engine</title></head>
+        <body style="font-family: Arial, sans-serif; background: #0c0a09; color: #f5f5f4; padding: 40px; line-height: 1.6;">
+            <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border: 1px solid #2e2a24;">
+                <h1 style="color: #f59e0b;">Politique de Confidentialité</h1>
+                <p>Vos données et vecteurs géographiques sont traités de manière strictement temporaire en mémoire RAM pour l'exécution algorithmique. Les transactions financières mondiales et données d'identité associées sont prises en charge de bout en bout de façon chiffrée par la plateforme Tiun.</p>
+            </div>
+        </body>
+    </html>
+    """)
 
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
-        raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
+        raise HTTPException(status_code=403, detail="Clé API absente. Veuillez valider votre accès via Tiun.")
     try:
-        infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
+        infos = jwt.decode(api_key, PHRASE_SECRETE_TIUN, algorithms=["HS256"])
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Solana.")
+        raise HTTPException(status_code=402, detail="Abonnement Tiun expiré. Veuillez renouveler votre formule.")
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
-# ------------------------------------------------------------------------------
-# LOGIQUE VECTORISÉE TOTALEMENT CORRIGÉE : EXTRACTION CORRECTE DES TUPLES LAT/LON
-# ------------------------------------------------------------------------------
+        raise HTTPException(status_code=403, detail="Accès refusé : Jeton invalide ou altéré.")
+
+@app.post("/api/v1/route/optimize")
+async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depends(verifier_minuteur_cle_api)):
+    if not donnees.villes or len(donnees.villes) == 0:
+        raise HTTPException(status_code=400, detail="La liste des coordonnées géographiques ne peut pas être vide.")
+        
+    route_ordonnee, distance_totale = calculer_route_precision(donnees.villes)
+    
+    return {
+        "statut": "success",
+        "client_autorise": jeton_valide.get("client"),
+        "formule_tiun": jeton_valide.get("type_offre"),
+        "metriques": {
+            "villes_traitees": len(donnees.villes),
+            "distance_matrice_km": round(distance_totale, 2)
+        },
+        "ordonnancement_indices": route_ordonnee
+    }
 
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 CAPACITE_MAX_VEHICULE = 10
 
-class RequeteCalcul(BaseModel):
-    villes: List[Tuple[float, float]]
-
 def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[int], float]:
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
     
-    # Correction stricte de l'extraction de la latitude moyenne pour la projection
     lat_moyenne = math.radians(sum(float(v[0]) for v in villes) / nb_villes)
     R = 6371.0
     
-    # Remplacement des appels incorrects : extraction précise par index [0] et [1]
     villes_planes = []
     for v in villes:
         lat = math.radians(float(v[0]))
@@ -288,7 +322,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
                 distance_pure = math.sqrt(dx*dx + dy*dy)
                 ligne.append(distance_pure * 1.23)
         distances.append(ligne)
-        
+
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
