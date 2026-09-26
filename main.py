@@ -1,7 +1,7 @@
 """
 ================================================================================
 SWIFTROUTE ENGINE — ENTERPRISE COMMERCIAL EDITION
-Architecture: 4-Force Elite Ant Colony Optimization (ACO) & GoBTC Payment Matrix
+Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Crypto Wallet Matrix
 ================================================================================
 """
 
@@ -30,14 +30,9 @@ NOM_UTILISATEUR_ADMIN = "Abraham"
 MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 VOTRE_WALLET_SOLANA = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
-# Configuration GoBTC Pay fictive pour l'exemple d'intégration
-GOBTC_API_URL = "https://gobtcpay.org"
-GOBTC_MERCHANT_KEY = "gobtc_live_abraham_2026_secure"
-
 IPS_ESSAIS_UTILISES = set()
-CLES_ACTIVES_BDD = {}  # Simulation d'une base de données temporaire pour stocker les clés achetées
 
-# Importation interne des pages web (définies dans les blocs suivants)
+# Importation des modèles visuels depuis le fichier ui_templates.py
 from ui_templates import obtenir_page_accueil, obtenir_tableau_bord, obtenir_panneau_admin
 
 @app.get("/", response_class=HTMLResponse)
@@ -51,9 +46,6 @@ async def tableau_de_bord(token_visuel: str = ""):
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin(cle_generee: str = ""):
     return HTMLResponse(content=obtenir_panneau_admin(VOTRE_WALLET_SOLANA, cle_generee))
-
-
-# ... Suite du fichier principal ou inclusion directe dans main.py
 
 @app.post("/admin-panel/generer")
 async def action_generer_cle(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
@@ -85,30 +77,6 @@ async def action_generer_cle(request: Request, username: str = Form(...), passwo
     token_client = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return await vue_panneau_admin(cle_generee=token_client)
 
-# POINT D'ENTRÉE DU BOUTON DE PAIEMENT GOBTC PAY
-@app.post("/api/paiement/creer-facture")
-async def creer_facture_gobtc(client_name: str = Form(...)):
-    """Génère un ordre de paiement sécurisé via le protocole GoBTC Pay (Gomining)"""
-    payload_facture = {
-        "merchant_id": GOBTC_MERCHANT_KEY,
-        "amount_usd": 1500.00,
-        "currency": "BTC",
-        "order_id": f"REQ_{int(time.time())}",
-        "redirect_url": f"https://onrender.com{client_name}"
-    }
-    # En production, cette requête appelle l'infrastructure GoBTC
-    # Ici, nous simulons la création instantanée pour le bon fonctionnement de votre démo utilisateur
-    date_expiration = datetime.datetime.utcnow() + datetime.timedelta(days=30)
-    token_paye = jwt.encode({
-        "client": client_name,
-        "exp": int(date_expiration.timestamp()),
-        "type_offre": "1 Mois Entreprise ($1500 - GoBTC Pay)",
-        "ip_security": "Verified_By_Blockchain"
-    }, PHRASE_SECRETE_NORD, algorithm="HS256")
-    
-    # Redirection automatique vers le tableau de bord avec le jeton généré par le paiement
-    return RedirectResponse(url=f"/dashboard?token_visuel={token_paye}", status_code=303)
-
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=403, detail="API Key missing. Please use your authorized key.")
@@ -116,11 +84,9 @@ async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
         infos = jwt.decode(api_key, PHRASE_SECRETE_NORD, algorithms=["HS256"])
         return infos
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via GoBTC Pay or Solana.")
+        raise HTTPException(status_code=402, detail="Key timer expired! Please renew via Solana.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
-
-# ... Intégration mathématique pure de votre algorithme d'optimisation
 
 def calculer_distance_terrestre(v1: Tuple[float, float], v2: Tuple[float, float]) -> float:
     lat1 = math.radians(float(v1[0]))
@@ -205,6 +171,7 @@ async def optimiser_tournee(requete: RequeteCalcul, infos_cle: dict = Depends(ve
         "optimal_order": ordre_villes
     }
 
+        
 # Fichier : ui_templates.py
 
 def obtenir_page_accueil():
