@@ -20,7 +20,7 @@ from typing import List, Tuple
 
 # Configuration de l'identifiant unique Tiun fourni
 TIUN_SNIPPET_ID = "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR"
-PHRASE_SECRETE_TIUN = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
+PHRASE_SECRETE_TIUN = "G3T7eFHNGen1shXiq4xPrlBTPcRoOvPI5dyiqwLRATjBi_TXK_fVZjp7VcB17KKAFdZxhzZTqi3kTgxZ"
 
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
