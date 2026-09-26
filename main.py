@@ -3,7 +3,7 @@
 SWIFTROUTE ENGINE — POWERED BY ANTSTRIKE LOGIC
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Constraint Pruning
 Features: Secure Private Admin Dashboard, Automated Token Generator & Timers
-Calibration: 0.01 Ultra-High Precision Neighborhood Matrix (Anti-Zero Crash)
+Security: Anti-Cheat Free Trial IP Blocker & Inviolable JWT Matrix
 ================================================================================
 """
 
@@ -173,9 +173,10 @@ async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="Access denied: Invalid key.")
 
+# CORRECTION FIXE ICI : Extraction chirurgicale des index du tuple de coordonnées
 def calculer_distance_terrestre(v1, v2):
-    lat1, lon1 = math.radians(v1), math.radians(v1)
-    lat2, lon2 = math.radians(v2), math.radians(v2)
+    lat1, lon1 = math.radians(float(v1[0])), math.radians(float(v1[1]))
+    lat2, lon2 = math.radians(v2[0]), math.radians(v2[1])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
@@ -192,7 +193,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
     
-    villes_propres = [(float(v), float(v)) for v in villes]
+    villes_propres = [(float(v[0]), float(v[1])) for v in villes]
     distances = [[calculer_distance_terrestre(villes_propres[i], villes_propres[j]) for j in range(nb_villes)] for i in range(nb_villes)]
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
@@ -211,7 +212,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]]) -> Tuple[List[in
         for i in range(nb_villes):
             for j in range(nb_villes): pheromones[i][j] *= (1.0 - EVAPORATION)
         for route, dist in zip(toutes_routes, toutes_distances):
-            depot = Q / max(dist, 0.01)  # CALIBRATION À 0.01 POUR LA HAUTE PRÉCISION DE RUE
+            depot = Q / max(dist, 0.01)
             for k in range(nb_villes):
                 pheromones[route[k]][route[(k+1)%nb_villes]] += depot
     return meilleure_route, meilleure_distance
@@ -222,7 +223,7 @@ def simuler_fourmi(nb, dists, phero):
         act = path[-1]; probs = []; tot = 0.0
         for p in range(nb):
             if p not in path:
-                vis = 1.0 / max(dists[act][p], 0.01)  # SENSIBILITÉ DE QUARTIER AJUSTÉE À 0.01 KM
+                vis = 1.0 / max(dists[act][p], 0.01)
                 note = (phero[act][p] ** ALPHA) * (vis ** BETA)
                 probs.append((p, note)); tot += note
         if tot == 0:
