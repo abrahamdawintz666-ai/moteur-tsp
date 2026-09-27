@@ -18,7 +18,6 @@ import datetime
 import time
 from typing import List, Tuple
 
-# Configuration de votre identifiant unique Tiun en mode vivant
 TIUN_SNIPPET_ID = "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR"
 PHRASE_SECRETE_TIUN = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 
@@ -38,6 +37,7 @@ IPS_ESSAIS_UTILISES = set()
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
     capacite_vehicule: int = 10
+    index_depart: int = 0  # Permet à l'API de recevoir l'index choisi par le client
 
 def obtenir_page_accueil():
     return """
@@ -112,6 +112,10 @@ def obtenir_page_accueil():
                         <label for="capacity-input">📦 Capacité Max par Véhicule (VRP) :</label>
                         <input type="number" id="capacity-input" value="10" min="1" max="100">
                     </div>
+                    <div class="setting-box">
+                        <label for="start-index-input">🏢 Index Point de Départ (Dépôt) :</label>
+                        <input type="number" id="start-index-input" value="0" min="0">
+                    </div>
                 </div>
                 <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques :</label>
                 <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521\n-72.2035, 19.7542\n-72.2056, 19.7510"></textarea>
@@ -146,7 +150,7 @@ def obtenir_page_accueil():
             let calqueTraces = null;
             textarea.addEventListener('input', () => {
                 const points = extraireCoordonnees(textarea.value);
-                lineCounter.textContent = `${points.length} point(s) valide(s) détecté(s)`;
+                lineCounter.textContent = points.length + " point(s) valide(s) détecté(s)";
             });
             function extraireCoordonnees(texte) {
                 const lignes = texte.split('\\n');
@@ -171,6 +175,7 @@ def obtenir_page_accueil():
                 const villesExtraites = extraireCoordonnees(textarea.value);
                 const cleSaisie = document.getElementById('api-key-input').value.trim();
                 const capaciteSaisie = parseInt(document.getElementById('capacity-input').value) || 10;
+                const departSaisi = parseInt(document.getElementById('start-index-input').value) || 0;
                 if (!cleSaisie) { window.location.href = "/dashboard"; return; }
                 if (villesExtraites.length < 3) {
                     errorBox.textContent = "❌ Données insuffisantes : Veuillez fournir au moins 3 coordonnées géographiques.";
@@ -184,20 +189,18 @@ def obtenir_page_accueil():
                     const reponse = await fetch('/api/v1/route/optimize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-API-KEY': cleSaisie },
-                        body: JSON.stringify({ villes: villesExtraites, capacite_vehicule: capaciteSaisie })
+                        body: JSON.stringify({ villes: villesExtraites, capacite_vehicule: capaciteSaisie, index_depart: departSaisi })
                     });
                     const data = await reponse.json();
                     if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
-                    document.getElementById('metric-villes').textContent = `${data.metriques.villes_traitees} points`;
-                    document.getElementById('metric-distance').textContent = `${data.metriques.distance_matrice_km} km`;
-                    document.getElementById('metric-temps').textContent = `⏱️ ${data.metriques.temps_execution_secondes}s`;
+                    document.getElementById('metric-villes').textContent = data.metriques.villes_traitees + " points";
+                    document.getElementById('metric-distance').textContent = data.metriques.distance_matrice_km + " km";
+                    document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
                     stepsContainer.innerHTML = '';
                     mapDiv.style.display = 'block';
                     if (!carteLeaflet) {
                         carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
-                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                            attribution: '&copy; OpenStreetMap contributors'
-                        }).addTo(carteLeaflet);
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(carteLeaflet);
                     }
                     if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
                     calqueTraces = L.featureGroup().addTo(carteLeaflet);
@@ -208,15 +211,15 @@ def obtenir_page_accueil():
                         listeCoordonneesOrdonnees.push(latLng);
                         const div = document.createElement('div');
                         div.className = 'route-step';
-                        div.innerHTML = `<div class="step-number">${ordre + 1}</div><div><strong>Arrêt #${indexVille}</strong> <span style="color:#888; font-size:12px;">(Lon: ${coord[0]}, Lat: ${coord[1]})</span></div>`;
+                        div.innerHTML = '<div class="step-number">' + (ordre + 1) + '</div><div><strong>Arrêt #' + indexVille + '</strong></div>';
                         stepsContainer.appendChild(div);
-                        L.marker(latLng).addTo(calqueTraces).bindPopup(`<b>Arrêt ${ordre + 1}</b><br>Index Ville: #${indexVille}`);
+                        L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Arrêt " + (ordre + 1) + "</b><br>Index Ville: #" + indexVille);
                     });
                     L.polyline(listeCoordonneesOrdonnees, { color: '#f59e0b', weight: 4, opacity: 0.8 }).addTo(calqueTraces);
                     carteLeaflet.fitBounds(calqueTraces.getBounds());
                     resultsBox.style.display = 'block';
                 } catch (err) {
-                    errorBox.textContent = `⚠️ Refus de l'infrastructure : ${err.message}`;
+                    errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
                     errorBox.style.display = 'block';
                 } finally {
                     btn.disabled = false;
@@ -228,9 +231,8 @@ def obtenir_page_accueil():
     </body>
     </html>
     """
-
 def obtenir_panneau_admin(cle_generee: str):
-    return f"""
+    formulaire = """
     <html>
         <head><title>AntStrike Admin Panel</title></head>
         <body style="font-family: Arial; background-color: #09090b; color: #fff; padding: 30px; text-align: center;">
@@ -243,29 +245,36 @@ def obtenir_panneau_admin(cle_generee: str):
                     <input type="hidden" name="duration" value="30">
                     <button type="submit" style="background:#f59e0b; color:black; padding:12px; width:100%; border:none; font-weight:bold; border-radius:6px; cursor:pointer;">⚡ Émettre le Jeton de Clé API</button>
                 </form>
-                {"<div style='background:#27272a; padding:15px; margin-top:20px; border-radius:6px; word-break:break-all; font-family:monospace; color:#22c55e; border:1px dashed #22c55e;'><strong>Clé Générée :</strong><br><br>" + cle_generee + "</div>" if cle_generee else ""}
+    """
+    fin = """
             </div>
         </body>
     </html>
     """
+    if cle_generee:
+        bloc_cle = f"<div style='background:#27272a; padding:15px; margin-top:20px; border-radius:6px; word-break:break-all; font-family:monospace; color:#22c55e; border:1px dashed #22c55e;'><strong>Clé Générée :</strong><br><br>{cle_generee}</div>"
+        return formulaire + bloc_cle + fin
+    return formulaire + fin
 
 def obtenir_tableau_bord(token_visuel: str = ""):
+    url_tiun = "https://tiun.io" + TIUN_SNIPPET_ID
     formulaire_tiun = f"""
     <div style="background: #292524; border: 1px solid #f59e0b; padding: 25px; border-radius: 12px; text-align: center;">
         <h3 style="margin-top:0; color:#f59e0b;">💳 Activation Commerciale Sécurisée via Tiun</h3>
         <p style="font-size:14px; color:#a8a29e;">Débloquez l'accès à l'API Premium logistique SwiftRoute (1500 USD / mois).</p>
-        <button style="background:#f59e0b; color:black; font-weight:bold; border:none; padding:14px 28px; border-radius:8px; margin-top:15px; cursor:pointer;" onclick="window.location.href='https://tiun.io{TIUN_SNIPPET_ID}'">⚡ Activer mon Abonnement sur Tiun.io</button>
+        <button style="background:#f59e0b; color:black; font-weight:bold; border:none; padding:14px 28px; border-radius:8px; margin-top:15px; cursor:pointer;" onclick="window.location.href='{url_tiun}'">⚡ Activer mon Abonnement sur Tiun.io</button>
     </div>
     """
-
-    banniere_cle_active = f"""
-    <div style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
-        <h3 style="margin-top:0; color:#22c55e;">✓ Jeton d'infrastructure Tiun valide</h3>
-        <p style="font-size:14px; color:#a8a29e;">Collez ce jeton dans le tableau de connexion de la page d'accueil :</p>
-        <div style="background:#0c0a09; border:1px dashed #22c55e; padding:15px; color:#22c55e; font-family:monospace; word-break:break-all; border-radius:6px;">{token_visuel}</div>
-    </div>
-    """
-    contenu_dynamique = banniere_cle_active if token_visuel else formulaire_tiun
+    if token_visuel:
+        contenu = f"""
+        <div style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
+            <h3 style="margin-top:0; color:#22c55e;">✓ Jeton d'infrastructure Tiun valide</h3>
+            <p style="font-size:14px; color:#a8a29e;">Collez ce jeton dans le tableau de connexion de la page d'accueil :</p>
+            <div style="background:#0c0a09; border:1px dashed #22c55e; padding:15px; color:#22c55e; font-family:monospace; word-break:break-all; border-radius:6px;">{token_visuel}</div>
+        </div>
+        """
+    else:
+        contenu = formulaire_tiun
 
     return f"""
     <html>
@@ -273,12 +282,11 @@ def obtenir_tableau_bord(token_visuel: str = ""):
         <body style="font-family: Arial; background-color: #0c0a09; color: #f5f5f4; padding: 50px 20px;">
             <div style="max-width: 650px; margin: auto; background: #1c1917; border: 1px solid #2e2a24; padding: 30px; border-radius: 12px;">
                 <h2 style="color:#f59e0b; border-bottom:1px solid #2e2a24; padding-bottom:10px;">📊 Console de Facturation</h2><br>
-                {contenu_dynamique}
+                {contenu}
             </div>
         </body>
     </html>
     """
-
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_serveur():
     return HTMLResponse(content=obtenir_page_accueil())
@@ -330,7 +338,8 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
     if not donnees.villes or len(donnees.villes) == 0:
         raise HTTPException(status_code=400, detail="La liste des coordonnées géographiques ne peut pas être vide.")
     temps_debut = time.time()
-    route_ordonnee, distance_totale = calculer_route_precision(donnees.villes, donnees.capacite_vehicule)
+    # Injection de l'index_depart personnalisé pour l'initialisation des véhicules
+    route_ordonnee, distance_totale = calculer_route_precision(donnees.villes, donnees.capacite_vehicule, donnees.index_depart)
     temps_fin = time.time()
     return {
         "statut": "success",
@@ -343,13 +352,13 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
         },
         "ordonnancement_indices": route_ordonnee
     }
-
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 
-def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: int) -> Tuple[List[int], float]:
+def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: int, index_depart: int) -> Tuple[List[int], float]:
     nb_villes = len(villes)
     if nb_villes < 3: return list(range(nb_villes)), 0.0
+    if index_depart >= nb_villes: index_depart = 0
     
     lat_moyenne = math.radians(sum(float(v[1]) for v in villes) / nb_villes)
     R = 6371.0
@@ -381,7 +390,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: in
     for _ in range(iterations):
         toutes_routes, toutes_distances = [], []
         for _ in range(NB_FOURMIS):
-            r, d = simuler_fourmi_vrp(nb_villes, distances, pheromones, capacite_max)
+            r, d = simuler_fourmi_vrp(nb_villes, distances, pheromones, capacite_max, index_depart)
             toutes_routes.append(r); toutes_distances.append(d)
             if d < meilleure_distance: meilleure_distance = d; meilleure_route = r
         for i in range(nb_villes):
@@ -391,8 +400,7 @@ def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: in
             for k in range(len(route) - 1): pheromones[route[k]][route[k+1]] += depot
     return meilleure_route, meilleure_distance
 
-def simuler_fourmi_vrp(nb, dists, phero, capacite_max):
-    depot_index = 0
+def simuler_fourmi_vrp(nb, dists, phero, capacite_max, depot_index):
     path = [depot_index]
     villes_visitees = set([depot_index])
     charge_actuelle = 0
@@ -434,3 +442,4 @@ def simuler_fourmi_vrp(nb, dists, phero, capacite_max):
     d_tot += dists[path[-1]][depot_index]
     path.append(depot_index)
     return path, d_tot
+
