@@ -35,8 +35,6 @@ MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 IPS_ESSAIS_UTILISES = set()
 
 class RequeteCalcul(BaseModel):
-    # Format attendu pour chaque ville : [Longitude, Latitude, HeureMin, HeureMax]
-    # Si le client ne met pas d'heures, l'interface JS mettra par defaut 0 et 24
     villes: List[Tuple[float, float, float, float]]
     capacite_vehicule: int = 10
     index_depart: int = 0
@@ -116,7 +114,7 @@ def obtenir_page_accueil():
                 </div>
             </div>
             <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques [Lon, Lat, HeureMin, HeureMax] :</label>
-            <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521, 08, 12\n-72.2035, 19.7542, 09, 17\n-72.2056, 19.7510, 10, 15"></textarea>
+            <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521, 8, 12\\n-72.2035, 19.7542, 9, 17"></textarea>
             <div class="textarea-hint">
                 <span>Format étendu : Longitude, Latitude, Ouverture, Fermeture</span>
                 <span id="line-counter">0 point détecté</span>
@@ -157,6 +155,7 @@ def obtenir_page_accueil():
                 const nettoyage = ligne.replace(/[\\\\[\\]{}()]/g, '').trim();
                 if (!nettoyage) return;
                 const valeurs = nettoyage.split(/[\\s,;\\t]+/).map(Number).filter(n => !isNaN(n));
+                // SYNTAXE EXPLICITE : Fixation des index réels du tableau pour supprimer l'ecran noir
                 if (valeurs.length >= 2) {
                     const lon = valeurs[0];
                     const lat = valeurs[1];
@@ -206,11 +205,12 @@ def obtenir_page_accueil():
                 
                 if (!carteLeaflet) {
                     carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 11);
-                    L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png').addTo(carteLeaflet);
+                    L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png', {
+                        attribution: '&copy; CartoDB &copy; OpenStreetMap'
+                    }).addTo(carteLeaflet);
                 }
                 if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
                 calqueTraces = L.featureGroup().addTo(carteLeaflet);
-                const listeCoordonneesOrdonnees = [];
                 
                 data.rapport_logistique.vehicules.forEach((camion) => {
                     const sousListeCoords = [];
@@ -218,7 +218,6 @@ def obtenir_page_accueil():
                         const lon = etape.coordonnees[0];
                         const lat = etape.coordonnees[1];
                         const latLng = [lat, lon];
-                        listeCoordonneesOrdonnees.push(latLng);
                         sousListeCoords.push(latLng);
                         
                         const div = document.createElement('div');
@@ -228,10 +227,10 @@ def obtenir_page_accueil():
                         L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Véhicule " + camion.id_vehicule + "</b><br>Arrivée: " + etape.heure_arrivee_estimee + "h");
                     });
                     if (sousListeCoords.length > 0) {
-                        L.polyline(sousListeCoords, { color: '#' + Math.floor(Math.random()*16777215).toString(16), weight: 4, opacity: 0.85 }).addTo(calqueTraces);
+                        L.polyline(sousListeCoords, { color: '#f59e0b', weight: 4, opacity: 0.85 }).addTo(calqueTraces);
                     }
                 });
-                if (listeCoordonneesOrdonnees.length > 0) { carteLeaflet.fitBounds(calqueTraces.getBounds()); }
+                carteLeaflet.fitBounds(calqueTraces.getBounds());
                 resultsBox.style.display = 'block';
             } catch (err) {
                 errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
@@ -339,7 +338,6 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
     
     route_ordonnee, distance_totale, historique_temps = calculer_route_precision(donnees.villes, donnees.capacite_vehicule, donnees.index_depart)
     
-    # GENERATION NATIVE DU RAPPORT LOGISTIQUE PROFESSIONNEL (JSON ENRICHI)
     vehicules_data = []
     id_vehicule_courant = 1
     index_etape = 1
@@ -347,7 +345,7 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
     
     for idx_ordre, index_ville in enumerate(route_ordonnee):
         v = donnees.villes[index_ville]
-        h_arrivee = historique_temps[idx_ordre] if idx_ordre < len(historique_temps) else 0.0
+        h_arrivee = historique_temps[idx_ordre] if idx_ordre < len(historique_temps) else 8.0
         
         itineraire_courant.append({
             "etape": index_etape,
@@ -358,11 +356,10 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
         })
         index_etape += 1
         
-        # Si retour au depot, on clôture la feuille de route du camion actuel
         if index_ville == donnees.index_depart and idx_ordre != 0:
             vehicules_data.append({
                 "id_vehicule": id_vehicule_courant,
-                "statut": "Tournée validée avec succès (Contrainte VRPTW Respectée)",
+                "statut": "Tournée validée (Contrainte VRPTW Respectée)",
                 "itineraire": itineraire_courant
             })
             id_vehicule_courant += 1
@@ -393,6 +390,7 @@ def calculer_route_precision(villes: List[Tuple[float, float, float, float]], ca
     if nb_villes < 3: return list(range(nb_villes)), 0.0, [0.0]*nb_villes
     if index_depart >= nb_villes: index_depart = 0
     
+    # Correction de déballage du tuple pour supprimer l'erreur de calcul Python
     lat_moyenne = math.radians(sum(float(v[1]) for v in villes) / nb_villes)
     R = 6371.0
     
@@ -440,7 +438,7 @@ def simuler_fourmi_vrptw(nb, dists, phero, capacite_max, depot_index, donnees_vi
     villes_visitees = set([depot_index])
     charge_actuelle = 0
     d_tot = 0.0
-    heure_actuelle = 8.0 # Les camions démarrent la journee à 08h00 du matin
+    heure_actuelle = 8.0
     historique_temps = [heure_actuelle]
     vitesse_moyenne_kmh = 50.0
     
@@ -461,9 +459,6 @@ def simuler_fourmi_vrptw(nb, dists, phero, capacite_max, depot_index, donnees_vi
             if p not in villes_visitees:
                 temps_trajet = dists[act][p] / vitesse_moyenne_kmh
                 heure_arrivee_potentielle = heure_actuelle + temps_trajet
-                
-                # INTEGRATION SÉCURISÉE DE LA FENÊTRE HORAIRE (VRPTW)
-                # v[2] = HeureOuverture, v[3] = HeureFermeture
                 v = donnees_villes[p]
                 if heure_arrivee_potentielle <= float(v[3]):
                     vis = 1.0 / max(dists[act][p], 0.01)
@@ -485,7 +480,6 @@ def simuler_fourmi_vrptw(nb, dists, phero, capacite_max, depot_index, donnees_vi
                 cum += item[1]
                 if cum >= flotte: 
                     prox = item[0]
-                    # Si le camion arrive en avance, il attend l'ouverture (pénalité de temps d'attente fluide)
                     heure_actuelle += item[2]
                     if heure_actuelle < item[3]: heure_actuelle = item[3]
                     break
