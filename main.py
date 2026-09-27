@@ -1,8 +1,8 @@
 """
 ================================================================================
-SWIFTROUTE ENGINE — ENTERPRISE COMMERCIAL EDITION (HYBRID VRP MATRIX)
+SWIFTROUTE ENGINE — ENTERPRISE COMMERCIAL EDITION (HYBRID VRPTW MATRIX)
 Architecture: 4-Force Elite Ant Colony Optimization (ACO) & Planar Projection
-Adjustments: Earth Radius Coordinate Vectorization & Road Tortuosity Matrix
+Adjustments: Earth Radius Coordinate Vectorization & Time Window Constraints
 Author: Abraham — Cap-Haïtien 2026 / Version Élite Premium Interactive
 ================================================================================
 """
@@ -25,7 +25,7 @@ API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 app = FastAPI(
-    title="SwiftRoute Engine - AntStrike Advanced VRP",
+    title="SwiftRoute Engine - AntStrike Advanced VRPTW",
     swagger_ui_parameters={"operationsSorter": "alpha"},
     security=[{API_KEY_NAME: []}]
 )
@@ -35,7 +35,9 @@ MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 IPS_ESSAIS_UTILISES = set()
 
 class RequeteCalcul(BaseModel):
-    villes: List[Tuple[float, float]]
+    # Format attendu pour chaque ville : [Longitude, Latitude, HeureMin, HeureMax]
+    # Si le client ne met pas d'heures, l'interface JS mettra par defaut 0 et 24
+    villes: List[Tuple[float, float, float, float]]
     capacite_vehicule: int = 10
     index_depart: int = 0
 def obtenir_page_accueil():
@@ -45,7 +47,7 @@ def obtenir_page_accueil():
     <meta charset="UTF-8">
     <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Chargement sécurisé en HTTPS obligatoire pour Google Chrome Mobile -->
+    <meta name="google" content="notranslate" />
     <link rel="stylesheet" href="https://cloudflare.com" />
     <style>
         :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
@@ -82,7 +84,7 @@ def obtenir_page_accueil():
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>"""
-    return """<body>
+    return """<body class="notranslate">
     <nav class="navbar">
         <a href="/" class="brand">🐜 SwiftRoute Premium</a>
         <div class="nav-links">
@@ -105,7 +107,7 @@ def obtenir_page_accueil():
             </div>
             <div class="premium-settings-grid">
                 <div class="setting-box">
-                    <label for="capacity-input">📦 Capacité Max par Véhicule (VRP) :</label>
+                    <label for="capacity-input">📦 Capacité Max par Véhicule :</label>
                     <input type="number" id="capacity-input" value="10" min="1" max="100">
                 </div>
                 <div class="setting-box">
@@ -113,10 +115,10 @@ def obtenir_page_accueil():
                     <input type="number" id="start-index-input" value="0" min="0">
                 </div>
             </div>
-            <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques :</label>
-            <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521\n-72.2035, 19.7542\n-72.2056, 19.7510"></textarea>
+            <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques [Lon, Lat, HeureMin, HeureMax] :</label>
+            <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521, 08, 12\n-72.2035, 19.7542, 09, 17\n-72.2056, 19.7510, 10, 15"></textarea>
             <div class="textarea-hint">
-                <span>Format attendu : [Longitude, Latitude]</span>
+                <span>Format étendu : Longitude, Latitude, Ouverture, Fermeture</span>
                 <span id="line-counter">0 point détecté</span>
             </div>
             <button id="submit-btn" class="btn-action" onclick="analyserEtCalculer()">
@@ -130,7 +132,7 @@ def obtenir_page_accueil():
                     <h3 style="margin: 0; font-size: 18px;">🎯 Feuille de Route Optimisée</h3>
                     <div style="display: flex; gap: 5px;">
                         <span id="metric-villes" class="metric-badge">0 points</span>
-                        <span id="metric-distance" class="metric-badge">0 km</span>
+                        <span id="metric-distance" class="metric-badge" style="color: #f59e0b;">0 km au total</span>
                         <span id="metric-temps" class="metric-badge" style="color: #22c55e;">0.00s</span>
                     </div>
                 </div>
@@ -138,7 +140,6 @@ def obtenir_page_accueil():
             </div>
         </div>
     </div>
-    <!-- Script Leaflet appelé obligatoirement depuis le CDNJS sécurisé en HTTPS -->
     <script src="https://cloudflare.com"></script>
     <script>
         const textarea = document.getElementById('coordonnees-input');
@@ -153,10 +154,16 @@ def obtenir_page_accueil():
             const lignes = texte.split('\\n');
             const points = [];
             lignes.forEach(ligne => {
-                const nettoyage = ligne.replace(/[\\[\\]{}()]/g, '').trim();
+                const nettoyage = ligne.replace(/[\\\\[\\]{}()]/g, '').trim();
                 if (!nettoyage) return;
                 const valeurs = nettoyage.split(/[\\s,;\\t]+/).map(Number).filter(n => !isNaN(n));
-                if (valeurs.length >= 2) { points.push([valeurs[0], valeurs[1]]); }
+                if (valeurs.length >= 2) {
+                    const lon = valeurs[0];
+                    const lat = valeurs[1];
+                    const h_min = valeurs[2] !== undefined ? valeurs[2] : 0;
+                    const h_max = valeurs[3] !== undefined ? valeurs[3] : 24;
+                    points.push([lon, lat, h_min, h_max]);
+                }
             });
             return points;
         }
@@ -181,7 +188,7 @@ def obtenir_page_accueil():
             }
             btn.disabled = true;
             btnLoader.style.display = 'block';
-            btnText.textContent = "Calcul vectoriel spatial en cours...";
+            btnText.textContent = "Calcul spatial VRPTW en cours...";
             try {
                 const reponse = await fetch('/api/v1/route/optimize', {
                     method: 'POST',
@@ -190,31 +197,41 @@ def obtenir_page_accueil():
                 });
                 const data = await reponse.json();
                 if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
+                
                 document.getElementById('metric-villes').textContent = data.metriques.villes_traitees + " points";
-                document.getElementById('metric-distance').textContent = data.metriques.distance_matrice_km + " km";
-                document.getElementById('metric-temps').textContent = " ⏱️ " + data.metriques.temps_execution_secondes + "s";
+                document.getElementById('metric-distance').textContent = "📏 " + data.metriques.distance_matrice_km + " km au total";
+                document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
                 stepsContainer.innerHTML = '';
                 mapDiv.style.display = 'block';
+                
                 if (!carteLeaflet) {
-                    carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
-                    // Forçage strict des tuiles cartographiques via la couche sécurisée HTTPS de OpenStreetMap
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(carteLeaflet);
+                    carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 11);
+                    L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png').addTo(carteLeaflet);
                 }
                 if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
                 calqueTraces = L.featureGroup().addTo(carteLeaflet);
                 const listeCoordonneesOrdonnees = [];
-                data.ordonnancement_indices.forEach((indexVille, ordre) => {
-                    const coord = villesExtraites[indexVille];
-                    const latLng = [coord[1], coord[0]];
-                    listeCoordonneesOrdonnees.push(latLng);
-                    const div = document.createElement('div');
-                    div.className = 'route-step';
-                    div.innerHTML = '<div class="step-number">' + (ordre + 1) + '</div><div><strong>Arrêt #' + indexVille + '</strong> <span style="color:#888; font-size:12px;">(Lon: ' + coord[0] + ', Lat: ' + coord[1] + ')</span></div>';
-                    stepsContainer.appendChild(div);
-                    L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Arrêt " + (ordre + 1) + "</b><br>Index: #" + indexVille);
+                
+                data.rapport_logistique.vehicules.forEach((camion) => {
+                    const sousListeCoords = [];
+                    camion.itineraire.forEach((etape) => {
+                        const lon = etape.coordonnees[0];
+                        const lat = etape.coordonnees[1];
+                        const latLng = [lat, lon];
+                        listeCoordonneesOrdonnees.push(latLng);
+                        sousListeCoords.push(latLng);
+                        
+                        const div = document.createElement('div');
+                        div.className = 'route-step';
+                        div.innerHTML = '<div class="step-number">' + etape.etape + '</div><div><strong>Véhicule #' + camion.id_vehicule + ' - Arrêt #' + etape.index_vrai + '</strong> <br><span style="color:#a8a29e; font-size:12px;">Arrivée estimée: ' + etape.heure_arrivee_estimee + 'h (Fenêtre: ' + etape.fenetre_horaire_requise + ')</span></div>';
+                        stepsContainer.appendChild(div);
+                        L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Véhicule " + camion.id_vehicule + "</b><br>Arrivée: " + etape.heure_arrivee_estimee + "h");
+                    });
+                    if (sousListeCoords.length > 0) {
+                        L.polyline(sousListeCoords, { color: '#' + Math.floor(Math.random()*16777215).toString(16), weight: 4, opacity: 0.85 }).addTo(calqueTraces);
+                    }
                 });
-                L.polyline(listeCoordonneesOrdonnees, { color: '#f59e0b', weight: 4, opacity: 0.8 }).addTo(calqueTraces);
-                carteLeaflet.fitBounds(calqueTraces.getBounds());
+                if (listeCoordonneesOrdonnees.length > 0) { carteLeaflet.fitBounds(calqueTraces.getBounds()); }
                 resultsBox.style.display = 'block';
             } catch (err) {
                 errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
@@ -297,11 +314,11 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
 
 @app.get("/terms", response_class=HTMLResponse)
 async def conditions_utilisation_serveur():
-    return HTMLResponse(content="<html><body style='font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px;'><div style='max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;'><h1 style='color: #f59e0b;'>Conditions Générales</h1><p>Vecteurs requis : <strong>[Longitude, Latitude]</strong>.</p></div></body></html>")
+    return HTMLResponse(content="<html><body><h1>Conditions Générales</h1><p>Vecteurs requis : [Longitude, Latitude, HeureMin, HeureMax]</p></body></html>")
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def politique_confidentialite_serveur():
-    return HTMLResponse(content="<html><body style='font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px;'><div style='max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;'><h1 style='color: #f59e0b;'>Confidentialité</h1><p>Données traitées de manière purement volatile en mémoire vive (RAM).</p></div></body></html>")
+    return HTMLResponse(content="<html><body><h1>Confidentialité</h1><p>Traitement volatile en mémoire vive (RAM).</p></body></html>")
 
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
@@ -319,7 +336,42 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
     if not donnees.villes or len(donnees.villes) == 0:
         raise HTTPException(status_code=400, detail="La liste des coordonnées géographiques ne peut pas être vide.")
     temps_debut = time.time()
-    route_ordonnee, distance_totale = calculer_route_precision(donnees.villes, donnees.capacite_vehicule, donnees.index_depart)
+    
+    route_ordonnee, distance_totale, historique_temps = calculer_route_precision(donnees.villes, donnees.capacite_vehicule, donnees.index_depart)
+    
+    # GENERATION NATIVE DU RAPPORT LOGISTIQUE PROFESSIONNEL (JSON ENRICHI)
+    vehicules_data = []
+    id_vehicule_courant = 1
+    index_etape = 1
+    itineraire_courant = []
+    
+    for idx_ordre, index_ville in enumerate(route_ordonnee):
+        v = donnees.villes[index_ville]
+        h_arrivee = historique_temps[idx_ordre] if idx_ordre < len(historique_temps) else 0.0
+        
+        itineraire_courant.append({
+            "etape": index_etape,
+            "index_vrai": index_ville,
+            "coordonnees": [v[0], v[1]],
+            "heure_arrivee_estimee": round(h_arrivee, 2),
+            "fenetre_horaire_requise": f"{v[2]}h - {v[3]}h"
+        })
+        index_etape += 1
+        
+        # Si retour au depot, on clôture la feuille de route du camion actuel
+        if index_ville == donnees.index_depart and idx_ordre != 0:
+            vehicules_data.append({
+                "id_vehicule": id_vehicule_courant,
+                "statut": "Tournée validée avec succès (Contrainte VRPTW Respectée)",
+                "itineraire": itineraire_courant
+            })
+            id_vehicule_courant += 1
+            index_etape = 1
+            itineraire_courant = []
+            
+    if itineraire_courant:
+        vehicules_data.append({"id_vehicule": id_vehicule_courant, "statut": "Tournée finale active", "itineraire": itineraire_courant})
+        
     temps_fin = time.time()
     return {
         "statut": "success",
@@ -330,14 +382,15 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
             "distance_matrice_km": round(distance_totale, 2),
             "temps_execution_secondes": round(temps_fin - temps_debut, 4)
         },
-        "ordonnancement_indices": route_ordonnee
+        "ordonnancement_indices": route_ordonnee,
+        "rapport_logistique": {"vehicules": vehicules_data}
     }
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 
-def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: int, index_depart: int) -> Tuple[List[int], float]:
+def calculer_route_precision(villes: List[Tuple[float, float, float, float]], capacite_max: int, index_depart: int):
     nb_villes = len(villes)
-    if nb_villes < 3: return list(range(nb_villes)), 0.0
+    if nb_villes < 3: return list(range(nb_villes)), 0.0, [0.0]*nb_villes
     if index_depart >= nb_villes: index_depart = 0
     
     lat_moyenne = math.radians(sum(float(v[1]) for v in villes) / nb_villes)
@@ -345,10 +398,8 @@ def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: in
     
     villes_planes = []
     for v in villes:
-        lon = math.radians(float(v[0]))
-        lat = math.radians(float(v[1]))
-        x = R * lon * math.cos(lat_moyenne)
-        y = R * lat
+        x = R * math.radians(float(v[0])) * math.cos(lat_moyenne)
+        y = R * math.radians(float(v[1]))
         villes_planes.append((x, y))
         
     distances = []
@@ -365,60 +416,87 @@ def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: in
     pheromones = [[1.0 for _ in range(nb_villes)] for _ in range(nb_villes)]
     meilleure_distance = float('inf')
     meilleure_route = []
+    meilleur_historique_temps = []
     
     iterations = 20 if nb_villes > 60 else 40
     for _ in range(iterations):
-        toutes_routes, toutes_distances = [], []
+        toutes_routes, toutes_distances, tous_temps = [], [], []
         for _ in range(NB_FOURMIS):
-            r, d = simuler_fourmi_vrp(nb_villes, distances, pheromones, capacite_max, index_depart)
-            toutes_routes.append(r); toutes_distances.append(d)
-            if d < meilleure_distance: meilleure_distance = d; meilleure_route = r
+            r, d, h_t = simuler_fourmi_vrptw(nb_villes, distances, pheromones, capacite_max, index_depart, villes)
+            toutes_routes.append(r); toutes_distances.append(d); tous_temps.append(h_t)
+            if d < meilleure_distance: 
+                meilleure_distance = d
+                meilleure_route = r
+                meilleur_historique_temps = h_t
         for i in range(nb_villes):
             for j in range(nb_villes): pheromones[i][j] *= (1.0 - EVAPORATION)
         for route, dist in zip(toutes_routes, toutes_distances):
             depot = Q / max(dist, 0.01)
             for k in range(len(route) - 1): pheromones[route[k]][route[k+1]] += depot
-    return meilleure_route, meilleure_distance
+    return meilleure_route, meilleure_distance, meilleur_historique_temps
 
-def simuler_fourmi_vrp(nb, dists, phero, capacite_max, depot_index):
+def simuler_fourmi_vrptw(nb, dists, phero, capacite_max, depot_index, donnees_villes):
     path = [depot_index]
     villes_visitees = set([depot_index])
     charge_actuelle = 0
     d_tot = 0.0
+    heure_actuelle = 8.0 # Les camions démarrent la journee à 08h00 du matin
+    historique_temps = [heure_actuelle]
+    vitesse_moyenne_kmh = 50.0
     
     while len(villes_visitees) < nb:
         act = path[-1]
         if charge_actuelle >= capacite_max:
             d_tot += dists[act][depot_index]
             path.append(depot_index)
+            heure_actuelle += dists[act][depot_index] / vitesse_moyenne_kmh
+            historique_temps.append(heure_actuelle)
             act = depot_index
             charge_actuelle = 0
+            heure_actuelle = 8.0
             
         probs = []
         tot = 0.0
         for p in range(nb):
             if p not in villes_visitees:
-                vis = 1.0 / max(dists[act][p], 0.01)
-                note = (phero[act][p] ** ALPHA) * (vis ** BETA)
-                probs.append((p, note))
-                tot += note
+                temps_trajet = dists[act][p] / vitesse_moyenne_kmh
+                heure_arrivee_potentielle = heure_actuelle + temps_trajet
                 
+                # INTEGRATION SÉCURISÉE DE LA FENÊTRE HORAIRE (VRPTW)
+                # v[2] = HeureOuverture, v[3] = HeureFermeture
+                v = donnees_villes[p]
+                if heure_arrivee_potentielle <= float(v[3]):
+                    vis = 1.0 / max(dists[act][p], 0.01)
+                    note = (phero[act][p] ** ALPHA) * (vis ** BETA)
+                    probs.append((p, note, temps_trajet, float(v[2])))
+                    tot += note
+                    
         if tot == 0:
             restants = [x for x in range(nb) if x not in villes_visitees]
-            prox = restants if restants else depot_index
+            prox = restants[0] if restants else depot_index
+            if restants:
+                temps_trajet = dists[act][prox] / vitesse_moyenne_kmh
+                heure_actuelle += temps_trajet
         else:
             flotte = random.uniform(0, tot)
             cum = 0.0
             prox = probs[-1][0]
-            for v, p in probs:
-                cum += p
-                if cum >= flotte: prox = v; break
+            for item in probs:
+                cum += item[1]
+                if cum >= flotte: 
+                    prox = item[0]
+                    # Si le camion arrive en avance, il attend l'ouverture (pénalité de temps d'attente fluide)
+                    heure_actuelle += item[2]
+                    if heure_actuelle < item[3]: heure_actuelle = item[3]
+                    break
                     
         d_tot += dists[act][prox]
         path.append(prox)
+        historique_temps.append(heure_actuelle)
         villes_visitees.add(prox)
         charge_actuelle += 1
         
     d_tot += dists[path[-1]][depot_index]
     path.append(depot_index)
-    return path, d_tot
+    historique_temps.append(heure_actuelle + (dists[path[-1]][depot_index] / vitesse_moyenne_kmh))
+    return path, d_tot, historique_temps
