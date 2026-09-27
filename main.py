@@ -31,7 +31,6 @@ app = FastAPI(
     security=[{API_KEY_NAME: []}]
 )
 
-# Configuration CORS essentielle pour le réseau Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,7 +55,6 @@ def obtenir_page_accueil():
     <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="google" content="notranslate" />
-    <link rel="stylesheet" href="https://cloudflare.com" />
     <style>
         :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
         body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
@@ -80,7 +78,9 @@ def obtenir_page_accueil():
         .textarea-hint { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 5px; }
         .btn-action { background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; border: none; padding: 15px 30px; border-radius: 10px; width: 100%; margin-top: 20px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; }
         .btn-action:hover { background: var(--accent-hover); }
-        #map { width: 100%; height: 400px; border-radius: 12px; margin-top: 25px; border: 1px solid var(--border); display: none; z-index: 1; }
+        .canvas-container { width: 100%; background: #141210; border: 1px solid var(--border); border-radius: 12px; margin-top: 25px; padding: 20px; box-sizing: border-box; display: none; text-align: center; }
+        #vector-canvas { background: #0c0a09; border: 1px solid var(--border); border-radius: 8px; max-width: 100%; }
+        .status-badge { color: var(--success); font-size: 14px; font-weight: bold; margin-top: 12px; display: block; letter-spacing: 0.5px; }
         .results-box { margin-top: 30px; background: #141210; border: 1px solid var(--border); border-radius: 10px; padding: 20px; display: none; }
         .results-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
         .metric-badge { background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--accent); font-weight: bold; }
@@ -134,7 +134,12 @@ def obtenir_page_accueil():
                 <span id="btn-text">⚡ Exécuter le routage vectoriel</span>
             </button>
             <div id="error-display" class="error-box"></div>
-            <div id="map"></div>
+            
+            <div id="canvas-wrapper" class="canvas-container">
+                <canvas id="vector-canvas" width="600" height="400"></canvas>
+                <span class="status-badge">✓ Rendu graphique vectoriel forcé avec succès</span>
+            </div>
+
             <div id="results-display" class="results-box">
                 <div class="results-header">
                     <h3 style="margin: 0; font-size: 18px;">🎯 Feuille de Route Optimisée</h3>
@@ -148,12 +153,9 @@ def obtenir_page_accueil():
             </div>
         </div>
     </div>
-    <script src="https://cloudflare.com"></script>
     <script>
         const textarea = document.getElementById('coordonnees-input');
         const lineCounter = document.getElementById('line-counter');
-        let carteLeaflet = null;
-        let calqueTraces = null;
         textarea.addEventListener('input', () => {
             const points = extraireCoordonnees(textarea.value);
             lineCounter.textContent = points.length + " point(s) valide(s) détecté(s)";
@@ -166,11 +168,7 @@ def obtenir_page_accueil():
                 if (!nettoyage) return;
                 const valeurs = nettoyage.split(/[\s,;\t]+/).map(Number).filter(n => !isNaN(n));
                 if (valeurs.length >= 2) {
-                    const lon = valeurs[0];
-                    const lat = valeurs[1];
-                    const h_min = valeurs[2] !== undefined ? valeurs[2] : 0;
-                    const h_max = valeurs[3] !== undefined ? valeurs[3] : 24;
-                    points.push([lon, lat, h_min, h_max]);
+                    points.push([valeurs[0], valeurs[1], valeurs[2] !== undefined ? valeurs[2] : 0, valeurs[3] !== undefined ? valeurs[3] : 24]);
                 }
             });
             return points;
@@ -182,7 +180,10 @@ def obtenir_page_accueil():
             const errorBox = document.getElementById('error-display');
             const resultsBox = document.getElementById('results-display');
             const stepsContainer = document.getElementById('route-steps-container');
-            const mapDiv = document.getElementById('map');
+            const canvasWrapper = document.getElementById('canvas-wrapper');
+            const canvas = document.getElementById('vector-canvas');
+            const ctx = canvas.getContext('2d');
+            
             errorBox.style.display = 'none';
             const villesExtraites = extraireCoordonnees(textarea.value);
             const cleSaisie = document.getElementById('api-key-input').value.trim();
@@ -210,36 +211,53 @@ def obtenir_page_accueil():
                 document.getElementById('metric-distance').textContent = "📏 " + data.metriques.distance_matrice_km + " km au total";
                 document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
                 stepsContainer.innerHTML = '';
-                mapDiv.style.display = 'block';
+                canvasWrapper.style.display = 'block';
                 
-                if (!carteLeaflet) {
-                    carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 11);
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '&copy; OpenStreetMap contributors'
-                    }).addTo(carteLeaflet);
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                let lons = villesExtraites.map(p => p[0]);
+                let lats = villesExtraites.map(p => p[1]);
+                let minLon = Math.min(...lons), maxLon = Math.max(...lons);
+                let minLat = Math.min(...lats), maxLat = Math.max(...lats);
+                let padding = 50;
+                
+                function mapX(lon) {
+                    if (maxLon === minLon) return canvas.width / 2;
+                    return padding + ((lon - minLon) / (maxLon - minLon)) * (canvas.width - padding * 2);
                 }
-                if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
-                calqueTraces = L.featureGroup().addTo(carteLeaflet);
+                function mapY(lat) {
+                    if (maxLat === minLat) return canvas.height / 2;
+                    return canvas.height - (padding + ((lat - minLat) / (maxLat - minLat)) * (canvas.height - padding * 2));
+                }
                 
                 data.rapport_logistique.vehicules.forEach((camion) => {
-                    const sousListeCoords = [];
-                    camion.itineraire.forEach((etape) => {
-                        const lon = etape.coordonnees[0];
-                        const lat = etape.coordonnees[1];
-                        const latLng = [lat, lon];
-                        sousListeCoords.push(latLng);
+                    ctx.beginPath();
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = '#f59e0b';
+                    camion.itineraire.forEach((etape, index) => {
+                        let x = mapX(etape.coordonnees[0]);
+                        let y = mapY(etape.coordonnees[1]);
+                        if (index === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
                         
                         const div = document.createElement('div');
                         div.className = 'route-step';
-                        div.innerHTML = '<div class="step-number">' + etape.etape + '</div><div><strong>Véhicule #' + camion.id_vehicule + ' - Arrêt #' + etape.index_vrai + '</strong> <br><span style="color:#a8a29e; font-size:12px;">Arrivée estimée: ' + etape.heure_arrivee_estimee + 'h (Fenêtre: ' + etape.fenetre_horaire_requise + ')</span></div>';
+                        div.innerHTML = '<div class="step-number">' + etape.etape + '</div><div><strong>Véhicule #' + camion.id_vehicule + ' - Arrêt #' + etape.index_vrai + '</strong> <br><span style="color:#a8a29e; font-size:12px;">Arrivée: ' + etape.heure_arrivee_estimee + 'h (Fenêtre: ' + etape.fenetre_horaire_requise + ')</span></div>';
                         stepsContainer.appendChild(div);
-                        L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Véhicule " + camion.id_vehicule + "</b><br>Arrivée: " + etape.heure_arrivee_estimee + "h");
                     });
-                    if (sousListeCoords.length > 0) {
-                        L.polyline(sousListeCoords, { color: '#f59e0b', weight: 4, opacity: 0.85 }).addTo(calqueTraces);
-                    }
+                    ctx.stroke();
                 });
-                carteLeaflet.fitBounds(calqueTraces.getBounds());
+                
+                villesExtraites.forEach((p, idx) => {
+                    let x = mapX(p[0]);
+                    let y = mapY(p[1]);
+                    ctx.beginPath();
+                    ctx.arc(x, y, idx === dptSaisi ? 8 : 5, 0, 2 * Math.PI);
+                    ctx.fillStyle = idx === dptSaisi ? '#ef4444' : '#ffffff';
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = '#0c0a09';
+                    ctx.stroke();
+                });
                 resultsBox.style.display = 'block';
             } catch (err) {
                 errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
@@ -268,6 +286,13 @@ async def tableau_de_bord_serveur(token_visuel: str = ""):
 async def vue_panneau_admin_serveur(cle_generee: str = ""):
     return HTMLResponse(content=obtenir_panneau_admin(cle_generee))
 
+@app.get("/terms", response_class=HTMLResponse)
+async def conditions_utilisation_serveur():
+    return HTMLResponse(content="<html><body><h1>Conditions Générales</h1><p>Vecteurs requis : [Longitude, Latitude, HeureMin, HeureMax]</p></body></html>")
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def politique_confidentialite_serveur():
+    return HTMLResponse(content="<html><body><h1>Confidentialité</h1><p>Traitement volatile en mémoire vive (RAM).</p></body></html>")
 @app.post("/admin-panel/generer")
 async def action_generer_cle_serveur(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
@@ -282,14 +307,6 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
     }
     token_client = jwt.encode(payload, PHRASE_SECRETE_TIUN, algorithm="HS256")
     return await vue_panneau_admin_serveur(cle_generee=token_client)
-
-@app.get("/terms", response_class=HTMLResponse)
-async def conditions_utilisation_serveur():
-    return HTMLResponse(content="<html><body><h1>Conditions Générales</h1><p>Vecteurs requis : [Longitude, Latitude, HeureMin, HeureMax]</p></body></html>")
-
-@app.get("/privacy", response_class=HTMLResponse)
-async def politique_confidentialite_serveur():
-    return HTMLResponse(content="<html><body><h1>Confidentialité</h1><p>Traitement volatile en mémoire vive (RAM).</p></body></html>")
 
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
