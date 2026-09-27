@@ -264,15 +264,18 @@ def obtenir_page_accueil():
                 errorBox.style.display = 'block';
             } finally {
                 btn.disabled = false;
-                btnLoader.style.display = 'none';
+                btnLoader.style.none = 'none';
                 btnText.textContent = "⚡ Exécuter le routage vectoriel";
             }
         }
     </script>
 </body>
 </html>"""
-def obtenir_tableau_bord(t): return f"<html><body><h1>Dashboard</h1><p>Token: {t}</p></body></html>"
-def obtenir_panneau_admin(c): return f"<html><body><h1>Admin</h1><p>Clé: {c}</p></body></html>"
+def obtenir_tableau_bord(t): 
+    return f"<html><body><h1>Dashboard</h1><p>Token: {t}</p></body></html>"
+
+def obtenir_panneau_admin(c): 
+    return f"<html><body><h1>Admin</h1><p>Clé: {c}</p></body></html>"
 
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_serveur():
@@ -285,14 +288,6 @@ async def tableau_de_bord_serveur(token_visuel: str = ""):
 @app.get("/admin-panel", response_class=HTMLResponse)
 async def vue_panneau_admin_serveur(cle_generee: str = ""):
     return HTMLResponse(content=obtenir_panneau_admin(cle_generee))
-
-@app.get("/terms", response_class=HTMLResponse)
-async def conditions_utilisation_serveur():
-    return HTMLResponse(content="<html><body><h1>Conditions Générales</h1><p>Vecteurs requis : [Longitude, Latitude, HeureMin, HeureMax]</p></body></html>")
-
-@app.get("/privacy", response_class=HTMLResponse)
-async def politique_confidentialite_serveur():
-    return HTMLResponse(content="<html><body><h1>Confidentialité</h1><p>Traitement volatile en mémoire vive (RAM).</p></body></html>")
 @app.post("/admin-panel/generer")
 async def action_generer_cle_serveur(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
@@ -308,6 +303,13 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
     token_client = jwt.encode(payload, PHRASE_SECRETE_TIUN, algorithm="HS256")
     return await vue_panneau_admin_serveur(cle_generee=token_client)
 
+@app.get("/terms", response_class=HTMLResponse)
+async def conditions_utilisation_serveur():
+    return HTMLResponse(content="<html><body><h1>Conditions Générales</h1><p>Vecteurs requis : [Longitude, Latitude, HeureMin, HeureMax]</p></body></html>")
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def politique_confidentialite_serveur():
+    return HTMLResponse(content="<html><body><h1>Confidentialité</h1><p>Traitement volatile en mémoire vive (RAM).</p></body></html>")
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=403, detail="Clé API absente. Connectez-vous sur le Tableau.")
