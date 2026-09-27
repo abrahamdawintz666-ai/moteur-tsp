@@ -18,7 +18,6 @@ import datetime
 import time
 from typing import List, Tuple
 
-# Configuration de votre identifiant unique Tiun en mode vivant
 TIUN_SNIPPET_ID = "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR"
 PHRASE_SECRETE_TIUN = "CAP_HAITIEN_CLE_SECRETE_4_FORCES_2026"
 
@@ -38,259 +37,234 @@ IPS_ESSAIS_UTILISES = set()
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
     capacite_vehicule: int = 10
-    index_depart: int = 0  # Nouveau paramètre Premium unifié
-
+    index_depart: int = 0
 def obtenir_page_accueil():
-    return """
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <link rel="stylesheet" href="https://unpkg.com" />
-        <style>
-            :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
-            body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
-            .navbar { display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; border-bottom: 1px solid var(--border); background: #141210; }
-            .brand { font-size: 22px; font-weight: 800; color: var(--accent); display: flex; align-items: center; gap: 8px; text-decoration: none; }
-            .nav-links a { color: var(--text-muted); text-decoration: none; margin-left: 25px; font-size: 14px; transition: 0.2s; }
-            .nav-links a:hover { color: var(--accent); }
-            .nav-links .btn-nav { background: var(--accent); color: var(--bg); padding: 8px 16px; border-radius: 6px; font-weight: bold; text-decoration: none; }
-            .main-container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
-            .hero-section { text-align: center; margin-bottom: 35px; }
-            .hero-section h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 10px; }
-            .hero-section p { color: var(--text-muted); font-size: 16px; max-width: 600px; margin: auto; }
-            .app-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 25px; }
-            .auth-table { border: 1px dashed var(--accent); background: rgba(245, 158, 11, 0.02); padding: 20px; border-radius: 12px; margin-bottom: 25px; }
-            .auth-input-wrapper { display: flex; gap: 10px; margin-top: 10px; }
-            .api-input { flex: 1; padding: 12px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; font-family: monospace; font-size: 14px; }
-            .premium-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; background: #141210; padding: 15px; border-radius: 10px; border: 1px solid var(--border); }
-            .setting-box input { width: 100%; padding: 10px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; box-sizing: border-box; }
-            label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
-            textarea { width: 100%; height: 140px; background: #0c0a09; border: 1px solid var(--border); border-radius: 10px; color: #fff; padding: 15px; font-family: monospace; font-size: 14px; box-sizing: border-box; resize: vertical; }
-            .textarea-hint { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 5px; }
-            .btn-action { background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; border: none; padding: 15px 30px; border-radius: 10px; width: 100%; margin-top: 20px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; }
-            .btn-action:hover { background: var(--accent-hover); }
-            #map { width: 100%; height: 400px; border-radius: 12px; margin-top: 25px; border: 1px solid var(--border); display: none; z-index: 1; }
-            .results-box { margin-top: 30px; background: #141210; border: 1px solid var(--border); border-radius: 10px; padding: 20px; display: none; }
-            .results-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
-            .metric-badge { background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--accent); font-weight: bold; }
-            .route-list { display: flex; flex-direction: column; gap: 8px; font-family: monospace; font-size: 14px; max-height: 250px; overflow-y: auto; }
-            .route-step { display: flex; align-items: center; gap: 10px; background: var(--card); padding: 10px; border-radius: 6px; }
-            .step-number { background: var(--accent); color: var(--bg); font-weight: bold; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; }
-            .error-box { margin-top: 20px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #fca5a5; padding: 15px; border-radius: 10px; display: none; }
-            .loader { border: 3px solid #333; border-top: 3px solid var(--accent); border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: none; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        </style>
-    </head>
-    """
-
-    return """
-    <body>
-        <nav class="navbar">
-            <a href="/" class="brand">🐜 SwiftRoute Premium</a>
-            <div class="nav-links">
-                <a href="/terms">Conditions</a>
-                <a href="/privacy">Confidentialité</a>
-                <a href="/dashboard" class="btn-nav">Acheter une Licence</a>
+    return """<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com" />
+    <style>
+        :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; border-bottom: 1px solid var(--border); background: #141210; }
+        .brand { font-size: 22px; font-weight: 800; color: var(--accent); display: flex; align-items: center; gap: 8px; text-decoration: none; }
+        .nav-links a { color: var(--text-muted); text-decoration: none; margin-left: 25px; font-size: 14px; transition: 0.2s; }
+        .nav-links a:hover { color: var(--accent); }
+        .nav-links .btn-nav { background: var(--accent); color: var(--bg); padding: 8px 16px; border-radius: 6px; font-weight: bold; text-decoration: none; }
+        .main-container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
+        .hero-section { text-align: center; margin-bottom: 35px; }
+        .hero-section h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 10px; }
+        .hero-section p { color: var(--text-muted); font-size: 16px; max-width: 600px; margin: auto; }
+        .app-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 25px; }
+        .auth-table { border: 1px dashed var(--accent); background: rgba(245, 158, 11, 0.02); padding: 20px; border-radius: 12px; margin-bottom: 25px; }
+        .auth-input-wrapper { display: flex; gap: 10px; margin-top: 10px; }
+        .api-input { flex: 1; padding: 12px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; font-family: monospace; font-size: 14px; }
+        .premium-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; background: #141210; padding: 15px; border-radius: 10px; border: 1px solid var(--border); }
+        .setting-box input { width: 100%; padding: 10px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; box-sizing: border-box; }
+        label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
+        textarea { width: 100%; height: 140px; background: #0c0a09; border: 1px solid var(--border); border-radius: 10px; color: #fff; padding: 15px; font-family: monospace; font-size: 14px; box-sizing: border-box; resize: vertical; }
+        .textarea-hint { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+        .btn-action { background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; border: none; padding: 15px 30px; border-radius: 10px; width: 100%; margin-top: 20px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; }
+        .btn-action:hover { background: var(--accent-hover); }
+        #map { width: 100%; height: 400px; border-radius: 12px; margin-top: 25px; border: 1px solid var(--border); display: none; z-index: 1; }
+        .results-box { margin-top: 30px; background: #141210; border: 1px solid var(--border); border-radius: 10px; padding: 20px; display: none; }
+        .results-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
+        .metric-badge { background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--accent); font-weight: bold; }
+        .route-list { display: flex; flex-direction: column; gap: 8px; font-family: monospace; font-size: 14px; max-height: 250px; overflow-y: auto; }
+        .route-step { display: flex; align-items: center; gap: 10px; background: var(--card); padding: 10px; border-radius: 6px; }
+        .step-number { background: var(--accent); color: var(--bg); font-weight: bold; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+        .error-box { margin-top: 20px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #fca5a5; padding: 15px; border-radius: 10px; display: none; }
+        .loader { border: 3px solid #333; border-top: 3px solid var(--accent); border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>"""
+    return """<body>
+    <nav class="navbar">
+        <a href="/" class="brand">🐜 SwiftRoute Premium</a>
+        <div class="nav-links">
+            <a href="/terms">Conditions</a>
+            <a href="/privacy">Confidentialité</a>
+            <a href="/dashboard" class="btn-nav">Acheter une Licence</a>
+        </div>
+    </nav>
+    <div class="main-container">
+        <div class="hero-section">
+            <h1>Cartographie & Routage Haute Performance</h1>
+            <p>Système de projection planaire couplé à une visualisation cartographique interactive en temps réel.</p>
+        </div>
+        <div class="app-card">
+            <div class="auth-table">
+                <h3>🔑 Connexion Client</h3>
+                <div class="auth-input-wrapper">
+                    <input type="text" id="api-key-input" class="api-input" placeholder="Insérez votre jeton X-API-KEY ici pour débloquer le serveur...">
+                </div>
             </div>
-        </nav>
-        <div class="main-container">
-            <div class="hero-section">
-                <h1>Cartographie & Routage Haute Performance</h1>
-                <p>Système de projection planaire couplé à une visualisation cartographique interactive en temps réel.</p>
+            <div class="premium-settings-grid">
+                <div class="setting-box">
+                    <label for="capacity-input">📦 Capacité Max par Véhicule (VRP) :</label>
+                    <input type="number" id="capacity-input" value="10" min="1" max="100">
+                </div>
+                <div class="setting-box">
+                    <label for="start-index-input">🏢 Index Point de Départ (Dépôt) :</label>
+                    <input type="number" id="start-index-input" value="0" min="0">
+                </div>
             </div>
-            <div class="app-card">
-                <div class="auth-table">
-                    <h3>🔑 Connexion Client</h3>
-                    <div class="auth-input-wrapper">
-                        <input type="text" id="api-key-input" class="api-input" placeholder="Insérez votre jeton X-API-KEY ici pour débloquer le serveur...">
+            <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques :</label>
+            <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521\n-72.2035, 19.7542\n-72.2056, 19.7510"></textarea>
+            <div class="textarea-hint">
+                <span>Format attendu : [Longitude, Latitude]</span>
+                <span id="line-counter">0 point détecté</span>
+            </div>
+            <button id="submit-btn" class="btn-action" onclick="analyserEtCalculer()">
+                <div id="btn-loader" class="loader"></div>
+                <span id="btn-text">⚡ Exécuter le routage vectoriel</span>
+            </button>
+            <div id="error-display" class="error-box"></div>
+            <div id="map"></div>
+            <div id="results-display" class="results-box">
+                <div class="results-header">
+                    <h3 style="margin: 0; font-size: 18px;">🎯 Feuille de Route Optimisée</h3>
+                    <div style="display: flex; gap: 5px;">
+                        <span id="metric-villes" class="metric-badge">0 points</span>
+                        <span id="metric-distance" class="metric-badge">0 km</span>
+                        <span id="metric-temps" class="metric-badge" style="color: #22c55e;">0.00s</span>
                     </div>
                 </div>
-                <div class="premium-settings-grid">
-                    <div class="setting-box">
-                        <label for="capacity-input">📦 Capacité Max par Véhicule (VRP) :</label>
-                        <input type="number" id="capacity-input" value="10" min="1" max="100">
-                    </div>
-                    <div class="setting-box">
-                        <label for="start-index-input">🏢 Index Point de Départ (Dépôt) :</label>
-                        <input type="number" id="start-index-input" value="0" min="0">
-                    </div>
-                </div>
-                <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques :</label>
-                <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521\\n-72.2035, 19.7542\\n-72.2056, 19.7510"></textarea>
-                <div class="textarea-hint">
-                    <span>Format attendu : [Longitude, Latitude]</span>
-                    <span id="line-counter">0 point détecté</span>
-                </div>
-                <button id="submit-btn" class="btn-action" onclick="analyserEtCalculer()">
-                    <div id="btn-loader" class="loader"></div>
-                    <span id="btn-text">⚡ Exécuter le routage vectoriel</span>
-                </button>
-                <div id="error-display" class="error-box"></div>
-                <div id="map"></div>
-                <div id="results-display" class="results-box">
-                    <div class="results-header">
-                        <h3 style="margin: 0; font-size: 18px;">🎯 Feuille de Route Optimisée</h3>
-                        <div style="display: flex; gap: 5px;">
-                            <span id="metric-villes" class="metric-badge">0 points</span>
-                            <span id="metric-distance" class="metric-badge">0 km</span>
-                            <span id="metric-temps" class="metric-badge" style="color: #22c55e;">0.00s</span>
-                        </div>
-                    </div>
-                    <div id="route-steps-container" class="route-list"></div>
-                </div>
+                <div id="route-steps-container" class="route-list"></div>
             </div>
         </div>
-        <script src="https://unpkg.com"></script>
-        <script>
-            const textarea = document.getElementById('coordonnees-input');
-            const lineCounter = document.getElementById('line-counter');
-            let carteLeaflet = null;
-            let calqueTraces = null;
-            textarea.addEventListener('input', () => {
-                const points = extraireCoordonnees(textarea.value);
-                lineCounter.textContent = points.length + " point(s) valide(s) détecté(s)";
+    </div>
+    <script src="https://unpkg.com"></script>
+    <script>
+        const textarea = document.getElementById('coordonnees-input');
+        const lineCounter = document.getElementById('line-counter');
+        let carteLeaflet = null;
+        let calqueTraces = null;
+        textarea.addEventListener('input', () => {
+            const points = extraireCoordonnees(textarea.value);
+            lineCounter.textContent = points.length + " point(s) valide(s) détecté(s)";
+        });
+        function extraireCoordonnees(texte) {
+            const lignes = texte.split('\\n');
+            const points = [];
+            lignes.forEach(ligne => {
+                const nettoyage = ligne.replace(/[\\[\\]{}()]/g, '').trim();
+                if (!nettoyage) return;
+                const valeurs = nettoyage.split(/[\\s,;\\t]+/).map(Number).filter(n => !isNaN(n));
+                if (valeurs.length >= 2) { points.push([valeurs[0], valeurs[1]]); }
             });
-            function extraireCoordonnees(texte) {
-                const lignes = texte.split('\\n');
-                const points = [];
-                lignes.forEach(ligne => {
-                    const nettoyage = ligne.replace(/[\\\\[\\]{}()]/g, '').trim();
-                    if (!nettoyage) return;
-                    const valeurs = nettoyage.split(/[\\s,;\\t]+/).map(Number).filter(n => !isNaN(n));
-                    if (valeurs.length >= 2) { points.push([valeurs[0], valeurs[1]]); }
+            return points;
+        }
+        async function analyserEtCalculer() {
+            const btn = document.getElementById('submit-btn');
+            const btnText = document.getElementById('btn-text');
+            const btnLoader = document.getElementById('btn-loader');
+            const errorBox = document.getElementById('error-display');
+            const resultsBox = document.getElementById('results-display');
+            const stepsContainer = document.getElementById('route-steps-container');
+            const mapDiv = document.getElementById('map');
+            errorBox.style.display = 'none';
+            const villesExtraites = extraireCoordonnees(textarea.value);
+            const cleSaisie = document.getElementById('api-key-input').value.trim();
+            const capaciteSaisie = parseInt(document.getElementById('capacity-input').value) || 10;
+            const dptSaisi = parseInt(document.getElementById('start-index-input').value) || 0;
+            if (!cleSaisie) { window.location.href = "/dashboard"; return; }
+            if (villesExtraites.length < 3) {
+                errorBox.textContent = "❌ Données insuffisantes : Veuillez fournir au moins 3 coordonnées géographiques.";
+                errorBox.style.display = 'block';
+                return;
+            }
+            btn.disabled = true;
+            btnLoader.style.display = 'block';
+            btnText.textContent = "Calcul vectoriel spatial en cours...";
+            try {
+                const reponse = await fetch('/api/v1/route/optimize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-API-KEY': cleSaisie },
+                    body: JSON.stringify({ villes: villesExtraites, capacite_vehicule: capaciteSaisie, index_depart: dptSaisi })
                 });
-                return points;
-            }
-            async function analyserEtCalculer() {
-                const btn = document.getElementById('submit-btn');
-                const btnText = document.getElementById('btn-text');
-                const btnLoader = document.getElementById('btn-loader');
-                const errorBox = document.getElementById('error-display');
-                const resultsBox = document.getElementById('results-display');
-                const stepsContainer = document.getElementById('route-steps-container');
-                const mapDiv = document.getElementById('map');
-                errorBox.style.display = 'none';
-                const villesExtraites = extraireCoordonnees(textarea.value);
-                const cleSaisie = document.getElementById('api-key-input').value.trim();
-                const capaciteSaisie = parseInt(document.getElementById('capacity-input').value) || 10;
-                const dptSaisi = parseInt(document.getElementById('start-index-input').value) || 0;
-                if (!cleSaisie) { window.location.href = "/dashboard"; return; }
-                if (villesExtraites.length < 3) {
-                    errorBox.textContent = "❌ Données insuffisantes : Veuillez fournir au moins 3 coordonnées géographiques.";
-                    errorBox.style.display = 'block';
-                    return;
+                const data = await reponse.json();
+                if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
+                document.getElementById('metric-villes').textContent = data.metriques.villes_traitees + " points";
+                document.getElementById('metric-distance').textContent = data.metriques.distance_matrice_km + " km";
+                document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
+                stepsContainer.innerHTML = '';
+                mapDiv.style.display = 'block';
+                if (!carteLeaflet) {
+                    carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(carteLeaflet);
                 }
-                btn.disabled = true;
-                btnLoader.style.display = 'block';
-                btnText.textContent = "Calcul vectoriel spatial en cours...";
-                try {
-                    const reponse = await fetch('/api/v1/route/optimize', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-API-KEY': cleSaisie },
-                        body: JSON.stringify({ villes: villesExtraites, capacite_vehicule: capaciteSaisie, index_depart: dptSaisi })
-                    });
-                    const data = await reponse.json();
-                    if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
-                    document.getElementById('metric-villes').textContent = data.metriques.villes_traitees + " points";
-                    document.getElementById('metric-distance').textContent = data.metriques.distance_matrice_km + " km";
-                    document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
-                    stepsContainer.innerHTML = '';
-                    mapDiv.style.display = 'block';
-                    if (!carteLeaflet) {
-                        carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
-                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(carteLeaflet);
-                    }
-                    if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
-                    calqueTraces = L.featureGroup().addTo(carteLeaflet);
-                    const listeCoordonneesOrdonnees = [];
-                    data.ordonnancement_indices.forEach((indexVille, ordre) => {
-                        const coord = villesExtraites[indexVille];
-                        const latLng = [coord[1], coord[0]];
-                        listeCoordonneesOrdonnees.push(latLng);
-                        const div = document.createElement('div');
-                        div.className = 'route-step';
-                        div.innerHTML = '<div class="step-number">' + (ordre + 1) + '</div><div><strong>Arrêt #' + indexVille + '</strong> <span style="color:#888; font-size:12px;">(Lon: ' + coord[0] + ', Lat: ' + coord[1] + ')</span></div>';
-                        stepsContainer.appendChild(div);
-                        L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Arrêt " + (ordre + 1) + "</b><br>Index: #" + indexVille);
-                    });
-                    L.polyline(listeCoordonneesOrdonnees, { color: '#f59e0b', weight: 4, opacity: 0.8 }).addTo(calqueTraces);
-                    carteLeaflet.fitBounds(calqueTraces.getBounds());
-                    resultsBox.style.display = 'block';
-                } catch (err) {
-                    errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
-                    errorBox.style.display = 'block';
-                } finally {
-                    btn.disabled = false;
-                    btnLoader.style.display = 'none';
-                    btnText.textContent = "⚡ Exécuter le routage vectoriel";
-                }
+                if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
+                calqueTraces = L.featureGroup().addTo(carteLeaflet);
+                const listeCoordonneesOrdonnees = [];
+                data.ordonnancement_indices.forEach((indexVille, ordre) => {
+                    const coord = villesExtraites[indexVille];
+                    const latLng = [coord[1], coord[0]];
+                    listeCoordonneesOrdonnees.push(latLng);
+                    const div = document.createElement('div');
+                    div.className = 'route-step';
+                    div.innerHTML = '<div class="step-number">' + (ordre + 1) + '</div><div><strong>Arrêt #' + indexVille + '</strong> <span style="color:#888; font-size:12px;">(Lon: ' + coord[0] + ', Lat: ' + coord[1] + ')</span></div>';
+                    stepsContainer.appendChild(div);
+                    L.marker(latLng).addTo(calqueTraces).bindPopup("<b>Arrêt " + (ordre + 1) + "</b><br>Index: #" + indexVille);
+                });
+                L.polyline(listeCoordonneesOrdonnees, { color: '#f59e0b', weight: 4, opacity: 0.8 }).addTo(calqueTraces);
+                carteLeaflet.fitBounds(calqueTraces.getBounds());
+                resultsBox.style.display = 'block';
+            } catch (err) {
+                errorBox.textContent = "⚠️ Refus de l'infrastructure : " + err.message;
+                errorBox.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btnLoader.style.display = 'none';
+                btnText.textContent = "⚡ Exécuter le routage vectoriel";
             }
-        </script>
-    </body>
-    </html>
-    """
-
+        }
+    </script>
+</body>
+</html>"""
 def obtenir_panneau_admin(cle_generee: str):
-    formulaire = """
-    <html>
-        <head><title>AntStrike Admin Panel</title></head>
-        <body style="font-family: Arial; background-color: #09090b; color: #fff; padding: 30px; text-align: center;">
-            <div style="max-width: 500px; margin: auto; background: #18181b; padding: 25px; border-radius: 10px; border: 1px solid #3f3f46; text-align: left;">
-                <h2 style="color: #f59e0b; margin-top: 0;">🎛&ufe0f; Console Privée Abraham</h2>
-                <form action="/admin-panel/generer" method="post">
-                    <label style="color:#aaa;">Admin :</label><input type="text" name="username" style="width:100%; padding:10px; margin-bottom:10px;" required>
-                    <label style="color:#aaa;">Password :</label><input type="password" name="password" style="width:100%; padding:10px; margin-bottom:10px;" required>
-                    <label style="color:#aaa;">Client :</label><input type="text" name="client_name" style="width:100%; padding:10px; margin-bottom:15px;" required>
-                    <input type="hidden" name="duration" value="30">
-                    <button type="submit" style="background:#f59e0b; color:black; padding:12px; width:100%; border:none; font-weight:bold; border-radius:6px; cursor:pointer;">⚡ Émettre le Jeton de Clé API</button>
-                </form>
-    """
-    fin = """
-            </div>
-        </body>
-    </html>
-    """
+    formulaire = """<html><head><title>AntStrike Admin Panel</title></head>
+    <body style="font-family: Arial; background-color: #09090b; color: #fff; padding: 30px; text-align: center;">
+        <div style="max-width: 500px; margin: auto; background: #18181b; padding: 25px; border-radius: 10px; border: 1px solid #3f3f46; text-align: left;">
+            <h2 style="color: #f59e0b; margin-top: 0;">🎛&ufe0f; Console Privée Abraham</h2>
+            <form action="/admin-panel/generer" method="post">
+                <label style="color:#aaa;">Admin :</label><input type="text" name="username" style="width:100%; padding:10px; margin-bottom:10px;" required>
+                <label style="color:#aaa;">Password :</label><input type="password" name="password" style="width:100%; padding:10px; margin-bottom:10px;" required>
+                <label style="color:#aaa;">Client :</label><input type="text" name="client_name" style="width:100%; padding:10px; margin-bottom:15px;" required>
+                <input type="hidden" name="duration" value="30">
+                <button type="submit" style="background:#f59e0b; color:black; padding:12px; width:100%; border:none; font-weight:bold; border-radius:6px; cursor:pointer;">⚡ Émettre le Jeton de Clé API</button>
+            </form>"""
+    fin = "</div></body></html>"
     if cle_generee:
         bloc_cle = f"<div style='background:#27272a; padding:15px; margin-top:20px; border-radius:6px; word-break:break-all; font-family:monospace; color:#22c55e; border:1px dashed #22c55e;'><strong>Clé Générée :</strong><br><br>{cle_generee}</div>"
         return formulaire + bloc_cle + fin
     return formulaire + fin
 
 def obtenir_tableau_bord(token_visuel: str = ""):
-    base_url = "https://tiun.io"
-    url_tiun = base_url + "checkout?id=" + TIUN_SNIPPET_ID
-    formulaire_tiun = f"""
-    <div style="background: #292524; border: 1px solid #f59e0b; padding: 25px; border-radius: 12px; text-align: center;">
+    url_tiun = "https://tiun.io" + TIUN_SNIPPET_ID
+    formulaire_tiun = f"""<div style="background: #292524; border: 1px solid #f59e0b; padding: 25px; border-radius: 12px; text-align: center;">
         <h3 style="margin-top:0; color:#f59e0b;">💳 Activation Commerciale Sécurisée via Tiun</h3>
         <p style="font-size:14px; color:#a8a29e;">Débloquez l'accès à l'API Premium logistique SwiftRoute (1500 USD / mois).</p>
         <button style="background:#f59e0b; color:black; font-weight:bold; border:none; padding:14px 28px; border-radius:8px; margin-top:15px; cursor:pointer;" onclick="window.location.href='{url_tiun}'">⚡ Activer mon Abonnement sur Tiun.io</button>
-    </div>
-    """
+    </div>"""
     if token_visuel:
-        contenu = f"""
-        <div style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
+        contenu = f"""<div style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
             <h3 style="margin-top:0; color:#22c55e;">✓ Jeton d'infrastructure Tiun valide</h3>
             <p style="font-size:14px; color:#a8a29e;">Collez ce jeton dans le tableau de connexion de la page d'accueil :</p>
             <div style="background:#0c0a09; border:1px dashed #22c55e; padding:15px; color:#22c55e; font-family:monospace; word-break:break-all; border-radius:6px;">{token_visuel}</div>
-        </div>
-        """
+        </div>"""
     else:
         contenu = formulaire_tiun
-
-    return f"""
-    <html>
-        <head><title>Espace Client - SwiftRoute</title></head>
-        <body style="font-family: Arial; background-color: #0c0a09; color: #f5f5f4; padding: 50px 20px;">
-            <div style="max-width: 650px; margin: auto; background: #1c1917; border: 1px solid #2e2a24; padding: 30px; border-radius: 12px;">
-                <h2 style="color:#f59e0b; border-bottom:1px solid #2e2a24; padding-bottom:10px;">📊 Console de Facturation</h2><br>
-                {contenu}
-            </div>
-        </body>
-    </html>
-    """
-
+    return f"""<html><head><title>Espace Client - SwiftRoute</title></head>
+    <body style="font-family: Arial; background-color: #0c0a09; color: #f5f5f4; padding: 50px 20px;">
+        <div style="max-width: 650px; margin: auto; background: #1c1917; border: 1px solid #2e2a24; padding: 30px; border-radius: 12px;">
+            <h2 style="color:#f59e0b; border-bottom:1px solid #2e2a24; padding-bottom:10px;">📊 Console de Facturation</h2><br>
+            {contenu}
+        </div>
+    </body></html>"""
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_serveur():
     return HTMLResponse(content=obtenir_page_accueil())
@@ -355,7 +329,6 @@ async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depe
         },
         "ordonnancement_indices": route_ordonnee
     }
-
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 
