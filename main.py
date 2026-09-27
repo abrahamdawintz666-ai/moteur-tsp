@@ -10,6 +10,7 @@ Author: Abraham — Cap-Haïtien 2026 / Version Élite Premium Interactive
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Form
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import jwt
 import random
@@ -30,6 +31,15 @@ app = FastAPI(
     security=[{API_KEY_NAME: []}]
 )
 
+# Configuration CORS essentielle pour le réseau Render
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 NOM_UTILISATEUR_ADMIN = "Abraham"
 MOT_DE_PASSE_ADMIN = "AntStrike_Cap2026!"
 IPS_ESSAIS_UTILISES = set()
@@ -39,7 +49,6 @@ class RequeteCalcul(BaseModel):
     capacite_vehicule: int = 10
     index_depart: int = 0
 def obtenir_page_accueil():
-    # Déclaration en chaîne brute (r""") pour interdire à Python de corrompre le texte HTML
     return r"""<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -83,8 +92,7 @@ def obtenir_page_accueil():
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>"""
-    # Utilisation du format r""" brut pour encapsuler les expressions régulières JavaScript sans interférence Python
-    return r"""<body class="notranslate">
+    return obtenir_page_accueil() + r"""<body class="notranslate">
     <nav class="navbar">
         <a href="/" class="brand">🐜 SwiftRoute Premium</a>
         <div class="nav-links">
@@ -206,8 +214,8 @@ def obtenir_page_accueil():
                 
                 if (!carteLeaflet) {
                     carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 11);
-                    L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png', {
-                        attribution: '&copy; CartoDB &copy; OpenStreetMap'
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '&copy; OpenStreetMap contributors'
                     }).addTo(carteLeaflet);
                 }
                 if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
@@ -245,6 +253,9 @@ def obtenir_page_accueil():
     </script>
 </body>
 </html>"""
+def obtenir_tableau_bord(t): return f"<html><body><h1>Dashboard</h1><p>Token: {t}</p></body></html>"
+def obtenir_panneau_admin(c): return f"<html><body><h1>Admin</h1><p>Clé: {c}</p></body></html>"
+
 @app.get("/", response_class=HTMLResponse)
 async def page_accueil_serveur():
     return HTMLResponse(content=obtenir_page_accueil())
@@ -392,7 +403,6 @@ def calculer_route_precision(villes: List[Tuple[float, float, float, float]], ca
             depot = Q / max(dist, 0.01)
             for k in range(len(route) - 1): pheromones[route[k]][route[k+1]] += depot
     return meilleure_route, meilleure_distance, meilleur_historique_temps
-
 def simuler_fourmi_vrptw(nb, dists, phero, capacite_max, depot_index, donnees_villes):
     path = [depot_index]
     villes_visitees = set([depot_index])
