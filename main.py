@@ -37,7 +37,7 @@ IPS_ESSAIS_UTILISES = set()
 
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
-    capacite_vehicule: int = 10  # Capacité dynamique passée en paramètre premium
+    capacite_vehicule: int = 10
 
 def obtenir_page_accueil():
     return """
@@ -47,7 +47,6 @@ def obtenir_page_accueil():
         <meta charset="UTF-8">
         <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <!-- Importation des styles CSS de la carte Leaflet -->
         <link rel="stylesheet" href="https://unpkg.com" />
         <style>
             :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
@@ -57,29 +56,22 @@ def obtenir_page_accueil():
             .nav-links a { color: var(--text-muted); text-decoration: none; margin-left: 25px; font-size: 14px; transition: 0.2s; }
             .nav-links a:hover { color: var(--accent); }
             .nav-links .btn-nav { background: var(--accent); color: var(--bg); padding: 8px 16px; border-radius: 6px; font-weight: bold; text-decoration: none; }
-            
             .main-container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
             .hero-section { text-align: center; margin-bottom: 35px; }
             .hero-section h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 10px; }
             .hero-section p { color: var(--text-muted); font-size: 16px; max-width: 600px; margin: auto; }
-            
             .app-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 25px; }
             .auth-table { border: 1px dashed var(--accent); background: rgba(245, 158, 11, 0.02); padding: 20px; border-radius: 12px; margin-bottom: 25px; }
             .auth-input-wrapper { display: flex; gap: 10px; margin-top: 10px; }
             .api-input { flex: 1; padding: 12px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; font-family: monospace; font-size: 14px; }
-            
             .premium-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; background: #141210; padding: 15px; border-radius: 10px; border: 1px solid var(--border); }
             .setting-box input { width: 100%; padding: 10px; background: #0c0a09; border: 1px solid var(--border); border-radius: 6px; color: #fff; box-sizing: border-box; }
-            
             label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
-            textarea { width: 100%; height: 140px; background: #0c0a09; border: 1px solid var(--border); border-radius: 10px; color: #fff; padding: 15px; font-family: monospace; font-size: 14px; box-sizing: border-box; }
-            
-            .btn-action { background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; border: none; padding: 15px 30px; border-radius: 10px; width: 100%; margin-top: 20px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; font-weight: bold; }
+            textarea { width: 100%; height: 140px; background: #0c0a09; border: 1px solid var(--border); border-radius: 10px; color: #fff; padding: 15px; font-family: monospace; font-size: 14px; box-sizing: border-box; resize: vertical; }
+            .textarea-hint { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+            .btn-action { background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; border: none; padding: 15px 30px; border-radius: 10px; width: 100%; margin-top: 20px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; }
             .btn-action:hover { background: var(--accent-hover); }
-            
-            /* Conteneur de carte Leaflet Premium */
             #map { width: 100%; height: 400px; border-radius: 12px; margin-top: 25px; border: 1px solid var(--border); display: none; z-index: 1; }
-            
             .results-box { margin-top: 30px; background: #141210; border: 1px solid var(--border); border-radius: 10px; padding: 20px; display: none; }
             .results-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
             .metric-badge { background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--accent); font-weight: bold; }
@@ -87,7 +79,7 @@ def obtenir_page_accueil():
             .route-step { display: flex; align-items: center; gap: 10px; background: var(--card); padding: 10px; border-radius: 6px; }
             .step-number { background: var(--accent); color: var(--bg); font-weight: bold; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; }
             .error-box { margin-top: 20px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #fca5a5; padding: 15px; border-radius: 10px; display: none; }
-            .loader { border: 3px solid #333; border-top: 3px solid var(--bg); border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: none; }
+            .loader { border: 3px solid #333; border-top: 3px solid var(--accent); border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: none; }
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         </style>
     </head>
@@ -103,13 +95,11 @@ def obtenir_page_accueil():
                 <a href="/dashboard" class="btn-nav">Acheter une Licence</a>
             </div>
         </nav>
-
         <div class="main-container">
             <div class="hero-section">
                 <h1>Cartographie & Routage Haute Performance</h1>
                 <p>Système de projection planaire couplé à une visualisation cartographique interactive en temps réel.</p>
             </div>
-
             <div class="app-card">
                 <div class="auth-table">
                     <h3>🔑 Connexion Client</h3>
@@ -117,32 +107,24 @@ def obtenir_page_accueil():
                         <input type="text" id="api-key-input" class="api-input" placeholder="Insérez votre jeton X-API-KEY ici pour débloquer le serveur...">
                     </div>
                 </div>
-
-                <!-- Paramètres Premium de configuration des Camions -->
                 <div class="premium-settings-grid">
                     <div class="setting-box">
                         <label for="capacity-input">📦 Capacité Max par Véhicule (VRP) :</label>
                         <input type="number" id="capacity-input" value="10" min="1" max="100">
                     </div>
                 </div>
-
                 <label for="coordonnees-input">📍 Copier-coller de vos coordonnées géographiques :</label>
-                <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521&#10;-72.2035, 19.7542&#10;-72.2056, 19.7510"></textarea>
+                <textarea id="coordonnees-input" placeholder="-72.2014, 19.7521\n-72.2035, 19.7542\n-72.2056, 19.7510"></textarea>
                 <div class="textarea-hint">
                     <span>Format attendu : [Longitude, Latitude]</span>
                     <span id="line-counter">0 point détecté</span>
                 </div>
-
                 <button id="submit-btn" class="btn-action" onclick="analyserEtCalculer()">
                     <div id="btn-loader" class="loader"></div>
                     <span id="btn-text">⚡ Exécuter le routage vectoriel</span>
                 </button>
-                
                 <div id="error-display" class="error-box"></div>
-                
-                <!-- Zone d'affichage Premium de la Carte Leaflet -->
                 <div id="map"></div>
-                
                 <div id="results-display" class="results-box">
                     <div class="results-header">
                         <h3 style="margin: 0; font-size: 18px;">🎯 Feuille de Route Optimisée</h3>
@@ -156,32 +138,27 @@ def obtenir_page_accueil():
                 </div>
             </div>
         </div>
-
-        <!-- Chargement des scripts JS de la carte interactive -->
         <script src="https://unpkg.com"></script>
         <script>
             const textarea = document.getElementById('coordonnees-input');
             const lineCounter = document.getElementById('line-counter');
             let carteLeaflet = null;
             let calqueTraces = null;
-            
             textarea.addEventListener('input', () => {
                 const points = extraireCoordonnees(textarea.value);
                 lineCounter.textContent = `${points.length} point(s) valide(s) détecté(s)`;
             });
-
             function extraireCoordonnees(texte) {
                 const lignes = texte.split('\\n');
                 const points = [];
                 lignes.forEach(ligne => {
-                    const nettoyage = ligne.replace(/[\[\]{}()]/g, '').trim();
+                    const nettoyage = ligne.replace(/[\\[\\]{}()]/g, '').trim();
                     if (!nettoyage) return;
-                    const valeurs = nettoyage.split(/[\s,;\t]+/).map(Number).filter(n => !isNaN(n));
+                    const valeurs = nettoyage.split(/[\\s,;\\t]+/).map(Number).filter(n => !isNaN(n));
                     if (valeurs.length >= 2) { points.push([valeurs[0], valeurs[1]]); }
                 });
                 return points;
             }
-
             async function analyserEtCalculer() {
                 const btn = document.getElementById('submit-btn');
                 const btnText = document.getElementById('btn-text');
@@ -190,72 +167,54 @@ def obtenir_page_accueil():
                 const resultsBox = document.getElementById('results-display');
                 const stepsContainer = document.getElementById('route-steps-container');
                 const mapDiv = document.getElementById('map');
-
                 errorBox.style.display = 'none';
-
                 const villesExtraites = extraireCoordonnees(textarea.value);
                 const cleSaisie = document.getElementById('api-key-input').value.trim();
                 const capaciteSaisie = parseInt(document.getElementById('capacity-input').value) || 10;
-
                 if (!cleSaisie) { window.location.href = "/dashboard"; return; }
                 if (villesExtraites.length < 3) {
                     errorBox.textContent = "❌ Données insuffisantes : Veuillez fournir au moins 3 coordonnées géographiques.";
                     errorBox.style.display = 'block';
                     return;
                 }
-
                 btn.disabled = true;
                 btnLoader.style.display = 'block';
                 btnText.textContent = "Calcul vectoriel spatial en cours...";
-
                 try {
                     const reponse = await fetch('/api/v1/route/optimize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-API-KEY': cleSaisie },
                         body: JSON.stringify({ villes: villesExtraites, capacite_vehicule: capaciteSaisie })
                     });
-
                     const data = await reponse.json();
                     if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
-
                     document.getElementById('metric-villes').textContent = `${data.metriques.villes_traitees} points`;
                     document.getElementById('metric-distance').textContent = `${data.metriques.distance_matrice_km} km`;
                     document.getElementById('metric-temps').textContent = `⏱️ ${data.metriques.temps_execution_secondes}s`;
-
                     stepsContainer.innerHTML = '';
-                    
-                    // Initialisation ou réinitialisation graphique de la carte
                     mapDiv.style.display = 'block';
                     if (!carteLeaflet) {
                         carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
-                        L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png').addTo(carteLeaflet);
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap contributors'
+                        }).addTo(carteLeaflet);
                     }
                     if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
                     calqueTraces = L.featureGroup().addTo(carteLeaflet);
-
                     const listeCoordonneesOrdonnees = [];
-
                     data.ordonnancement_indices.forEach((indexVille, ordre) => {
                         const coord = villesExtraites[indexVille];
-                        // Leaflet prend [Latitude, Longitude] pour l'affichage visuel
                         const latLng = [coord[1], coord[0]];
                         listeCoordonneesOrdonnees.push(latLng);
-
                         const div = document.createElement('div');
                         div.className = 'route-step';
                         div.innerHTML = `<div class="step-number">${ordre + 1}</div><div><strong>Arrêt #${indexVille}</strong> <span style="color:#888; font-size:12px;">(Lon: ${coord[0]}, Lat: ${coord[1]})</span></div>`;
                         stepsContainer.appendChild(div);
-
-                        // Placement des marqueurs géographiques sur la carte
                         L.marker(latLng).addTo(calqueTraces).bindPopup(`<b>Arrêt ${ordre + 1}</b><br>Index Ville: #${indexVille}`);
                     });
-
-                    // Tracé physique de la ligne de route logistique
                     L.polyline(listeCoordonneesOrdonnees, { color: '#f59e0b', weight: 4, opacity: 0.8 }).addTo(calqueTraces);
                     carteLeaflet.fitBounds(calqueTraces.getBounds());
-
                     resultsBox.style.display = 'block';
-
                 } catch (err) {
                     errorBox.textContent = `⚠️ Refus de l'infrastructure : ${err.message}`;
                     errorBox.style.display = 'block';
@@ -336,10 +295,8 @@ async def vue_panneau_admin_serveur(cle_generee: str = ""):
 async def action_generer_cle_serveur(request: Request, username: str = Form(...), password: str = Form(...), client_name: str = Form(...), duration: int = Form(...)):
     if username != NOM_UTILISATEUR_ADMIN or password != MOT_DE_PASSE_ADMIN:
         return HTMLResponse(content="<h2>Identifiants incorrects ! Accès refusé.</h2>", status_code=403)
-        
     date_actuelle = datetime.datetime.utcnow()
     exp_date = date_actuelle + datetime.timedelta(days=30)
-    
     payload = {
         "client": client_name,
         "exp": int(exp_date.timestamp()),
@@ -351,32 +308,11 @@ async def action_generer_cle_serveur(request: Request, username: str = Form(...)
 
 @app.get("/terms", response_class=HTMLResponse)
 async def conditions_utilisation_serveur():
-    return HTMLResponse(content="""
-    <html>
-        <body style="font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px; line-height:1.8;">
-            <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;">
-                <h1 style="color: #f59e0b; margin-bottom:30px;">Conditions Générales d'Utilisation (CGU)</h1>
-                <div style="margin-bottom:30px;">
-                    <h2 style="color:#e5e5e5; font-size:18px;">1. Spécification Technique [X / Y]</h2>
-                    <p style="color:#a8a29e;">Pour l'exactitude de la projection, l'ordre requis des vecteurs est rigoureusement : <strong>[Longitude, Latitude]</strong>.</p>
-                </div>
-            </div>
-        </body>
-    </html>
-    """)
+    return HTMLResponse(content="<html><body style='font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px;'><div style='max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;'><h1 style='color: #f59e0b;'>Conditions Générales</h1><p>Vecteurs requis : <strong>[Longitude, Latitude]</strong>.</p></div></body></html>")
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def politique_confidentialite_serveur():
-    return HTMLResponse(content="""
-    <html>
-        <body style="font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px; line-height:1.8;">
-            <div style="max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;">
-                <h1 style="color: #f59e0b; margin-bottom:30px;">Politique de Confidentialité</h1>
-                <p style="color:#a8a29e;">Vos données de localisation géographique sont lues et traitées de manière purement volatile en mémoire vive (RAM) et s'effacent automatiquement dès la fermeture de la session de calcul.</p>
-            </div>
-        </body>
-    </html>
-    """)
+    return HTMLResponse(content="<html><body style='font-family: Arial; background: #0c0a09; color: #f5f5f4; padding: 50px 20px;'><div style='max-width: 800px; margin: auto; background: #1c1917; padding: 40px; border-radius: 12px; border:1px solid #2e2a24;'><h1 style='color: #f59e0b;'>Confidentialité</h1><p>Données traitées de manière purement volatile en mémoire vive (RAM).</p></div></body></html>")
 
 async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
     if not api_key:
@@ -393,12 +329,9 @@ async def verifier_minuteur_cle_api(api_key: str = Security(api_key_header)):
 async def optimiser_trajet_api(donnees: RequeteCalcul, jeton_valide: dict = Depends(verifier_minuteur_cle_api)):
     if not donnees.villes or len(donnees.villes) == 0:
         raise HTTPException(status_code=400, detail="La liste des coordonnées géographiques ne peut pas être vide.")
-        
     temps_debut = time.time()
-    # Prise en charge de la capacité personnalisée du véhicule saisie sur l'interface graphique
     route_ordonnee, distance_totale = calculer_route_precision(donnees.villes, donnees.capacite_vehicule)
     temps_fin = time.time()
-    
     return {
         "statut": "success",
         "client_autorise": jeton_valide.get("client"),
@@ -423,8 +356,8 @@ def calculer_route_precision(villes: List[Tuple[float, float]], capacite_max: in
     
     villes_planes = []
     for v in villes:
-        lon = math.radians(float(v[0]))  # Index 0 = Longitude
-        lat = math.radians(float(v[1]))  # Index 1 = Latitude
+        lon = math.radians(float(v[0]))
+        lat = math.radians(float(v[1]))
         x = R * lon * math.cos(lat_moyenne)
         y = R * lat
         villes_planes.append((x, y))
@@ -501,4 +434,3 @@ def simuler_fourmi_vrp(nb, dists, phero, capacite_max):
     d_tot += dists[path[-1]][depot_index]
     path.append(depot_index)
     return path, d_tot
-
