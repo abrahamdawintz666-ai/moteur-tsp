@@ -231,7 +231,8 @@ def obtenir_page_accueil():
     </body>
     </html>
     """
-def obtenir_panneau_admin(cle_generee: str):
+
+   def obtenir_panneau_admin(cle_generee: str):
     formulaire = """
     <html>
         <head><title>AntStrike Admin Panel</title></head>
@@ -251,6 +252,46 @@ def obtenir_panneau_admin(cle_generee: str):
         </body>
     </html>
     """
+    if cle_generee:
+        bloc_cle = f"<div style='background:#27272a; padding:15px; margin-top:20px; border-radius:6px; word-break:break-all; font-family:monospace; color:#22c55e; border:1px dashed #22c55e;'><strong>Clé Générée :</strong><br><br>{cle_generee}</div>"
+        return formulaire + bloc_cle + fin
+    return formulaire + fin
+
+def obtenir_tableau_bord(token_visuel: str = ""):
+    # Correction de la construction de la chaîne pour éviter la fusion de l'URL
+    base_url = "https://tiun.io"
+    url_tiun = base_url + "checkout?id=" + TIUN_SNIPPET_ID
+    
+    formulaire_tiun = f"""
+    <div style="background: #292524; border: 1px solid #f59e0b; padding: 25px; border-radius: 12px; text-align: center;">
+        <h3 style="margin-top:0; color:#f59e0b;">💳 Activation Commerciale Sécurisée via Tiun</h3>
+        <p style="font-size:14px; color:#a8a29e;">Débloquez l'accès à l'API Premium logistique SwiftRoute (1500 USD / mois).</p>
+        <button style="background:#f59e0b; color:black; font-weight:bold; border:none; padding:14px 28px; border-radius:8px; margin-top:15px; cursor:pointer;" onclick="window.location.href='{url_tiun}'">⚡ Activer mon Abonnement sur Tiun.io</button>
+    </div>
+    """
+    if token_visuel:
+        contenu = f"""
+        <div style="border: 1px solid #22c55e; padding:20px; border-radius:8px; background: #14532d20;">
+            <h3 style="margin-top:0; color:#22c55e;">✓ Jeton d'infrastructure Tiun valide</h3>
+            <p style="font-size:14px; color:#a8a29e;">Collez ce jeton dans le tableau de connexion de la page d'accueil :</p>
+            <div style="background:#0c0a09; border:1px dashed #22c55e; padding:15px; color:#22c55e; font-family:monospace; word-break:break-all; border-radius:6px;">{token_visuel}</div>
+        </div>
+        """
+    else:
+        contenu = formulaire_tiun
+
+    return f"""
+    <html>
+        <head><title>Espace Client - SwiftRoute</title></head>
+        <body style="font-family: Arial; background-color: #0c0a09; color: #f5f5f4; padding: 50px 20px;">
+            <div style="max-width: 650px; margin: auto; background: #1c1917; border: 1px solid #2e2a24; padding: 30px; border-radius: 12px;">
+                <h2 style="color:#f59e0b; border-bottom:1px solid #2e2a24; padding-bottom:10px;">📊 Console de Facturation</h2><br>
+                {contenu}
+            </div>
+        </body>
+    </html>
+    """
+ 
     if cle_generee:
         bloc_cle = f"<div style='background:#27272a; padding:15px; margin-top:20px; border-radius:6px; word-break:break-all; font-family:monospace; color:#22c55e; border:1px dashed #22c55e;'><strong>Clé Générée :</strong><br><br>{cle_generee}</div>"
         return formulaire + bloc_cle + fin
