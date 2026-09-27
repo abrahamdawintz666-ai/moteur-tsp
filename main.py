@@ -45,7 +45,8 @@ def obtenir_page_accueil():
     <meta charset="UTF-8">
     <title>SwiftRoute Pro — Plateforme Logistique Élite</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="https://unpkg.com" />
+    <!-- Chargement sécurisé en HTTPS obligatoire pour Google Chrome Mobile -->
+    <link rel="stylesheet" href="https://cloudflare.com" />
     <style>
         :root { --bg: #0c0a09; --card: #1c1917; --accent: #f59e0b; --accent-hover: #d97706; --text: #f5f5f4; --text-muted: #a8a29e; --border: #2e2a24; --success: #22c55e; }
         body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
@@ -137,7 +138,8 @@ def obtenir_page_accueil():
             </div>
         </div>
     </div>
-    <script src="https://unpkg.com"></script>
+    <!-- Script Leaflet appelé obligatoirement depuis le CDNJS sécurisé en HTTPS -->
+    <script src="https://cloudflare.com"></script>
     <script>
         const textarea = document.getElementById('coordonnees-input');
         const lineCounter = document.getElementById('line-counter');
@@ -190,11 +192,12 @@ def obtenir_page_accueil():
                 if (!reponse.ok) throw new Error(data.detail || "Refus d'authentification.");
                 document.getElementById('metric-villes').textContent = data.metriques.villes_traitees + " points";
                 document.getElementById('metric-distance').textContent = data.metriques.distance_matrice_km + " km";
-                document.getElementById('metric-temps').textContent = "⏱️ " + data.metriques.temps_execution_secondes + "s";
+                document.getElementById('metric-temps').textContent = " ⏱️ " + data.metriques.temps_execution_secondes + "s";
                 stepsContainer.innerHTML = '';
                 mapDiv.style.display = 'block';
                 if (!carteLeaflet) {
                     carteLeaflet = L.map('map').setView([villesExtraites[0][1], villesExtraites[0][0]], 12);
+                    // Forçage strict des tuiles cartographiques via la couche sécurisée HTTPS de OpenStreetMap
                     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(carteLeaflet);
                 }
                 if (calqueTraces) { carteLeaflet.removeLayer(calqueTraces); }
@@ -402,7 +405,7 @@ def simuler_fourmi_vrp(nb, dists, phero, capacite_max, depot_index):
                 
         if tot == 0:
             restants = [x for x in range(nb) if x not in villes_visitees]
-            prox = restants[0] if restants else depot_index
+            prox = restants if restants else depot_index
         else:
             flotte = random.uniform(0, tot)
             cum = 0.0
