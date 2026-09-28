@@ -29,6 +29,11 @@ import os
 import sqlite3
 import hashlib
 import secrets
+import json
+import time
+import unicodedata
+from urllib.parse import quote
+from urllib.request import Request as URLRequest, urlopen
 from typing import List, Tuple, Optional
 
 # ==============================================================================
@@ -49,10 +54,10 @@ MOT_DE_PASSE_ADMIN = os.getenv(
     "CHANGE_ME_IN_RENDER_ENVIRONMENT"
 )
 
-VOTRE_WALLET_SOLANA = os.getenv(
-    "SOLANA_WALLET",
-    "CHANGE_ME"
-)
+# Tiun public product/contact configuration.
+TIUN_PRODUCT_ID = os.getenv("TIUN_PRODUCT_ID", "p-live-0df3781")
+WHATSAPP_CONTACT = os.getenv("WHATSAPP_CONTACT", "+509 41 81 7761")
+EMAIL_CONTACT = os.getenv("EMAIL_CONTACT", "abrahamdawintz410@gmail.com")
 
 # Tiun public snippet ID.
 # Keep this in the page; it is not a server secret.
@@ -63,6 +68,13 @@ TIUN_SNIPPET_ID = os.getenv(
 
 # NEVER put a Tiun secret/API key in HTML or source code.
 TIUN_SECRET_KEY = os.getenv("TIUN_SECRET_KEY", "")
+
+# Cartographie internationale. Pour un vrai service commercial à grande échelle,
+# configurez un fournisseur de géocodage/routage autorisé dans Render.
+GEOCODING_URL = os.getenv("GEOCODING_URL", "https://nominatim.openstreetmap.org/search")
+GEOCODING_USER_AGENT = os.getenv("GEOCODING_USER_AGENT", "SwiftRoute/1.0 contact=admin@swiftroute.example")
+ROUTING_URL = os.getenv("ROUTING_URL", "https://router.project-osrm.org")
+TILE_URL = os.getenv("TILE_URL", "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png")
 
 DATABASE_PATH = os.getenv("SWIFTROUTE_DB", "swiftroute.db")
 DUREE_ESSAI_JOURS = 7
@@ -97,6 +109,66 @@ def init_database():
             expires_at TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
             usage_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL
+        )
+    """)
+
+    # Base locale des principales villes haïtiennes.
+    # Les coordonnées sont utilisées directement par le planificateur.
+    villes_haiti = [
+        ("Cap-Haïtien", 19.7595, -72.1983),
+        ("Port-au-Prince", 18.5944, -72.3074),
+        ("Gonaïves", 19.4476, -72.6893),
+        ("Saint-Marc", 19.1082, -72.6938),
+        ("Port-de-Paix", 19.9539, -72.8327),
+        ("Jacmel", 18.2344, -72.5355),
+        ("Les Cayes", 18.1942, -73.7510),
+        ("Hinche", 19.1431, -72.0088),
+        ("Mirebalais", 18.8346, -72.1045),
+        ("Fort-Liberté", 19.6627, -71.8370),
+        ("Ouanaminthe", 19.5496, -71.7240),
+        ("Limbé", 19.7058, -72.4037),
+        ("Trou-du-Nord", 19.6187, -72.0215),
+        ("Limonade", 19.6707, -72.1253),
+        ("Carrefour", 18.5411, -72.3992),
+        ("Pétion-Ville", 18.5120, -72.2852),
+        ("Delmas", 18.5470, -72.3020),
+        ("Croix-des-Bouquets", 18.5760, -72.2260),
+        ("Kenscoff", 18.4477, -72.2840),
+        ("Léogâne", 18.5108, -72.6334),
+        ("Petit-Goâve", 18.4317, -72.8667),
+        ("Grand-Goâve", 18.4286, -72.7720),
+        ("Miragoâne", 18.4450, -73.0890),
+        ("Anse-à-Veau", 18.4900, -73.0450),
+        ("Jérémie", 18.6500, -74.1167),
+        ("Port-Salut", 18.0670, -73.9250),
+        ("Cavaillon", 18.3000, -73.6500),
+        ("Aquin", 18.2790, -73.3940),
+        ("Maïssade", 19.1760, -72.1470),
+        ("Saint-Raphaël", 19.4380, -72.1980),
+    ]
+
+    conn.executemany(
+        "INSERT OR IGNORE INTO cities (name, lat, lon) VALUES (?, ?, ?)",
+        villes_haiti
+    )
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS geocodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL,
+            created_at TEXT NOT NULL
         )
     """)
 
@@ -270,6 +342,199 @@ def mark_trial_usage(jti: str):
     )
     conn.commit()
     conn.close()
+
+
+# ==============================================================================
+# GLOBAL GEOCODING / MAP HELPERS
+# ==============================================================================
+
+def normalize_city_name(value: str) -> str:
+    value = value.strip().lower()
+    replacements = {
+        "cap haitien": "cap-haïtien",
+        "cap-haitien": "cap-haïtien",
+        "port au prince": "port-au-prince",
+        "port au-prince": "port-au-prince",
+        "port de paix": "port-de-paix",
+        "petit goave": "petit-goâve",
+        "grand goave": "grand-goâve",
+        "petit-goave": "petit-goâve",
+        "grand-goave": "grand-goâve",
+    }
+    return replacements.get(value, value)
+
+
+def get_city(name: str):
+    normalized = normalize_city_name(name)
+    conn = db_connect()
+    row = conn.execute(
+        "SELECT name, lat, lon FROM cities WHERE lower(name) = ?",
+        (normalized,)
+    ).fetchone()
+    if not row:
+        rows = conn.execute("SELECT name, lat, lon FROM cities").fetchall()
+        def clean(v):
+            v = unicodedata.normalize("NFKD", v.lower())
+            return "".join(c for c in v if not unicodedata.combining(c)).replace("-", " ").strip()
+        target = clean(name)
+        for candidate in rows:
+            if clean(candidate["name"]) == target:
+                row = candidate
+                break
+    conn.close()
+    return row
+
+
+def get_cached_geocode(query: str):
+    conn = db_connect()
+    row = conn.execute(
+        "SELECT display_name, lat, lon FROM geocodes WHERE query = ?",
+        (query.strip().lower(),)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def save_geocode(query: str, display_name: str, lat: float, lon: float):
+    conn = db_connect()
+    conn.execute(
+        """INSERT OR REPLACE INTO geocodes
+           (query, display_name, lat, lon, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (
+            query.strip().lower(),
+            display_name,
+            float(lat),
+            float(lon),
+            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        )
+    )
+    conn.commit()
+    conn.close()
+
+
+# Petit garde-fou pour le fournisseur public de test. En production,
+# utilisez votre propre fournisseur avec ses limites commerciales.
+_last_geocode_request = 0.0
+
+
+def geocode_global(query: str):
+    global _last_geocode_request
+    query = query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Recherche vide.")
+
+    # 1) Base locale rapide
+    city = get_city(query)
+    if city:
+        return {
+            "name": city["name"],
+            "display_name": city["name"],
+            "lat": float(city["lat"]),
+            "lon": float(city["lon"]),
+            "source": "base_locale",
+        }
+
+    # 2) Cache global
+    cached = get_cached_geocode(query)
+    if cached:
+        return {
+            "name": query,
+            "display_name": cached["display_name"],
+            "lat": float(cached["lat"]),
+            "lon": float(cached["lon"]),
+            "source": "cache",
+        }
+
+    # 3) Géocodage mondial configurable
+    # Nominatim est pratique pour le prototype. Pour un usage commercial
+    # important, configurez GEOCODING_URL vers un fournisseur adapté.
+    wait = 1.0 - (time.time() - _last_geocode_request)
+    if wait > 0:
+        time.sleep(wait)
+
+    params = f"?q={quote(query)}&format=jsonv2&limit=1&addressdetails=1"
+    request = URLRequest(
+        GEOCODING_URL + params,
+        headers={"User-Agent": GEOCODING_USER_AGENT}
+    )
+
+    try:
+        _last_geocode_request = time.time()
+        with urlopen(request, timeout=12) as response:
+            results = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Le service de recherche mondiale est temporairement indisponible: {exc}"
+        )
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Aucun lieu trouvé pour : {query}"
+        )
+
+    item = results[0]
+    lat = float(item["lat"])
+    lon = float(item["lon"])
+    display_name = item.get("display_name", query)
+    save_geocode(query, display_name, lat, lon)
+
+    return {
+        "name": query,
+        "display_name": display_name,
+        "lat": lat,
+        "lon": lon,
+        "source": "geocodage_mondial",
+    }
+
+
+@app.get("/api/cities")
+async def api_cities():
+    conn = db_connect()
+    rows = conn.execute("SELECT name, lat, lon FROM cities ORDER BY name").fetchall()
+    conn.close()
+    return {"cities": [dict(row) for row in rows]}
+
+
+@app.get("/api/city")
+async def api_city(name: str):
+    row = get_city(name)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Ville inconnue : {name}")
+    return {"name": row["name"], "lat": row["lat"], "lon": row["lon"]}
+
+
+@app.get("/api/geocode")
+async def api_geocode(q: str):
+    """Recherche mondiale d'une ville/adresse et renvoie ses coordonnées GPS."""
+    return geocode_global(q)
+
+
+class PointGPS(BaseModel):
+    name: str = "Point"
+    lat: float
+    lon: float
+
+
+class RequetePoints(BaseModel):
+    points: List[PointGPS]
+
+
+@app.post("/api/geocode-batch")
+async def api_geocode_batch(requete: RequetePoints):
+    """Géocode une petite liste de recherches. Pour 500 points, préférez un CSV GPS."""
+    if len(requete.points) > 25:
+        raise HTTPException(
+            status_code=400,
+            detail="Le géocodage par adresse est limité à 25 recherches par opération. Pour 500 points, utilisez les coordonnées GPS ou un CSV."
+        )
+    results = []
+    for point in requete.points:
+        result = geocode_global(point.name)
+        results.append({**result, "input": point.name})
+    return {"results": results}
 
 
 # ==============================================================================
@@ -813,279 +1078,288 @@ async def creer_essai_gratuit(
 async def workspace(
     swiftroute_session: str = Cookie(default=None)
 ):
-
     session = get_session(swiftroute_session)
 
     if not session:
-        return RedirectResponse(
-            url="/essai-gratuit",
-            status_code=303
-        )
+        return RedirectResponse(url="/essai-gratuit", status_code=303)
 
-    expiration = datetime.datetime.fromisoformat(
-        session["expires_at"]
-    )
-
-    expiration_display = expiration.strftime(
-        "%d/%m/%Y à %H:%M"
-    )
-
+    expiration = datetime.datetime.fromisoformat(session["expires_at"])
+    expiration_display = expiration.strftime("%d/%m/%Y à %H:%M")
     email = session["email"] or ""
 
     return HTMLResponse(f"""
     <html>
-
     <head>
-
-        <title>SwiftRoute — Espace Client</title>
-
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
-
+        <title>SwiftRoute — Global Route Planner</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
         <style>
-
             * {{ box-sizing:border-box; }}
-
-            body {{
-                margin:0;
-                background:#0c0a09;
-                color:#f5f5f4;
-                font-family:Arial,sans-serif;
-            }}
-
-            .top {{
-                padding:18px 20px;
-                border-bottom:1px solid #2e2a24;
-                display:flex;
-                justify-content:space-between;
-                gap:20px;
-                flex-wrap:wrap;
-            }}
-
-            .container {{
-                max-width:1050px;
-                margin:auto;
-                padding:30px 20px;
-            }}
-
-            .welcome {{
-                background:#1c1917;
-                border:1px solid #2e2a24;
-                border-radius:16px;
-                padding:25px;
-            }}
-
-            .green {{ color:#22c55e; }}
-            .orange {{ color:#f59e0b; }}
-
-            .grid {{
-                display:grid;
-                grid-template-columns:
-                    repeat(auto-fit,minmax(240px,1fr));
-                gap:20px;
-                margin-top:25px;
-            }}
-
-            .card {{
-                background:#1c1917;
-                border:1px solid #2e2a24;
-                border-radius:14px;
-                padding:25px;
-            }}
-
-            .card h2 {{ margin-top:0; }}
-
-            .card p {{
-                color:#a8a29e;
-                line-height:1.55;
-            }}
-
-            button {{
-                width:100%;
-                padding:14px;
-                border:0;
-                border-radius:8px;
-                background:#f59e0b;
-                color:#0c0a09;
-                font-weight:bold;
-                cursor:pointer;
-            }}
-
-            .map {{
-                margin-top:25px;
-                background:#11100f;
-                border:1px solid #2e2a24;
-                border-radius:14px;
-                padding:20px;
-            }}
-
-            input {{
-                width:100%;
-                padding:13px;
-                background:#0c0a09;
-                border:1px solid #44403c;
-                color:white;
-                border-radius:8px;
-                margin-top:7px;
-                margin-bottom:12px;
-            }}
-
-            .route-result {{
-                display:none;
-                margin-top:18px;
-                padding:18px;
-                border:1px solid #22c55e;
-                border-radius:10px;
-            }}
-
+            body {{ margin:0; background:#0c0a09; color:#f5f5f4; font-family:Arial,sans-serif; }}
+            .top {{ padding:16px 20px; border-bottom:1px solid #2e2a24; display:flex; justify-content:space-between; gap:20px; flex-wrap:wrap; position:sticky; top:0; z-index:1000; background:#0c0a09ee; backdrop-filter:blur(8px); }}
+            .container {{ max-width:1250px; margin:auto; padding:20px 14px 50px; }}
+            .card {{ background:#1c1917; border:1px solid #2e2a24; border-radius:16px; padding:20px; margin-bottom:18px; }}
+            .green {{ color:#22c55e; }} .orange {{ color:#f59e0b; }} .muted {{ color:#a8a29e; }}
+            h1,h2,h3 {{ margin-top:0; }}
+            .toolbar {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:16px 0; }}
+            .mode {{ background:#292524; color:#fff; border:1px solid #44403c; padding:12px; border-radius:9px; cursor:pointer; font-weight:bold; }}
+            .mode.active {{ border-color:#f59e0b; color:#f59e0b; }}
+            .panel {{ display:none; }} .panel.active {{ display:block; }}
+            label {{ display:block; margin-top:12px; margin-bottom:6px; font-weight:700; }}
+            input, textarea, select {{ width:100%; padding:12px; background:#0c0a09; border:1px solid #44403c; color:white; border-radius:9px; font-size:15px; }}
+            textarea {{ min-height:150px; font-family:monospace; resize:vertical; }}
+            button.action {{ width:100%; padding:14px; border:0; border-radius:9px; background:#f59e0b; color:#0c0a09; font-weight:bold; cursor:pointer; font-size:16px; margin-top:14px; }}
+            button.action:disabled {{ opacity:.6; cursor:wait; }}
+            .row {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .gps-row {{ display:grid; grid-template-columns:50px 1fr 1fr 1.5fr 44px; gap:8px; align-items:center; margin-bottom:8px; }}
+            .gps-row input {{ margin:0; }}
+            .number {{ color:#f59e0b; font-weight:bold; text-align:center; }}
+            .remove {{ background:#292524; color:#ef4444; border:1px solid #44403c; width:44px; height:44px; border-radius:8px; cursor:pointer; }}
+            .secondary {{ background:#292524; color:#fff; border:1px solid #44403c; padding:11px 14px; border-radius:8px; cursor:pointer; }}
+            .controls {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }}
+            .controls button {{ flex:1; min-width:150px; }}
+            .search-box {{ display:grid; grid-template-columns:1fr 120px; gap:8px; }}
+            .search-results {{ background:#0c0a09; border:1px solid #44403c; border-radius:8px; margin-top:8px; overflow:hidden; }}
+            .search-results button {{ display:block; width:100%; text-align:left; background:transparent; color:#fff; border:0; border-bottom:1px solid #2e2a24; padding:11px; cursor:pointer; }}
+            #map {{ height:520px; margin-top:18px; border-radius:12px; overflow:hidden; border:1px solid #44403c; }}
+            .result {{ margin-top:16px; padding:16px; border:1px solid #22c55e; border-radius:10px; background:#14532d12; display:none; }}
+            .route-list {{ max-height:260px; overflow:auto; padding-left:22px; }}
+            .small {{ font-size:12px; color:#a8a29e; line-height:1.5; }}
+            .coord {{ font-family:monospace; color:#f59e0b; }}
+            .stats {{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }}
+            .stat {{ background:#0c0a09; border:1px solid #2e2a24; border-radius:9px; padding:12px; text-align:center; }}
+            .stat strong {{ display:block; font-size:20px; color:#f59e0b; }}
+            .leaflet-container {{ background:#151412; }}
+            .file {{ padding:12px; border:1px dashed #44403c; border-radius:9px; }}
+            @media(max-width:750px) {{ .toolbar,.row,.stats {{ grid-template-columns:1fr; }} .gps-row {{ grid-template-columns:35px 1fr 1fr 40px; }} .gps-row .point-name {{ grid-column:2/4; }} .gps-row .remove {{ grid-column:4; grid-row:1; }} }}
         </style>
-
     </head>
-
     <body>
-
         <div class="top">
-            <strong>🐜 SwiftRoute Engine</strong>
+            <strong>🐜 SwiftRoute Engine — Global Planner</strong>
             <span class="green">● Session active</span>
         </div>
-
         <div class="container">
-
-            <div class="welcome">
-
-                <h1>
-                    Bonjour {session["client_name"]}
-                </h1>
-
-                <p class="green">
-                    ✓ Votre accès est actif
-                </p>
-
-                <p>
-                    Compte :
-                    <strong>{email}</strong>
-                </p>
-
-                <p>
-                    Expiration :
-                    <strong class="orange">
-                        {expiration_display}
-                    </strong>
-                </p>
-
+            <div class="card">
+                <h1>🌍 Planificateur de routes international</h1>
+                <p class="muted">Bonjour {session["client_name"]}. Tu peux rechercher un lieu n'importe où dans le monde, saisir directement des coordonnées GPS ou importer des centaines de points.</p>
+                <p class="small">Compte : {email} · Expiration : <span class="orange">{expiration_display}</span></p>
             </div>
 
-            <div class="grid">
-
-                <div class="card">
-
-                    <h2>🚗 Planificateur</h2>
-
-                    <p>
-                        Préparez un trajet sans avoir besoin de
-                        comprendre le JSON ou le code.
-                    </p>
-
-                    <button onclick="document.getElementById('gps').scrollIntoView()">
-                        Ouvrir le planificateur
-                    </button>
-
+            <div class="card">
+                <h3>💳 Abonnement et assistance</h3>
+                <p class="muted">Produit Tiun : <span class="coord">{TIUN_PRODUCT_ID}</span></p>
+                <p class="small">Pour le paiement, utilisez le checkout Tiun configuré sur votre compte. Pour toute question, contactez directement SwiftRoute.</p>
+                <div class="controls">
+                    <a class="secondary" href="https://wa.me/50941817761" target="_blank" rel="noopener" style="text-decoration:none;text-align:center;">WhatsApp : {WHATSAPP_CONTACT}</a>
+                    <a class="secondary" href="mailto:{EMAIL_CONTACT}" style="text-decoration:none;text-align:center;">E-mail : {EMAIL_CONTACT}</a>
                 </div>
-
-                <div class="card">
-
-                    <h2>🗺️ Résultat</h2>
-
-                    <p>
-                        Consultez la route, la distance et les étapes
-                        dans une présentation lisible.
-                    </p>
-
-                    <button onclick="calculerDemo()">
-                        Calculer un itinéraire
-                    </button>
-
-                </div>
-
-                <div class="card">
-
-                    <h2>👨‍💻 Développeur</h2>
-
-                    <p>
-                        Les utilisateurs techniques peuvent utiliser
-                        directement l'API et Swagger.
-                    </p>
-
-                    <button onclick="location.href='/docs'">
-                        Ouvrir la documentation
-                    </button>
-
-                </div>
-
             </div>
 
-            <div id="gps" class="map">
+            <div class="card">
+                <h2>1. Choisir le type de données</h2>
+                <div class="toolbar">
+                    <button class="mode active" onclick="mode('search')">📍 Recherche mondiale</button>
+                    <button class="mode" onclick="mode('gps')">🌐 Coordonnées GPS</button>
+                    <button class="mode" onclick="mode('csv')">📄 Import CSV</button>
+                </div>
 
-                <h2>📍 Planificateur de trajet</h2>
+                <div id="panel-search" class="panel active">
+                    <p class="muted">Recherche une ville ou une adresse. Le résultat est automatiquement converti en latitude/longitude.</p>
+                    <div class="row">
+                        <div><label>Départ</label><div class="search-box"><input id="depart-search" placeholder="Cap-Haïtien, Haiti"><button class="secondary" onclick="chercherEtAjouter('depart')">Rechercher</button></div><div id="depart-results" class="search-results"></div></div>
+                        <div><label>Destination</label><div class="search-box"><input id="destination-search" placeholder="Port-au-Prince, Haiti"><button class="secondary" onclick="chercherEtAjouter('destination')">Rechercher</button></div><div id="destination-results" class="search-results"></div></div>
+                    </div>
+                    <label>Arrêt intermédiaire</label>
+                    <div class="search-box"><input id="stop-search" placeholder="Paris, France / New York, USA / Nairobi, Kenya..."><button class="secondary" onclick="chercherEtAjouter('stop')">Ajouter</button></div>
+                    <div id="stop-results" class="search-results"></div>
+                    <div id="search-points" class="small" style="margin-top:12px;"></div>
+                </div>
 
-                <label>Départ</label>
-                <input id="depart"
-                       placeholder="Ex : Cap-Haïtien">
+                <div id="panel-gps" class="panel">
+                    <p class="muted">Pour 500 points ou plus, c'est la méthode la plus rapide : les coordonnées sont traitées directement, sans recherche d'adresse.</p>
+                    <div id="gps-rows"></div>
+                    <div class="controls">
+                        <button class="secondary" onclick="ajouterLigne()">＋ Ajouter un point</button>
+                        <button class="secondary" onclick="ajouter500()">＋ Ajouter jusqu'à 500 points</button>
+                    </div>
+                </div>
 
-                <label>Destination</label>
-                <input id="destination"
-                       placeholder="Ex : Port-au-Prince">
+                <div id="panel-csv" class="panel">
+                    <p class="muted">CSV attendu : <strong>name,lat,lon</strong> (Y=latitude, X=longitude). Jusqu'à 500 points par requête dans cette version.</p>
+                    <div class="file"><input id="csv-file" type="file" accept=".csv,text/csv" onchange="importerCSV(event)"></div>
+                    <p id="csv-status" class="small"></p>
+                </div>
 
-                <label>Arrêts supplémentaires</label>
-                <input id="arrets"
-                       placeholder="Ex : Gonaïves, Saint-Marc">
-
-                <button onclick="calculerDemo()">
-                    🚀 Optimiser le trajet
-                </button>
-
-                <div id="route-result" class="route-result"></div>
-
+                <div class="controls">
+                    <button id="btn-route" class="action" onclick="optimiser()">🚀 Optimiser et afficher sur la carte</button>
+                    <button class="secondary" onclick="effacerTout()">Effacer</button>
+                </div>
+                <div id="result" class="result"></div>
             </div>
 
+            <div class="card">
+                <h2>2. Carte routière</h2>
+                <div id="map"></div>
+                <p class="small">Les coordonnées sont optimisées par SwiftRoute. Le tracé routier est ensuite obtenu auprès du service de routage configuré par le serveur.</p>
+            </div>
         </div>
 
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
+            let map = L.map('map').setView([20, 0], 2);
+            let routeLayer = null;
+            let markers = [];
+            let searchPoints = {{depart:null, destination:null, stops:[]}};
+            let gpsPoints = [];
+            let currentMode = 'search';
 
-            function calculerDemo() {{
+            L.tileLayer('{TILE_URL}', {{maxZoom:19, attribution:'&copy; OpenStreetMap contributors'}}).addTo(map);
 
-                const depart =
-                    document.getElementById("depart").value ||
-                    "Point de départ";
-
-                const destination =
-                    document.getElementById("destination").value ||
-                    "Destination";
-
-                const arrets =
-                    document.getElementById("arrets").value;
-
-                const result =
-                    document.getElementById("route-result");
-
-                result.style.display = "block";
-
-                result.innerHTML = `
-                    <h3>🧭 Itinéraire optimisé</h3>
-                    <p><strong>Départ :</strong> ${{depart}}</p>
-                    <p><strong>Destination :</strong> ${{destination}}</p>
-                    <p><strong>Arrêts :</strong>
-                        ${{arrets || "Aucun"}}
-                    </p>
-                    <p class="green">
-                        ✓ Le moteur SwiftRoute peut maintenant traiter
-                        les coordonnées réelles via l'API.
-                    </p>
-                `;
+            function mode(name) {{
+                currentMode=name;
+                document.querySelectorAll('.mode').forEach((b,i)=>b.classList.toggle('active',['search','gps','csv'][i]===name));
+                document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+                document.getElementById('panel-'+name).classList.add('active');
             }}
 
-        </script>
+            function esc(v) {{ return String(v).replace(/[&<>'"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}}[c])); }}
 
+            async function chercherEtAjouter(type) {{
+                const inputId = type==='depart' ? 'depart-search' : type==='destination' ? 'destination-search' : 'stop-search';
+                const resultId = type==='depart' ? 'depart-results' : type==='destination' ? 'destination-results' : 'stop-results';
+                const q=document.getElementById(inputId).value.trim();
+                const box=document.getElementById(resultId);
+                if(!q) return;
+                box.style.display='block'; box.innerHTML='Recherche mondiale...';
+                try {{
+                    const r=await fetch('/api/geocode?q='+encodeURIComponent(q));
+                    const d=await r.json();
+                    if(!r.ok) throw new Error(d.detail||'Lieu introuvable');
+                    const point={{name:d.display_name||q,lat:Number(d.lat),lon:Number(d.lon)}};
+                    if(type==='depart') searchPoints.depart=point;
+                    else if(type==='destination') searchPoints.destination=point;
+                    else searchPoints.stops.push(point);
+                    box.innerHTML='<button onclick="this.parentElement.style.display=\'none\'">✓ '+esc(point.name)+' — '+point.lat.toFixed(5)+', '+point.lon.toFixed(5)+'</button>';
+                    afficherPointsRecherche();
+                }} catch(e) {{ box.innerHTML='<span style="display:block;padding:10px;color:#ef4444">'+esc(e.message)+'</span>'; }}
+            }}
+
+            function afficherPointsRecherche() {{
+                const all=[];
+                if(searchPoints.depart) all.push('Départ: '+searchPoints.depart.name);
+                searchPoints.stops.forEach((p,i)=>all.push('Arrêt '+(i+1)+': '+p.name));
+                if(searchPoints.destination) all.push('Destination: '+searchPoints.destination.name);
+                document.getElementById('search-points').innerHTML=all.length ? '<strong>Points sélectionnés :</strong><br>'+all.map(esc).join('<br>') : '';
+            }}
+
+            function ajouterLigne(point={{name:'',lat:'',lon:''}}) {{
+                gpsPoints.push(point);
+                rendreGPS();
+            }}
+
+            function rendreGPS() {{
+                const box=document.getElementById('gps-rows');
+                box.innerHTML='';
+                gpsPoints.forEach((p,i)=>{{
+                    const row=document.createElement('div'); row.className='gps-row';
+                    row.innerHTML=`<div class="number">${{i+1}}</div><input placeholder="Latitude" value="${{esc(p.lat)}}" onchange="gpsPoints[${{i}}].lat=this.value"><input placeholder="Longitude" value="${{esc(p.lon)}}" onchange="gpsPoints[${{i}}].lon=this.value"><input class="point-name" placeholder="Nom facultatif" value="${{esc(p.name||'Point '+(i+1))}}" onchange="gpsPoints[${{i}}].name=this.value"><button class="remove" onclick="gpsPoints.splice(${{i}},1);rendreGPS()">×</button>`;
+                    box.appendChild(row);
+                }});
+            }}
+
+            function ajouter500() {{
+                if(gpsPoints.length===0) {{
+                    for(let i=0;i<500;i++) gpsPoints.push({{name:'Point '+(i+1),lat:'',lon:''}});
+                }} else {{
+                    while(gpsPoints.length<500) gpsPoints.push({{name:'Point '+(gpsPoints.length+1),lat:'',lon:''}});
+                }}
+                rendreGPS();
+            }}
+
+            function importerCSV(event) {{
+                const file=event.target.files[0]; if(!file) return;
+                const reader=new FileReader();
+                reader.onload=()=>{{
+                    const lines=reader.result.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+                    if(!lines.length) return;
+                    let start=0; const first=lines[0].toLowerCase();
+                    if(first.includes('lat') && first.includes('lon')) start=1;
+                    const parsed=[];
+                    for(let i=start;i<lines.length;i++) {{
+                        const parts=lines[i].split(',').map(x=>x.trim());
+                        if(parts.length<3) continue;
+                        const hasName=parts.length>=3 && isNaN(Number(parts[0]));
+                        const name=hasName?parts[0]:'Point '+(parsed.length+1);
+                        const lat=Number(hasName?parts[1]:parts[0]);
+                        const lon=Number(hasName?parts[2]:parts[1]);
+                        if(Number.isFinite(lat)&&Number.isFinite(lon)) parsed.push({{name,lat,lon}});
+                    }}
+                    if(parsed.length>500) {{ alert('Maximum 500 points dans cette version.'); return; }}
+                    gpsPoints=parsed;
+                    rendreGPS(); mode('gps');
+                    document.getElementById('csv-status').textContent=parsed.length+' points importés.';
+                }};
+                reader.readAsText(file);
+            }}
+
+            function validerPoint(p) {{
+                return Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)) && Number(p.lat)>=-90 && Number(p.lat)<=90 && Number(p.lon)>=-180 && Number(p.lon)<=180;
+            }}
+
+            function obtenirPoints() {{
+                if(currentMode==='search') {{
+                    if(!searchPoints.depart || !searchPoints.destination) throw new Error('Ajoutez un départ et une destination.');
+                    return [searchPoints.depart,...searchPoints.stops,searchPoints.destination];
+                }}
+                const points=gpsPoints.map((p,i)=>({{name:p.name||'Point '+(i+1),lat:Number(p.lat),lon:Number(p.lon)}}));
+                if(points.length<2) throw new Error('Il faut au moins un départ et une destination.');
+                if(points.some(p=>!validerPoint(p))) throw new Error('Une ou plusieurs coordonnées sont invalides. Latitude: -90 à 90. Longitude: -180 à 180.');
+                return points;
+            }}
+
+            function afficherPoint(v,index) {{
+                const marker=L.marker([v.lat,v.lon]).addTo(map);
+                marker.bindPopup(`<strong>${{index+1}}. ${{esc(v.name)}}</strong><br><span class="coord">${{Number(v.lat).toFixed(6)}}, ${{Number(v.lon).toFixed(6)}}</span>`);
+                markers.push(marker);
+            }}
+
+            async function optimiser() {{
+                const btn=document.getElementById('btn-route'); const result=document.getElementById('result');
+                btn.disabled=true; result.style.display='block'; result.innerHTML='⚙️ Préparation des coordonnées et optimisation SwiftRoute...';
+                try {{
+                    const points=obtenirPoints();
+                    if(points.length>500) throw new Error('Maximum 500 points par requête.');
+                    const r=await fetch('/api/route',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{villes:points.map(p=>[p.lat,p.lon])}})}});
+                    const data=await r.json(); if(!r.ok) throw new Error(data.detail||'Erreur du moteur');
+                    const ordered=data.route.filter((v,i,a)=>i===0 || v!==0).map(i=>points[i]);
+                    if(ordered[ordered.length-1]!==points[points.length-1]) ordered.push(points[points.length-1]);
+
+                    if(routeLayer) map.removeLayer(routeLayer); markers.forEach(m=>map.removeLayer(m)); markers=[];
+                    ordered.forEach(afficherPoint);
+
+                    result.innerHTML='🚗 Calcul du tracé routier réel...';
+                    const rr=await fetch('/api/road-route',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{points:ordered}})}});
+                    const road=await rr.json(); if(!rr.ok) throw new Error(road.detail||'Impossible de tracer la route.');
+                    routeLayer=L.geoJSON(road.geometry,{{style:{{color:'#f59e0b',weight:5,opacity:.9}}}}).addTo(map);
+                    map.fitBounds(routeLayer.getBounds(),{{padding:[25,25]}});
+
+                    const names=ordered.map((p,i)=>`${{i+1}}. ${{esc(p.name)}}`).join('<br>');
+                    result.innerHTML=`<h3>🧭 Itinéraire optimisé</h3><div class="stats"><div class="stat"><strong>${{ordered.length}}</strong>Points</div><div class="stat"><strong>${{road.distance_km}}</strong>km</div><div class="stat"><strong>${{road.duration_min}}</strong>min</div><div class="stat"><strong>${{data.distance_km}}</strong>km</div></div><p class="small">Le dernier chiffre est la distance de projection utilisée par SwiftRoute pour l'optimisation. La distance routière vient du service cartographique.</p><h4>Ordre de passage</h4><div class="route-list">${{names}}</div>`;
+                }} catch(e) {{ result.innerHTML='<strong style="color:#ef4444">Erreur :</strong> '+esc(e.message); }}
+                finally {{ btn.disabled=false; }}
+            }}
+
+            function effacerTout() {{
+                searchPoints={{depart:null,destination:null,stops:[]}}; gpsPoints=[]; rendreGPS(); afficherPointsRecherche();
+                if(routeLayer) {{ map.removeLayer(routeLayer); routeLayer=null; }}
+                markers.forEach(m=>map.removeLayer(m)); markers=[]; document.getElementById('result').style.display='none';
+            }}
+
+            // Trois lignes de départ pour montrer immédiatement le format GPS.
+            ajouterLigne({{name:'Départ',lat:'',lon:''}});
+            ajouterLigne({{name:'Destination',lat:'',lon:''}});
+        </script>
     </body>
     </html>
     """)
@@ -1152,6 +1426,7 @@ class RequeteCalcul(BaseModel):
 NB_FOURMIS = 15
 ALPHA, BETA, EVAPORATION, Q = 1.0, 2.0, 0.3, 100.0
 CAPACITE_MAX_VEHICULE = 10
+MAX_POINTS_REQUETE = 500
 
 
 def calculer_route_precision(
@@ -1222,6 +1497,8 @@ def calculer_route_precision(
     meilleure_distance = float("inf")
     meilleure_route = []
 
+    # Moteur ACO original — paramètres conservés pour préserver
+    # le même comportement et le même niveau de recherche qu'à l'origine.
     iterations = 20 if nb_villes > 60 else 40
 
     for _ in range(iterations):
@@ -1367,6 +1644,82 @@ def simuler_fourmi_vrp(nb, dists, phero):
 
 
 # ==============================================================================
+# REAL ROAD ROUTING API
+# ==============================================================================
+
+class RequeteRoadRoute(BaseModel):
+    points: List[PointGPS]
+
+
+def _fetch_osrm_chunk(points: List[PointGPS]):
+    coords = ";".join(f"{p.lon},{p.lat}" for p in points)
+    url = f"{ROUTING_URL.rstrip('/')}/route/v1/driving/{coords}?overview=full&geometries=geojson&steps=false"
+    request = URLRequest(url, headers={"User-Agent": GEOCODING_USER_AGENT})
+    try:
+        with urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Service de routage indisponible : {exc}")
+
+
+def _combine_geojson_lines(routes):
+    coordinates = []
+    for route in routes:
+        segment = route["geometry"]["coordinates"]
+        if not coordinates:
+            coordinates.extend(segment)
+        else:
+            if coordinates[-1] == segment[0]:
+                coordinates.extend(segment[1:])
+            else:
+                coordinates.extend(segment)
+    return {"type": "Feature", "properties": {}, "geometry": {"type": "LineString", "coordinates": coordinates}}
+
+
+@app.post("/api/road-route")
+async def api_road_route(requete: RequeteRoadRoute, infos=Security(verifier_minuteur_cle_api)):
+    if len(requete.points) < 2:
+        raise HTTPException(status_code=400, detail="Il faut au moins 2 points.")
+    if len(requete.points) > 500:
+        raise HTTPException(status_code=400, detail="Maximum 500 points par requête.")
+
+    for p in requete.points:
+        if not (-90 <= p.lat <= 90 and -180 <= p.lon <= 180):
+            raise HTTPException(status_code=400, detail=f"Coordonnée invalide pour {p.name}.")
+
+    # Le serveur public peut avoir une limite de longueur. On découpe donc
+    # les grosses tournées en morceaux puis on assemble les géométries.
+    chunk_size = 80
+    chunks = []
+    start_index = 0
+    while start_index < len(requete.points) - 1:
+        end_index = min(start_index + chunk_size, len(requete.points) - 1)
+        chunk_points = requete.points[start_index:end_index + 1]
+        chunks.append(_fetch_osrm_chunk(chunk_points))
+        start_index = end_index
+
+    total_distance = 0.0
+    total_duration = 0.0
+    valid_routes = []
+    for data in chunks:
+        if data.get("code") != "Ok" or not data.get("routes"):
+            raise HTTPException(status_code=502, detail="Le service routier n'a pas trouvé de route entre certains points.")
+        route = data["routes"][0]
+        total_distance += float(route.get("distance", 0))
+        total_duration += float(route.get("duration", 0))
+        valid_routes.append(route)
+
+    return {
+        "success": True,
+        "points": len(requete.points),
+        "distance_km": round(total_distance / 1000, 2),
+        "duration_min": round(total_duration / 60),
+        "geometry": _combine_geojson_lines(valid_routes),
+        "client": infos.get("client"),
+    }
+
+
+# ==============================================================================
 # REAL CALCULATION API
 # ==============================================================================
 
@@ -1376,15 +1729,41 @@ async def api_route(
     infos=Security(verifier_minuteur_cle_api)
 ):
 
-    if len(requete.villes) > 500:
+    if len(requete.villes) > MAX_POINTS_REQUETE:
         raise HTTPException(
             status_code=400,
-            detail="Maximum 500 points par requête."
+            detail=f"Maximum {MAX_POINTS_REQUETE} points par requête."
         )
 
-    route, distance = calculer_route_precision(
-        requete.villes
-    )
+    for lat, lon in requete.villes:
+        if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
+            raise HTTPException(status_code=400, detail="Coordonnées GPS invalides : latitude -90..90, longitude -180..180.")
+
+    if len(requete.villes) < 2:
+        raise HTTPException(status_code=400, detail="Il faut au moins 2 points : départ et destination.")
+
+    if len(requete.villes) == 2:
+        route = [0, 1]
+        distance = calculer_route_precision(requete.villes)[1]
+    else:
+        # Le départ (index 0) et la destination (dernier index) restent fixes.
+        # Seuls les arrêts intermédiaires sont optimisés par le moteur.
+        destination_index = len(requete.villes) - 1
+        intermediaires = [requete.villes[0]] + requete.villes[1:destination_index]
+        ordre, _ = calculer_route_precision(intermediaires)
+        ordre = [i for i in ordre if i != 0]
+        route = [0] + ordre + [destination_index]
+
+        # Distance de la projection du moteur pour information. La distance
+        # routière affichée au conducteur est calculée côté carte par OSRM.
+        distance = 0.0
+        for a, b in zip(route, route[1:]):
+            va, vb = requete.villes[a], requete.villes[b]
+            distance += math.sqrt(
+                ((float(va[0]) - float(vb[0])) * 111.0) ** 2 +
+                ((float(va[1]) - float(vb[1])) * 111.0 *
+                 math.cos(math.radians((float(va[0]) + float(vb[0])) / 2))) ** 2
+            )
 
     return {
         "success": True,
@@ -1401,7 +1780,6 @@ async def api_route(
 # ==============================================================================
 
 def obtenir_panneau_admin(
-    wallet: str,
     cle_generee: str = ""
 ):
 
@@ -1475,7 +1853,7 @@ def obtenir_panneau_admin(
             <h2>🎛️ Administration SwiftRoute</h2>
 
             <p style="color:#a1a1aa;">
-                Wallet : {wallet}
+                Paiement : Tiun · Produit {TIUN_PRODUCT_ID}
             </p>
 
             <form action="/admin-panel/generer" method="post">
@@ -1544,7 +1922,6 @@ async def vue_panneau_admin_serveur(
 
     return HTMLResponse(
         obtenir_panneau_admin(
-            VOTRE_WALLET_SOLANA,
             cle_generee
         )
     )
@@ -1649,7 +2026,7 @@ async def action_generer_cle_serveur(
 
     return HTMLResponse(
         obtenir_panneau_admin(
-            VOTRE_WALLET_SOLANA,
+            TIUN_PRODUCT_ID,
             token
         )
     )
