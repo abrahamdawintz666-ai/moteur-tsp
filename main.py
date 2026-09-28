@@ -32,8 +32,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PHRASE_SECRETE_NORD = os.getenv("JWT_SECRET_KEY", "CHANGE_ME_IN_RENDER_ENVIRONMENT")
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-NOM_UTILISATEUR_ADMIN = os.getenv("ADMIN_USERNAME", "Abraham")
-MOT_DE_PASSE_ADMIN = os.getenv("ADMIN_PASSWORD", "CHANGE_ME_IN_RENDER_ENVIRONMENT")
+NOM_UTILISATEUR_ADMIN = os.getenv("Abraham")
+MOT_DE_PASSE_ADMIN = os.getenv("Mrdadyplugth007 ")
 TIUN_PRODUCT_ID = os.getenv("TIUN_PRODUCT_ID", "p-live-0df3781")
 WHATSAPP_CONTACT = os.getenv("WHATSAPP_CONTACT", "+509 41 81 7761")
 EMAIL_CONTACT = os.getenv("EMAIL_CONTACT", "abrahamdawintz410@gmail.com")
