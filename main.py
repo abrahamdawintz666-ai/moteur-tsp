@@ -1560,9 +1560,9 @@ function afficherRechercheSurCarte() {{
 
     searchPoints.stops.forEach(point => points.push(point));
 
-    if (searchPoints.destination) {
+    if (searchPoints.destination) {{
         points.push(searchPoints.destination);
-    }
+    }}
 
     points.forEach((point, index) => {{
         ajouterMarqueur(point, index);
