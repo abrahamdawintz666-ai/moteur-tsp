@@ -4,7 +4,7 @@ Hybrid VRP Matrix / 4-Force ACO
 Author: Abraham — Cap-Haïtien 2026
 
 Version corrigée :
-- Essai gratuit persistant SQLite
+- Accès commercial géré par abonnement
 - Session HttpOnly
 - API développeur X-API-KEY
 - Authentification navigateur par session
@@ -89,7 +89,6 @@ TILE_URL = os.getenv(
 )
 
 DATABASE_PATH = os.getenv("SWIFTROUTE_DB", "swiftroute.db")
-DUREE_ESSAI_JOURS = 7
 MAX_POINTS_REQUETE = 500
 
 app = FastAPI(
@@ -240,9 +239,9 @@ def create_client_token(
         "jti": jti,
         "trial": trial,
         "type_offre": (
-            "Essai Gratuit 7 Jours"
+            "Accès commercial"
             if trial
-            else f"Accès {duration_days} Jours"
+            else f"Accès commercial {duration_days} Jours"
         )
     }
 
@@ -748,7 +747,7 @@ a{{color:inherit;text-decoration:none}}
 <div class="links">
 <a class="link" href="/docs">Documentation</a>
 <a class="link" href="/workspace">Espace client</a>
-<a class="btn" href="/essai-gratuit">Essai gratuit</a>
+<a class="btn" href="/visiteur">Visiteur</a>
 </div>
 </div>
 
@@ -761,7 +760,7 @@ GLOBAL ROUTE OPTIMIZATION INFRASTRUCTURE
 Optimisation de routes et de tournées avec recherche mondiale,
 coordonnées GPS, import CSV et tracé routier.
 </p>
-<a class="btn" href="/essai-gratuit">🎁 Tester gratuitement 7 jours</a>
+<a class="btn" href="/workspace">🔑 Accéder à mon espace client</a>
 </section>
 
 <div class="cards">
@@ -784,168 +783,150 @@ coordonnées GPS, import CSV et tracé routier.
 
 
 # ==============================================================================
-# TRIAL
+# COMMERCIAL ACCESS / CLIENT LOGIN
 # ==============================================================================
 
-@app.get("/essai-gratuit", response_class=HTMLResponse)
-async def page_essai_gratuit():
+@app.get("/workspace/login", response_class=HTMLResponse)
+async def workspace_login_page():
     return HTMLResponse("""
 <!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Essai gratuit</title>
+<title>SwiftRoute — Espace client</title>
 <style>
-body{background:#0c0a09;color:#f5f5f4;font-family:Arial;padding:20px}
-.box{max-width:520px;margin:50px auto;background:#1c1917;padding:30px;border-radius:16px;border:1px solid #2e2a24}
-h1{color:#f59e0b}
-label{display:block;margin-top:16px}
-input{width:100%;box-sizing:border-box;padding:13px;margin-top:7px;background:#0c0a09;color:white;border:1px solid #44403c;border-radius:8px}
-button{width:100%;padding:14px;margin-top:20px;background:#f59e0b;border:0;border-radius:8px;font-weight:bold}
-p{color:#a8a29e;line-height:1.6}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(circle at 70% -10%,#21190d 0,#09090b 45%);color:#f4f4f5;font-family:Inter,Arial,sans-serif;display:grid;place-items:center;padding:20px}
+.box{width:min(520px,100%);background:linear-gradient(180deg,#17171a,#101012);border:1px solid #2b2b30;border-radius:24px;padding:28px;box-shadow:0 25px 70px #0008}
+.logo{font-size:24px;font-weight:900;margin-bottom:22px}.accent{color:#f59e0b}
+h1{font-size:clamp(28px,6vw,42px);margin:0 0 8px;letter-spacing:-1.5px}p{color:#a1a1aa;line-height:1.6}
+label{display:block;margin:20px 0 7px;font-weight:800}input{width:100%;padding:14px;border-radius:13px;border:1px solid #3f3f46;background:#09090b;color:#fff;font-size:15px;outline:none}input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px #f59e0b18}
+button,a.btn{display:block;width:100%;margin-top:14px;padding:14px;border:0;border-radius:13px;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#0c0a09;font-weight:900;text-align:center;text-decoration:none;cursor:pointer}
+a.secondary{display:block;text-align:center;color:#d4d4d8;text-decoration:none;margin-top:14px;padding:12px;border:1px solid #303036;border-radius:13px}
+.note{margin-top:18px;padding:13px;border:1px solid #2b2b30;border-radius:13px;background:#0d0d10;font-size:13px}
 </style>
 </head>
 <body>
 <div class="box">
-<h1>🐜 SwiftRoute</h1>
-<h2>Essai gratuit de 7 jours</h2>
-<p>Créez votre accès d'essai.</p>
-<form action="/essai-gratuit" method="post">
-<label>Nom de l'entreprise</label>
-<input name="client_name" maxlength="120" required>
-<label>Adresse e-mail</label>
-<input type="email" name="email" maxlength="254" required>
-<button type="submit">🚀 Commencer mon essai</button>
+<div class="logo">🐜 SwiftRoute <span class="accent">Commercial</span></div>
+<h1>Espace client</h1>
+<p>Vous avez déjà une clé API ? Entrez-la pour ouvrir votre espace. Si vous n'en avez pas, passez par votre abonnement commercial.</p>
+<form action="/workspace/login" method="post">
+<label for="api_key">Clé API</label>
+<input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="Votre clé API SwiftRoute" required>
+<button type="submit">🔓 Ouvrir mon espace</button>
 </form>
+<a class="btn" href="/visiteur">💳 Je n'ai pas encore de clé — Voir l'abonnement</a>
+<div class="note">La clé n'est pas affichée dans l'URL et la session navigateur utilise un cookie HttpOnly.</div>
+<a class="secondary" href="/">← Retour à l'accueil</a>
 </div>
 </body>
 </html>
 """)
 
 
-@app.post("/essai-gratuit")
-async def creer_essai_gratuit(
-    request: Request,
-    client_name: str = Form(...),
-    email: str = Form(...)
-):
-    client_name = client_name.strip()
-    email = normalize_email(email)
-
-    if not client_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Nom de l'entreprise obligatoire."
-        )
-
-    if len(client_name) > 120:
-        raise HTTPException(
-            status_code=400,
-            detail="Nom de l'entreprise trop long."
-        )
-
-    if "@" not in email or len(email) > 254:
-        raise HTTPException(
-            status_code=400,
-            detail="Adresse e-mail invalide."
-        )
-
-    ip = get_client_ip(request)
-    email_hash = hash_value(email)
-    ip_hash = hash_value(ip)
-
-    conn = db_connect()
-
-    existing_email = conn.execute(
-        "SELECT id FROM trials WHERE email_hash = ?",
-        (email_hash,)
-    ).fetchone()
-
-    if existing_email:
-        conn.close()
-        return HTMLResponse(
-            "<h2>Cet e-mail a déjà utilisé un essai.</h2>"
-            '<a href="/workspace">Espace client</a>',
-            status_code=409
-        )
-
-    existing_ip = conn.execute(
-        "SELECT id FROM trials WHERE ip_hash = ?",
-        (ip_hash,)
-    ).fetchone()
-
-    if existing_ip:
-        conn.close()
-        return HTMLResponse(
-            "<h2>Un essai a déjà été créé depuis ce réseau.</h2>"
-            '<a href="/workspace">Espace client</a>',
-            status_code=429
-        )
-
-    token, jti, expiration = create_client_token(
-        client_name,
-        email,
-        DUREE_ESSAI_JOURS,
-        trial=True
-    )
-
-    now = datetime.datetime.now(
-        datetime.timezone.utc
-    )
+@app.post("/workspace/login")
+async def workspace_login(api_key: str = Form(...)):
+    api_key = api_key.strip()
+    if not api_key:
+        return RedirectResponse("/workspace/login", status_code=303)
 
     try:
-        conn.execute(
-            """
-            INSERT INTO trials
-            (email,email_hash,client_name,ip_hash,token_jti,
-             created_at,expires_at,active,usage_count)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                email,
-                email_hash,
-                client_name,
-                ip_hash,
-                jti,
-                now.isoformat(),
-                expiration.isoformat(),
-                1,
-                0
-            )
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
+        infos = verify_token(api_key)
+    except HTTPException:
         return HTMLResponse(
-            "<h2>Un essai existe déjà pour ce compte.</h2>",
-            status_code=409
+            "<h2>Clé API invalide ou expirée.</h2><a href=\"/workspace/login\">Réessayer</a>",
+            status_code=401
         )
 
-    conn.close()
+    expiration_ts = infos.get("exp")
+    if not expiration_ts:
+        return HTMLResponse(
+            "<h2>La clé API ne contient pas de date d'expiration.</h2><a href=\"/workspace/login\">Réessayer</a>",
+            status_code=401
+        )
+
+    expiration = datetime.datetime.fromtimestamp(
+        int(expiration_ts), datetime.timezone.utc
+    )
+    if expiration <= datetime.datetime.now(datetime.timezone.utc):
+        return HTMLResponse(
+            "<h2>Cette clé API est expirée.</h2><a href=\"/workspace/login\">Réessayer</a>",
+            status_code=401
+        )
 
     session_id = create_session(
-        client_name,
-        email,
-        jti,
+        infos.get("client", "Client"),
+        infos.get("email"),
+        infos.get("jti"),
         expiration
     )
 
-    response = RedirectResponse(
-        "/workspace",
-        status_code=303
-    )
-
+    response = RedirectResponse("/workspace", status_code=303)
+    max_age = max(60, int((expiration - datetime.datetime.now(datetime.timezone.utc)).total_seconds()))
     response.set_cookie(
         key="swiftroute_session",
         value=session_id,
         httponly=True,
         secure=True,
         samesite="lax",
-        max_age=DUREE_ESSAI_JOURS * 86400
+        max_age=max_age
     )
-
     return response
+
+
+@app.get("/visiteur", response_class=HTMLResponse)
+async def page_visiteur():
+    return HTMLResponse(f"""
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SwiftRoute — Visiteur</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;background:radial-gradient(circle at 70% -10%,#21190d 0,#09090b 45%);color:#f4f4f5;font-family:Inter,Arial,sans-serif}}
+.wrap{{width:min(1120px,92%);margin:auto;padding:28px 0 60px}}
+.nav{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:45px}}
+.logo{{font-weight:900;font-size:22px}}.accent{{color:#f59e0b}}
+.nav a{{color:#d4d4d8;text-decoration:none;padding:10px 13px;border:1px solid #303036;border-radius:11px}}
+.hero{{padding:55px 0 35px}}h1{{font-size:clamp(42px,8vw,82px);line-height:.95;letter-spacing:-4px;margin:0 0 18px}}
+.hero p{{max-width:720px;color:#a1a1aa;font-size:18px;line-height:1.7}}
+.actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:25px}}
+.btn{{padding:13px 17px;border-radius:12px;text-decoration:none;font-weight:900;background:#f59e0b;color:#0c0a09}}
+.btn.secondary{{background:#18181b;color:#f4f4f5;border:1px solid #303036}}
+.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:35px}}
+.card{{padding:22px;border:1px solid #27272a;border-radius:18px;background:linear-gradient(180deg,#151518,#111113);min-height:150px}}
+.card h3{{margin-top:0}}.muted{{color:#a1a1aa;line-height:1.6}}
+@media(max-width:760px){{.grid{{grid-template-columns:1fr}}h1{{letter-spacing:-2px}}}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav"><div class="logo">🐜 SwiftRoute <span class="accent">Commercial</span></div><div><a href="/">Accueil</a> <a href="/workspace">Espace client</a></div></div>
+<section class="hero">
+<div class="accent"><strong>VISITEUR · ANTSTRIKE COMMERCIAL</strong></div>
+<h1>Optimisez vos routes. Visualisez. Décidez.</h1>
+<p>SwiftRoute combine recherche mondiale, coordonnées GPS, import CSV, optimisation de tournées et visualisation cartographique dans une interface SaaS pensée pour un usage professionnel.</p>
+<div class="actions"><a class="btn" href="/workspace">🔑 J'ai déjà une clé API</a><a class="btn secondary" href="/">← Retour</a></div>
+</section>
+<div class="grid">
+<div class="card"><h3>🌍 Recherche mondiale</h3><p class="muted">Recherchez une ville ou une adresse puis visualisez ses coordonnées.</p></div>
+<div class="card"><h3>🗺️ Carte interactive</h3><p class="muted">Visualisez les points et le tracé routier directement sur la carte.</p></div>
+<div class="card"><h3>🔐 Accès commercial</h3><p class="muted">L'accès à l'espace de calcul est réservé aux utilisateurs disposant d'une clé API active.</p></div>
+</div>
+</div>
+</body>
+</html>
+""")
+
+
+@app.get("/essai-gratuit")
+async def legacy_trial_redirect():
+    # Ancienne URL conservée uniquement pour éviter les liens cassés; aucun essai n'est créé.
+    return RedirectResponse("/workspace", status_code=303)
 
 
 # ==============================================================================
@@ -964,31 +945,7 @@ async def verifier_acces(
     """
 
     if api_key:
-        infos = verify_token(api_key)
-
-        jti = infos.get("jti")
-
-        if infos.get("trial") and jti:
-            conn = db_connect()
-            row = conn.execute(
-                """
-                SELECT *
-                FROM trials
-                WHERE token_jti = ? AND active = 1
-                """,
-                (jti,)
-            ).fetchone()
-            conn.close()
-
-            if not row:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Trial access revoked."
-                )
-
-            mark_trial_usage(jti)
-
-        return infos
+        return verify_token(api_key)
 
     session = get_session(swiftroute_session)
 
@@ -997,8 +954,8 @@ async def verifier_acces(
             "client": session["client_name"],
             "email": session["email"],
             "jti": session["token_jti"],
-            "trial": True,
-            "type_offre": "Session navigateur"
+            "trial": False,
+            "type_offre": "Accès commercial"
         }
 
     raise HTTPException(
@@ -1019,7 +976,7 @@ async def workspace(
 
     if not session:
         return RedirectResponse(
-            "/essai-gratuit",
+            "/workspace/login",
             status_code=303
         )
 
@@ -1050,12 +1007,21 @@ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
 :root{{--bg:#09090b;--panel:#111113;--panel2:#151518;--line:#27272a;--muted:#a1a1aa;--accent:#f59e0b;--ok:#22c55e}}
 html{{scroll-behavior:smooth}}
 body{{margin:0;background:radial-gradient(circle at 70% -10%,#1b1710 0,#09090b 42%);color:#f4f4f5;font-family:Inter,Arial,sans-serif}}
-.side-rail{{position:fixed;left:0;top:0;bottom:0;width:68px;background:#0b0b0d;border-right:1px solid var(--line);z-index:1100;display:flex;flex-direction:column;align-items:center;padding:14px 8px;gap:10px}}
+.side-rail{{position:fixed;left:0;top:0;bottom:0;width:68px;background:#0b0b0d;border-right:1px solid var(--line);z-index:1100;display:flex;flex-direction:column;align-items:center;padding:14px 8px;gap:10px}} .menu-toggle{{position:fixed;left:16px;top:14px;width:48px;height:48px;border:1px solid #3f3f46;border-radius:15px;background:#18181b;color:#fff;z-index:1300;font-size:23px;cursor:pointer;box-shadow:0 12px 30px #0006}}
+.menu-overlay{{position:fixed;inset:0;background:#0008;backdrop-filter:blur(3px);z-index:1050;display:none}}
+.menu-overlay.open{{display:block}}
+.rail-head{{width:100%;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}}
+.rail-close{{border:0;background:transparent;color:#a1a1aa;font-size:28px;cursor:pointer}}
+.rail-btn span{{display:none}}
+.side-rail.open{{width:230px;align-items:stretch;padding:14px 12px}}
+.side-rail.open .rail-btn{{width:100%;justify-content:flex-start;display:flex;align-items:center;gap:13px;padding:0 13px}}
+.side-rail.open .rail-btn span{{display:inline;font-size:14px;font-weight:800}}
+
 .rail-logo{{font-size:25px;margin:2px 0 12px}}
 .rail-btn{{width:48px;height:48px;border:1px solid transparent;border-radius:14px;background:transparent;color:#d4d4d8;font-size:20px;cursor:pointer;display:grid;place-items:center;transition:.18s}}
 .rail-btn:hover,.rail-btn.active{{background:#18181b;border-color:#3f3f46;color:var(--accent);transform:translateY(-1px)}}
-.top{{position:sticky;top:0;z-index:1000;margin-left:68px;padding:13px 22px;background:#0c0c0eee;backdrop-filter:blur(12px);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:15px;align-items:center}}
-.container{{max-width:1420px;margin:auto;margin-left:68px;padding:18px 18px 50px}}
+.top{{position:sticky;top:0;z-index:1000;margin-left:0;padding:13px 22px;background:#0c0c0eee;backdrop-filter:blur(12px);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:15px;align-items:center}}
+.container{{max-width:1420px;margin:auto;padding:18px 18px 50px}}
 .card{{background:linear-gradient(180deg,#151518,#111113);border:1px solid var(--line);border-radius:18px;padding:20px;margin-bottom:18px;box-shadow:0 10px 30px #00000025}}
 .card h1{{font-size:clamp(26px,4vw,42px);letter-spacing:-1.5px;margin:0 0 8px}}
 .card h2{{letter-spacing:-.5px}}
@@ -1105,10 +1071,12 @@ button.action:disabled{{opacity:.6}}
 .section-head{{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:12px}}
 .badge{{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;background:#1a1a1d;border:1px solid #303036;color:#d4d4d8;font-size:12px}}
 @media(max-width:850px){{
-.side-rail{{width:56px;padding:10px 5px}}
-.rail-btn{{width:42px;height:42px;font-size:18px}}
-.top{{margin-left:56px;padding:11px 12px}}
-.container{{margin-left:56px;padding:12px 9px 38px}}
+.side-rail{{width:230px;transform:translateX(-105%);transition:transform .22s ease;align-items:stretch;padding:14px 12px}}
+.side-rail.open{{transform:translateX(0)}}
+.rail-btn{{width:100%;justify-content:flex-start;display:flex;align-items:center;gap:13px;padding:0 13px}}
+.rail-btn span{{display:inline;font-size:14px;font-weight:800}}
+.top{{margin-left:0;padding:11px 12px 11px 76px}}
+.container{{margin-left:0;padding:12px 9px 38px}}
 .toolbar{{grid-template-columns:repeat(3,1fr)}}
 .row,.stats{{grid-template-columns:1fr 1fr}}
 }}
@@ -1124,15 +1092,16 @@ button.action:disabled{{opacity:.6}}
 
 <body>
 
-<nav class="side-rail" aria-label="Navigation rapide">
-  <div class="rail-logo">🐜</div>
-  <button class="rail-btn active" title="Accueil" onclick="window.scrollTo({top:0,behavior:'smooth'})">⌂</button>
-  <button class="rail-btn" title="Optimisation" onclick="document.querySelector('.card:nth-of-type(3)')?.scrollIntoView({behavior:'smooth'})">⚡</button>
-  <button class="rail-btn" title="Carte" onclick="document.getElementById('map')?.scrollIntoView({behavior:'smooth'})">🗺️</button>
-  <button class="rail-btn" title="Accès" onclick="document.querySelector('.card:nth-of-type(2)')?.scrollIntoView({behavior:'smooth'})">🔑</button>
-  <button class="rail-btn" title="Résultats" onclick="document.getElementById('result')?.scrollIntoView({behavior:'smooth'})">▥</button>
-  <button class="rail-btn" title="Facturation" onclick="document.querySelector('.card:nth-of-type(2)')?.scrollIntoView({behavior:'smooth'})">▣</button>
-  <button class="rail-btn" title="Assistance" onclick="document.querySelector('.card:nth-of-type(2)')?.scrollIntoView({behavior:'smooth'})">•••</button>
+<button class="menu-toggle" id="menu-toggle" aria-label="Ouvrir le menu" aria-expanded="false">☰</button>
+<div class="menu-overlay" id="menu-overlay"></div>
+<nav class="side-rail" id="side-rail" aria-label="Navigation principale">
+  <div class="rail-head"><div class="rail-logo">🐜</div><button class="rail-close" id="rail-close" aria-label="Fermer">×</button></div>
+  <button class="rail-btn active" title="Accueil" onclick="goSection('home')">⌂<span>Accueil</span></button>
+  <button class="rail-btn" title="Optimisation" onclick="goSection('optimization')">⚡<span>Optimisation</span></button>
+  <button class="rail-btn" title="Carte" onclick="goSection('map')">🗺️<span>Carte</span></button>
+  <button class="rail-btn" title="Résultats" onclick="goSection('result')">▥<span>Résultats</span></button>
+  <a class="rail-btn" title="Visiteur" href="/visiteur">👤<span>Visiteur</span></a>
+  <a class="rail-btn" title="Espace client" href="/workspace">🔑<span>Espace client</span></a>
 </nav>
 
 <div class="top">
@@ -1142,14 +1111,14 @@ button.action:disabled{{opacity:.6}}
 
 <div class="container">
 
-<div class="card">
+<div class="card" id="home">
 <h1>🌍 Planificateur de routes international</h1>
 <p class="muted">
 Bonjour {session["client_name"]}. Recherche une adresse,
 utilise des coordonnées GPS ou importe un CSV.
 </p>
 <p class="small">
-Compte : {email} · Expiration :
+Compte commercial : {email} · Expiration de la clé :
 <span class="orange">{expiration_display}</span>
 </p>
 </div>
@@ -1157,7 +1126,7 @@ Compte : {email} · Expiration :
 <div class="card">
 <h3>💳 Abonnement et assistance</h3>
 <p class="muted">
-Produit Tiun : <span class="coord">{TIUN_PRODUCT_ID}</span>
+Accès commercial · Produit : <span class="coord">{TIUN_PRODUCT_ID}</span>
 </p>
 <div class="controls">
 <a class="secondary"
@@ -1175,7 +1144,7 @@ E-mail : {EMAIL_CONTACT}
 </div>
 </div>
 
-<div class="card">
+<div class="card" id="optimization">
 
 <h2>1. Choisir le type de données</h2>
 
@@ -1249,7 +1218,7 @@ Pour de nombreux points, utilise directement les coordonnées GPS.
 <div id="panel-csv" class="panel">
 <p class="muted">
 CSV : <strong>name,lat,lon</strong>.
-Maximum 500 points pour l’offre Standard.
+Limite de traitement selon votre clé API et les ressources disponibles.
 </p>
 
 <div class="file">
@@ -1272,7 +1241,7 @@ Effacer
 
 </div>
 
-<div class="card">
+<div class="card" id="map-section">
 <h2>2. Carte routière</h2>
 <div id="map"></div>
 <p class="small">
@@ -1312,6 +1281,21 @@ let searchPoints = {{
 
 let gpsPoints = [];
 
+function setMenu(open) {{
+    const rail = document.getElementById("side-rail");
+    const overlay = document.getElementById("menu-overlay");
+    const toggle = document.getElementById("menu-toggle");
+    rail.classList.toggle("open", open);
+    overlay.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}}
+
+function goSection(name) {{
+    const target = name === "map" ? "map-section" : name;
+    document.getElementById(target)?.scrollIntoView({{behavior:"smooth", block:"start"}});
+    setMenu(false);
+}}
+
 function initMap() {{
     if (!window.L) {{
         throw new Error("Leaflet n'a pas pu être chargé.");
@@ -1334,6 +1318,9 @@ document.addEventListener("DOMContentLoaded", () => {{
     try {{
         initMap();
         initButtons();
+        document.getElementById("menu-toggle").addEventListener("click", () => setMenu(true));
+        document.getElementById("rail-close").addEventListener("click", () => setMenu(false));
+        document.getElementById("menu-overlay").addEventListener("click", () => setMenu(false));
 
         ajouterLigne({{
             name: "Départ",
@@ -1637,7 +1624,7 @@ function ajouterLigne(point = {{
     lon: ""
 }}) {{
     if (gpsPoints.length >= 500) {{
-        alert("Maximum 500 points pour l’offre Standard.");
+        alert("Limite de traitement selon votre clé API et les ressources disponibles.");
         return;
     }}
 
@@ -1790,9 +1777,9 @@ function importerCSV(event) {{
                 );
             }}
 
-            if (parsed.length > 500) {{
+            if (parsed.length > 1000) {{
                 throw new Error(
-                    "Maximum 500 points."
+                    "Maximum 1000 points dans ce fichier CSV."
                 );
             }}
 
@@ -1908,9 +1895,9 @@ async function optimiser() {{
     try {{
         const points = obtenirPoints();
 
-        if (points.length > 500) {{
+        if (points.length > 1000) {{
             throw new Error(
-                "Maximum 500 points."
+                "Maximum 1000 points dans cette interface."
             );
         }}
 
@@ -2727,10 +2714,10 @@ async def action_generer_cle_serveur(
             status_code=403
         )
 
-    if duration not in (7, 30, 365):
+    if duration not in (30, 365):
         raise HTTPException(
             status_code=400,
-            detail="Durée invalide."
+            detail="Durée invalide. Les essais gratuits sont désactivés."
         )
 
     client_name = client_name.strip()
@@ -2740,56 +2727,8 @@ async def action_generer_cle_serveur(
         client_name,
         email,
         duration,
-        trial=(duration == 7)
+        trial=False
     )
-
-    if duration == 7:
-        conn = db_connect()
-
-        email_hash = hash_value(email)
-        ip_hash = hash_value(
-            get_client_ip(request)
-        )
-
-        existing = conn.execute(
-            "SELECT id FROM trials WHERE email_hash = ?",
-            (email_hash,)
-        ).fetchone()
-
-        if existing:
-            conn.close()
-            return HTMLResponse(
-                "<h2>Cet e-mail possède déjà un essai.</h2>",
-                status_code=409
-            )
-
-        now = datetime.datetime.now(
-            datetime.timezone.utc
-        )
-
-        conn.execute(
-            """
-            INSERT INTO trials
-            (email,email_hash,client_name,ip_hash,
-             token_jti,created_at,expires_at,
-             active,usage_count)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                email,
-                email_hash,
-                client_name,
-                ip_hash,
-                jti,
-                now.isoformat(),
-                expiration.isoformat(),
-                1,
-                0
-            )
-        )
-
-        conn.commit()
-        conn.close()
 
     # CORRECTION IMPORTANTE :
     # obtenir_panneau_admin accepte UNE seule valeur.
