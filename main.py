@@ -32,8 +32,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PHRASE_SECRETE_NORD = os.getenv("JWT_SECRET_KEY", "CHANGE_ME_IN_RENDER_ENVIRONMENT")
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-NOM_UTILISATEUR_ADMIN = os.getenv("Abraham")
-MOT_DE_PASSE_ADMIN = os.getenv("Mrdadyplugth007 ")
+NOM_UTILISATEUR_ADMIN = os.getenv("ADMIN_USERNAME", "Abraham")
+MOT_DE_PASSE_ADMIN = os.getenv("ADMIN_PASSWORD", "CHANGE_ME_IN_RENDER_ENVIRONMENT")
 TIUN_PRODUCT_ID = os.getenv("TIUN_PRODUCT_ID", "p-live-0df3781")
 WHATSAPP_CONTACT = os.getenv("WHATSAPP_CONTACT", "+509 41 81 7761")
 EMAIL_CONTACT = os.getenv("EMAIL_CONTACT", "abrahamdawintz410@gmail.com")
@@ -260,17 +260,11 @@ async def api_geocode_batch(requete:RequetePoints):
 # ========================= HOME =========================
 def obtenir_page_accueil():
     return '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Engine</title>
-<script type="module">
-import { tiun } from 'https://esm.sh/@tiun/sdk';
-tiun.init({
-  snippetId:'JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR',
-  language:'fr'
-});
-</script>
+<script type="module">import { tiun } from 'https://esm.sh/@tiun/sdk'; tiun.init({snippetId:'__TIUN_SNIPPET_ID__',language:'fr'});</script>
 <style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial,sans-serif}a{color:inherit;text-decoration:none}.nav{max-width:1180px;margin:auto;padding:22px;display:flex;justify-content:space-between;align-items:center}.brand{font-weight:900;font-size:21px}.nav a{margin-left:18px;color:#a1a1aa}.hero{max-width:1050px;margin:auto;text-align:center;padding:100px 22px 80px}.eyebrow{color:#f59e0b;font-weight:800;letter-spacing:2px}h1{font-size:clamp(44px,8vw,82px);margin:18px 0;letter-spacing:-3px}.hero p{color:#a1a1aa;max-width:760px;margin:0 auto 32px;line-height:1.7;font-size:18px}.btn{display:inline-block;padding:14px 20px;border-radius:12px;margin:5px;font-weight:800}.primary{background:#f59e0b;color:#09090b}.ghost{border:1px solid #27272a}.grid{max-width:1050px;margin:auto;padding:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#111113;border:1px solid #27272a;border-radius:18px;padding:25px}.card p{color:#a1a1aa;line-height:1.6}@media(max-width:800px){.grid{grid-template-columns:1fr}.nav{flex-wrap:wrap}}</style></head><body>
 <div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a><a href="/essai-gratuit">Essai</a></div></div>
 <section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées conçue pour traiter jusqu'à 1 000 points et présenter le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/essai-gratuit">Démarrer l'essai 7 jours</a></section>
-<div class="grid"><div class="card"><h3>⚡ Optimisation</h3><p>Ordonnancement des points avec le moteur SwiftRoute.</p></div><div class="card"><h3>🌍 Carte</h3><p>Visualisation interactive et tracé routier lorsque le fournisseur est disponible.</p></div><div class="card"><h3>🔑 API</h3><p>Accès développeur avec clé API ou session client sécurisée.</p></div></div></body></html>'''.replace('__TILE_URL__', TILE_URL)
+<div class="grid"><div class="card"><h3>⚡ Optimisation</h3><p>Ordonnancement des points avec le moteur SwiftRoute.</p></div><div class="card"><h3>🌍 Carte</h3><p>Visualisation interactive et tracé routier lorsque le fournisseur est disponible.</p></div><div class="card"><h3>🔑 API</h3><p>Accès développeur avec clé API ou session client sécurisée.</p></div></div></body></html>'''.replace('__TILE_URL__', TILE_URL).replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID)
 
 @app.get("/",response_class=HTMLResponse)
 async def page_accueil_serveur(): return HTMLResponse(obtenir_page_accueil())
@@ -325,8 +319,25 @@ async def logout(swiftroute_session:str=Cookie(default=None)):
 def workspace_html():
     return '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute — Dashboard</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script type="module">
+import { tiun } from 'https://esm.sh/@tiun/sdk';
+tiun.init({
+  snippetId: '__TIUN_SNIPPET_ID__',
+  language: 'fr',
+  onError: (error) => {
+    console.error('[Tiun]', error);
+    window.dispatchEvent(new CustomEvent('tiun:error', {detail: error}));
+  }
+});
+window.tiun = tiun;
+</script>
 <style>
-*{box-sizing:border-box}:root{--bg:#08090b;--panel:#101216;--panel2:#151820;--line:#262a33;--muted:#8d95a3;--orange:#f59e0b;--orange2:#ffb52e;--green:#22c55e;--danger:#ef4444}body{margin:0;background:radial-gradient(circle at 70% -10%,#24200f 0,#08090b 34%);color:#f5f5f5;font-family:Inter,ui-sans-serif,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);background:#0b0d10eF;backdrop-filter:blur(16px);padding:20px 14px;display:flex;flex-direction:column}.logo{font-size:20px;font-weight:950;padding:8px 10px 28px}.logo span{color:var(--orange)}.navbtn{width:100%;text-align:left;background:transparent;border:1px solid transparent;color:#aeb5c0;padding:12px 13px;border-radius:10px;margin:3px 0;font-weight:700}.navbtn:hover,.navbtn.active{background:#191b20;border-color:#2a2e37;color:#fff}.navbtn.active{box-shadow:inset 3px 0 0 var(--orange)}.bottom{margin-top:auto}.main{min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0b0d10b8;backdrop-filter:blur(14px);position:sticky;top:0;z-index:900}.status{color:#9ca3af;font-size:13px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px;box-shadow:0 0 12px var(--green)}.content{padding:28px;max-width:1500px;margin:auto}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:22px}h1{font-size:34px;margin:0 0 6px;letter-spacing:-1.5px}.muted{color:var(--muted)}.primary{background:linear-gradient(135deg,var(--orange2),var(--orange));border:0;color:#0a0a0a;font-weight:900;padding:13px 17px;border-radius:11px;box-shadow:0 8px 28px #f59e0b25}.ghost{background:#17191e;color:#fff;border:1px solid #30343e;padding:12px 15px;border-radius:10px;font-weight:800}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.stat{background:linear-gradient(145deg,#13161b,#0f1115);border:1px solid var(--line);border-radius:15px;padding:18px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:28px;margin-top:8px;color:var(--orange)}.workspace{display:grid;grid-template-columns:410px minmax(0,1fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:18px;box-shadow:0 18px 50px #0002}.panel h2{font-size:17px;margin:0 0 15px}.tabs{display:flex;gap:7px;margin-bottom:14px}.tab{flex:1;background:#17191e;color:#aeb5c0;border:1px solid #292d36;padding:10px;border-radius:9px;font-weight:800}.tab.active{color:#fff;border-color:#8b5b08;background:#211a0c}.modepanel{display:none}.modepanel.active{display:block}label{display:block;color:#d6d8dd;font-size:12px;font-weight:800;margin:13px 0 6px}input,textarea{width:100%;background:#0a0c0f;color:#fff;border:1px solid #30343d;border-radius:9px;padding:12px;outline:none}input:focus{border-color:#9b6b0c;box-shadow:0 0 0 3px #f59e0b12}.searchrow{display:grid;grid-template-columns:1fr auto;gap:7px}.searchrow button{background:#20232a;border:1px solid #343944;color:#fff;border-radius:9px;padding:0 12px}.pointshead{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.counter{font-family:monospace;color:var(--orange)}.progress{height:5px;background:#262a31;border-radius:9px;overflow:hidden;margin:9px 0 12px}.progress i{display:block;height:100%;width:0;background:var(--orange);transition:width .25s}.gpslist{max-height:360px;overflow:auto;padding-right:3px}.gpsrow{display:grid;grid-template-columns:30px 1fr 1fr 34px;gap:5px;margin-bottom:6px}.gpsrow input{padding:9px;font-size:12px}.num{display:grid;place-items:center;color:#777f8d;font-size:11px}.remove{background:#191b20;color:#ef4444;border:1px solid #30343d;border-radius:8px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.big{grid-column:1/-1;padding:14px;border-radius:11px;font-size:15px}.mapwrap{padding:0;overflow:hidden;min-height:650px;position:relative}#map{height:100%;min-height:650px;background:#111}.maptools{position:absolute;top:14px;left:14px;z-index:700;display:flex;gap:7px;flex-wrap:wrap}.maptools button{background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:800;backdrop-filter:blur(10px)}.result{margin-top:14px;border:1px solid #6a4708;background:#17130a;border-radius:12px;padding:13px;display:none}.quality{margin-top:12px;padding:13px;border:1px solid #292d36;background:#0d0f13;border-radius:12px}.quality-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.quality-card{padding:10px;border:1px solid #292d36;border-radius:10px;background:#101216}.quality-card b{display:block;font-size:20px;margin-top:4px}.quality-list{max-height:240px;overflow:auto;margin-top:10px}.q-valid{color:#22c55e}.q-review{color:#f59e0b}.q-invalid{color:#ef4444}.q-unknown{color:#a1a1aa}@media(max-width:650px){.quality-grid{grid-template-columns:1fr 1fr}}.section-panel{margin-top:16px;scroll-margin-top:90px}.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.info-card{background:#0d0f13;border:1px solid #292d36;border-radius:13px;padding:15px}.info-card strong{display:block;font-size:22px;color:var(--orange);margin-top:5px}.quick-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.quick-actions button{flex:1;min-width:140px}.support-link{display:inline-flex;align-items:center;gap:8px;text-decoration:none;background:#17191e;color:#fff;border:1px solid #30343e;padding:11px 14px;border-radius:10px;font-weight:800}.navbtn .navtext{margin-left:8px}.route-list{max-height:230px;overflow:auto;line-height:1.75;color:#d2d6dd;font-size:13px}.toast{position:fixed;right:20px;bottom:20px;background:#17191e;border:1px solid #343944;padding:13px 15px;border-radius:11px;z-index:2000;display:none;box-shadow:0 20px 60px #0008}.loading{display:none;position:absolute;inset:0;background:#090b0ee8;z-index:800;align-items:center;justify-content:center;flex-direction:column;gap:14px}.spinner{width:40px;height:40px;border:3px solid #343944;border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1100px){.app{grid-template-columns:76px 1fr}.logo{font-size:0;text-align:center}.logo:first-letter{font-size:22px}.navbtn{font-size:0;text-align:center}.navbtn:first-letter{font-size:20px}.navbtn .navtext{display:none}.workspace{grid-template-columns:1fr}#map,.mapwrap{min-height:520px}.cards{grid-template-columns:repeat(2,1fr)}.info-grid{grid-template-columns:1fr 1fr}}@media(max-width:650px){.content{padding:15px}.top{padding:0 15px}.hero{align-items:flex-start;flex-direction:column}h1{font-size:28px}.cards{grid-template-columns:1fr 1fr;gap:8px}.stat{padding:12px}.stat strong{font-size:22px}.workspace{display:flex;flex-direction:column}.mapwrap{order:-1}#map{min-height:420px}.gpslist{max-height:280px}.info-grid{grid-template-columns:1fr}.side{padding:15px 10px}.navbtn{padding:12px 8px}}
+*{box-sizing:border-box}:root{--bg:#08090b;--panel:#101216;--panel2:#151820;--line:#262a33;--muted:#8d95a3;--orange:#f59e0b;--orange2:#ffb52e;--green:#22c55e;--danger:#ef4444}body{margin:0;background:radial-gradient(circle at 70% -10%,#24200f 0,#08090b 34%);color:#f5f5f5;font-family:Inter,ui-sans-serif,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);background:#0b0d10eF;backdrop-filter:blur(16px);padding:20px 14px;display:flex;flex-direction:column}.logo{font-size:20px;font-weight:950;padding:8px 10px 28px}.logo span{color:var(--orange)}.navbtn{width:100%;text-align:left;background:transparent;border:1px solid transparent;color:#aeb5c0;padding:12px 13px;border-radius:10px;margin:3px 0;font-weight:700}.navbtn:hover,.navbtn.active{background:#191b20;border-color:#2a2e37;color:#fff}.navbtn.active{box-shadow:inset 3px 0 0 var(--orange)}.bottom{margin-top:auto}.main{min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0b0d10b8;backdrop-filter:blur(14px);position:sticky;top:0;z-index:900}.status{color:#9ca3af;font-size:13px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px;box-shadow:0 0 12px var(--green)}.content{padding:28px;max-width:1500px;margin:auto}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:22px}h1{font-size:34px;margin:0 0 6px;letter-spacing:-1.5px}.muted{color:var(--muted)}.primary{background:linear-gradient(135deg,var(--orange2),var(--orange));border:0;color:#0a0a0a;font-weight:900;padding:13px 17px;border-radius:11px;box-shadow:0 8px 28px #f59e0b25}.ghost{background:#17191e;color:#fff;border:1px solid #30343e;padding:12px 15px;border-radius:10px;font-weight:800}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.stat{background:linear-gradient(145deg,#13161b,#0f1115);border:1px solid var(--line);border-radius:15px;padding:18px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:28px;margin-top:8px;color:var(--orange)}.workspace{display:grid;grid-template-columns:410px minmax(0,1fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:18px;box-shadow:0 18px 50px #0002}.panel h2{font-size:17px;margin:0 0 15px}.tabs{display:flex;gap:7px;margin-bottom:14px}.tab{flex:1;background:#17191e;color:#aeb5c0;border:1px solid #292d36;padding:10px;border-radius:9px;font-weight:800}.tab.active{color:#fff;border-color:#8b5b08;background:#211a0c}.modepanel{display:none}.modepanel.active{display:block}label{display:block;color:#d6d8dd;font-size:12px;font-weight:800;margin:13px 0 6px}input,textarea{width:100%;background:#0a0c0f;color:#fff;border:1px solid #30343d;border-radius:9px;padding:12px;outline:none}input:focus{border-color:#9b6b0c;box-shadow:0 0 0 3px #f59e0b12}.searchrow{display:grid;grid-template-columns:1fr auto;gap:7px}.searchrow button{background:#20232a;border:1px solid #343944;color:#fff;border-radius:9px;padding:0 12px}.pointshead{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.counter{font-family:monospace;color:var(--orange)}.progress{height:5px;background:#262a31;border-radius:9px;overflow:hidden;margin:9px 0 12px}.progress i{display:block;height:100%;width:0;background:var(--orange);transition:width .25s}.gpslist{max-height:360px;overflow:auto;padding-right:3px}.gpsrow{display:grid;grid-template-columns:30px 1fr 1fr 34px;gap:5px;margin-bottom:6px}.gpsrow input{padding:9px;font-size:12px}.num{display:grid;place-items:center;color:#777f8d;font-size:11px}.remove{background:#191b20;color:#ef4444;border:1px solid #30343d;border-radius:8px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.big{grid-column:1/-1;padding:14px;border-radius:11px;font-size:15px}.mapwrap{padding:0;overflow:hidden;min-height:650px;position:relative}#map{height:100%;min-height:650px;background:#111}.maptools{position:absolute;top:14px;left:14px;z-index:700;display:flex;gap:7px;flex-wrap:wrap}.maptools button{background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:800;backdrop-filter:blur(10px)}.result{margin-top:14px;border:1px solid #6a4708;background:#17130a;border-radius:12px;padding:13px;display:none}.quality{margin-top:12px;padding:13px;border:1px solid #292d36;background:#0d0f13;border-radius:12px}.quality-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.quality-card{padding:10px;border:1px solid #292d36;border-radius:10px;background:#101216}.quality-card b{display:block;font-size:20px;margin-top:4px}.quality-list{max-height:240px;overflow:auto;margin-top:10px}.q-valid{color:#22c55e}.q-review{color:#f59e0b}.q-invalid{color:#ef4444}.q-unknown{color:#a1a1aa}@media(max-width:650px){.quality-grid{grid-template-columns:1fr 1fr}}.section-panel{margin-top:16px;scroll-margin-top:90px}
+.view-hidden{display:none!important}
+.content{min-height:calc(100vh - 72px)}
+.view-panel{margin-top:0}
+#optimizer{margin-top:0}
+.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.info-card{background:#0d0f13;border:1px solid #292d36;border-radius:13px;padding:15px}.info-card strong{display:block;font-size:22px;color:var(--orange);margin-top:5px}.quick-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.quick-actions button{flex:1;min-width:140px}.support-link{display:inline-flex;align-items:center;gap:8px;text-decoration:none;background:#17191e;color:#fff;border:1px solid #30343e;padding:11px 14px;border-radius:10px;font-weight:800}.navbtn .navtext{margin-left:8px}.route-list{max-height:230px;overflow:auto;line-height:1.75;color:#d2d6dd;font-size:13px}.toast{position:fixed;right:20px;bottom:20px;background:#17191e;border:1px solid #343944;padding:13px 15px;border-radius:11px;z-index:2000;display:none;box-shadow:0 20px 60px #0008}.loading{display:none;position:absolute;inset:0;background:#090b0ee8;z-index:800;align-items:center;justify-content:center;flex-direction:column;gap:14px}.spinner{width:40px;height:40px;border:3px solid #343944;border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1100px){.app{grid-template-columns:76px 1fr}.logo{font-size:0;text-align:center}.logo:first-letter{font-size:22px}.navbtn{font-size:0;text-align:center}.navbtn:first-letter{font-size:20px}.navbtn .navtext{display:none}.workspace{grid-template-columns:1fr}#map,.mapwrap{min-height:520px}.cards{grid-template-columns:repeat(2,1fr)}.info-grid{grid-template-columns:1fr 1fr}}@media(max-width:650px){.content{padding:15px}.top{padding:0 15px}.hero{align-items:flex-start;flex-direction:column}h1{font-size:28px}.cards{grid-template-columns:1fr 1fr;gap:8px}.stat{padding:12px}.stat strong{font-size:22px}.workspace{display:flex;flex-direction:column}.mapwrap{order:-1}#map{min-height:420px}.gpslist{max-height:280px}.info-grid{grid-template-columns:1fr}.side{padding:15px 10px}.navbtn{padding:12px 8px}}
 </style></head><body>
 <div class="app"><aside class="side"><div class="logo">🐜 <span>SWIFTROUTE</span></div><button class="navbtn active" data-nav="dashboard" title="Dashboard" onclick="goSection('dashboard',this)">🏠 <span class="navtext">Dashboard</span></button><button class="navbtn" data-nav="optimizer" title="Optimizer" onclick="goSection('optimizer',this)">⚡ <span class="navtext">Optimizer</span></button><button class="navbtn" data-nav="map" title="Map" onclick="goSection('mapPanel',this)">🗺️ <span class="navtext">Map</span></button><button class="navbtn" data-nav="api" title="API" onclick="goSection('apiPanel',this)">🔑 <span class="navtext">API</span></button><button class="navbtn" data-nav="usage" title="Usage" onclick="goSection('usagePanel',this)">📊 <span class="navtext">Usage</span></button><button class="navbtn" data-nav="billing" title="Billing" onclick="goSection('billingPanel',this)">💳 <span class="navtext">Billing</span></button><button class="navbtn" data-nav="support" title="Support" onclick="goSection('supportPanel',this)">💬 <span class="navtext">Support</span></button><div class="bottom"><form action="/logout" method="post"><button class="navbtn" title="Déconnexion">↪️ <span class="navtext">Déconnexion</span></button></form></div></aside>
 <main class="main"><header class="top"><strong>Route Intelligence</strong><div class="status"><span class="dot"></span>Session active</div></header><div class="content">
@@ -340,15 +351,117 @@ def workspace_html():
 <div class="panel mapwrap" id="mapPanel"><div class="maptools"><button onclick="fitAll()">⌖ Recentrer</button><button id="markerToggle" onclick="toggleMarkers()">● Points ON</button><button onclick="focusMap()">Carte</button></div><div class="loading" id="loading"><div class="spinner"></div><b id="loadingText">Optimisation...</b><span class="muted">SwiftRoute Engine</span></div><div id="map"></div></div></section>
 <section class="panel section-panel" id="apiPanel"><h2>🔑 Developer Access</h2><p class="muted">Utilisez votre clé avec <code>X-API-KEY</code> pour les appels directs. L'interface web utilise une session HttpOnly.</p><div style="background:#090b0e;border:1px solid #2d3139;border-radius:10px;padding:12px;font-family:monospace;overflow:auto">POST /api/route<br>X-API-KEY: YOUR_API_KEY<br>Content-Type: application/json</div><div class="quick-actions"><button class="ghost" onclick="copyApiExample()">📋 Copier l'exemple API</button><button class="ghost" onclick="toast('La clé API reste protégée dans votre espace client.')">🔒 Sécurité</button></div></section>
 <section class="panel section-panel" id="usagePanel"><h2>📊 Usage</h2><p class="muted">Suivi de cette session et de la dernière optimisation effectuée.</p><div class="info-grid"><div class="info-card"><small class="muted">Points chargés</small><strong id="usagePoints">0</strong></div><div class="info-card"><small class="muted">Optimisations</small><strong id="usageRuns">0</strong></div><div class="info-card"><small class="muted">Dernier résultat</small><strong id="usageDistance">—</strong></div></div><div class="quick-actions"><button class="ghost" onclick="goSection('optimizer')">⚡ Nouvelle optimisation</button><button class="ghost" onclick="resetUsageView()">↻ Réinitialiser l'affichage</button></div></section>
-<section class="panel section-panel" id="billingPanel"><h2>💳 Billing</h2><p class="muted">Gestion de votre accès SwiftRoute.</p><div class="info-grid"><div class="info-card"><small class="muted">Statut</small><strong style="color:var(--green)">ACTIF</strong></div><div class="info-card"><small class="muted">Limite</small><strong>1 000</strong></div><div class="info-card"><small class="muted">Offre</small><strong style="font-size:16px">Client API</strong></div></div><div class="quick-actions"><button class="ghost" onclick="toast('Pour modifier votre offre, contactez le support.')">Modifier l'offre</button><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=SwiftRoute%20Billing">✉️ Contacter la facturation</a></div></section>
+<section class="panel section-panel" id="billingPanel"><h2>💳 Billing & Tiun</h2><p class="muted">Gérez votre abonnement SwiftRoute avec Tiun, notre Merchant of Record.</p><div class="info-grid"><div class="info-card"><small class="muted">Statut</small><strong id="billingStatus" style="color:var(--green)">PRÊT</strong></div><div class="info-card"><small class="muted">Limite</small><strong>1 000</strong></div><div class="info-card"><small class="muted">Produit</small><strong style="font-size:16px">SwiftRoute</strong></div></div><div class="quick-actions"><button class="primary" onclick="startTiunCheckout()">💳 Prendre l'abonnement</button><button class="ghost" onclick="tiunLogin()">🔐 J'ai déjà un abonnement</button><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=SwiftRoute%20Billing">✉️ Contacter la facturation</a></div><div id="tiunStatus" class="result" style="display:none"></div></section>
 <section class="panel section-panel" id="supportPanel"><h2>💬 Support</h2><p class="muted">Besoin d'aide pour l'API, la carte ou l'optimisation ? Contactez directement SwiftRoute.</p><div class="quick-actions"><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=Support%20SwiftRoute">✉️ E-mail support</a><a class="support-link" target="_blank" rel="noopener" href="https://wa.me/__WHATSAPP_DIGITS__?text=Bonjour%20SwiftRoute%2C%20j%27ai%20besoin%20d%27aide.">💬 WhatsApp</a><button class="ghost" onclick="showHelp()">❓ Aide rapide</button></div><div id="helpBox" class="result" style="display:none">1. Ajoutez vos points GPS, CSV ou via Recherche.<br>2. Vérifiez les coordonnées.<br>3. Lancez <b>OPTIMIZE ROUTE</b>.<br>4. Utilisez la carte pour contrôler l'itinéraire.</div></section>
 </div></main></div><div id="toast" class="toast"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
-let map=L.map('map').setView([19.5,-72.3],8); let routeLayer=null,markers=[],gpsPoints=[],searchPoints={depart:null,destination:null,stops:[]}; let markerVisible=true; let optimizationRuns=0; let lastDistance='—';
+let map=L.map('map').setView([19.5,-72.3],8);
+window.addEventListener('load',()=>goSection('dashboard',document.querySelector('.navbtn[data-nav="dashboard"]'))); let routeLayer=null,markers=[],gpsPoints=[],searchPoints={depart:null,destination:null,stops:[]}; let markerVisible=true; let optimizationRuns=0; let lastDistance='—';
 L.tileLayer('__TILE_URL__',{maxZoom:19,subdomains:['a','b','c'],attribution:'&copy; OpenStreetMap contributors'}).on('tileerror',()=>{}).addTo(map);
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';clearTimeout(window._toast);window._toast=setTimeout(()=>x.style.display='none',3000)}
-function setActiveNav(key){document.querySelectorAll('.navbtn[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===key))}
-function goSection(id,btn){let el=document.getElementById(id);if(!el)return;if(id==='mapPanel')setTimeout(()=>map.invalidateSize(),350);el.scrollIntoView({behavior:'smooth',block:'start'});let key=btn?.dataset?.nav||({dashboard:'dashboard',optimizer:'optimizer',mapPanel:'map',apiPanel:'api',usagePanel:'usage',billingPanel:'billing',supportPanel:'support'}[id]||'dashboard');setActiveNav(key)}
+
+function startTiunCheckout(){
+  const status = document.getElementById('tiunStatus');
+  const showStatus = (message) => {
+    if(status){
+      status.textContent = message;
+      status.style.display = 'block';
+    }
+  };
+
+  if(!window.tiun || typeof window.tiun.checkout !== 'function'){
+    showStatus("Tiun n'est pas encore prêt. Recharge la page puis réessaie.");
+    return;
+  }
+
+  try{
+    showStatus("Ouverture du paiement Tiun…");
+    window.tiun.checkout({productId:'__TIUN_PRODUCT_ID__'});
+  }catch(error){
+    console.error('[Tiun checkout]', error);
+    showStatus("Impossible d'ouvrir le paiement Tiun. Vérifie le produit et le snippet Tiun.");
+  }
+}
+
+function tiunLogin(){
+  if(!window.tiun || typeof window.tiun.login !== 'function'){
+    toast("Tiun n'est pas encore prêt.");
+    return;
+  }
+  try{
+    window.tiun.login();
+  }catch(error){
+    console.error('[Tiun login]', error);
+    toast("Impossible d'ouvrir la connexion Tiun.");
+  }
+}
+
+if(window.tiun && typeof window.tiun.on === 'function'){
+  window.tiun.on('userChange', (data) => {
+    const status = document.getElementById('billingStatus');
+    if(!status) return;
+    const access = data?.user?.productAccess || [];
+    status.textContent = access.includes('__TIUN_PRODUCT_ID__') ? 'ABONNÉ' : 'PRÊT';
+  });
+  window.tiun.on('error', (error) => {
+    console.error('[Tiun event]', error);
+  });
+}
+function setActiveNav(key){
+  document.querySelectorAll('.navbtn[data-nav]').forEach(b =>
+    b.classList.toggle('active', b.dataset.nav === key)
+  );
+}
+
+function goSection(id,btn){
+  const dashboard = document.getElementById('dashboard');
+  const optimizer = document.getElementById('optimizer');
+  const mapPanel = document.getElementById('mapPanel');
+  const apiPanel = document.getElementById('apiPanel');
+  const usagePanel = document.getElementById('usagePanel');
+  const billingPanel = document.getElementById('billingPanel');
+  const supportPanel = document.getElementById('supportPanel');
+  const cards = document.querySelector('.cards');
+  const routeBuilder = optimizer ? optimizer.querySelector('.panel:first-child') : null;
+
+  // Everything starts hidden: only the selected view is displayed.
+  [dashboard, optimizer, apiPanel, usagePanel, billingPanel, supportPanel]
+    .filter(Boolean)
+    .forEach(el => el.classList.add('view-hidden'));
+
+  if (routeBuilder) routeBuilder.classList.remove('view-hidden');
+  if (mapPanel) mapPanel.classList.remove('view-hidden');
+  if (cards) cards.classList.add('view-hidden');
+
+  if (id === 'dashboard') {
+    dashboard?.classList.remove('view-hidden');
+    cards?.classList.remove('view-hidden');
+  } else if (id === 'optimizer') {
+    optimizer?.classList.remove('view-hidden');
+    routeBuilder?.classList.remove('view-hidden');
+    mapPanel?.classList.remove('view-hidden');
+  } else if (id === 'mapPanel') {
+    optimizer?.classList.remove('view-hidden');
+    routeBuilder?.classList.add('view-hidden');
+    mapPanel?.classList.remove('view-hidden');
+    setTimeout(() => map.invalidateSize(), 120);
+  } else {
+    document.getElementById(id)?.classList.remove('view-hidden');
+  }
+
+  const key = btn?.dataset?.nav || ({
+    dashboard:'dashboard',
+    optimizer:'optimizer',
+    mapPanel:'map',
+    apiPanel:'api',
+    usagePanel:'usage',
+    billingPanel:'billing',
+    supportPanel:'support'
+  }[id] || 'dashboard');
+
+  setActiveNav(key);
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 function newOptimization(){clearAll();goSection('optimizer');toast('Nouvelle optimisation prête.')}
 function copyApiExample(){const text=`POST /api/route\nX-API-KEY: YOUR_API_KEY\nContent-Type: application/json`; if(navigator.clipboard){navigator.clipboard.writeText(text).then(()=>toast('Exemple API copié.')).catch(()=>fallbackCopy(text))}else{fallbackCopy(text)}}
 function fallbackCopy(text){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy');toast('Exemple API copié.')}catch(e){toast('Copie non disponible sur ce navigateur.')}ta.remove()}
@@ -394,7 +507,7 @@ async function classifyPoints(){
 
 async function optimize(){let result=document.getElementById('result');try{let points=getPoints();showLoading("Calcul de l’ordre optimal...");let r=await fetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);drawMarkers(ordered);fitAll();showLoading('Calcul du tracé routier...');let rr=await fetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : tracé SwiftRoute affiché.');road={geometry:straightGeo(ordered),distance_km:data.distance_km,duration_min:'—',fallback:true}}if(routeLayer)map.removeLayer(routeLayer);routeLayer=L.geoJSON(road.geometry,{style:{color:'#f59e0b',weight:5,opacity:.95}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<b>✓ Itinéraire optimisé</b><div style="margin-top:7px;color:#a1a1aa">'+ordered.length+' points · '+(road.fallback?'tracé de secours':'tracé routier')+'</div><hr style="border-color:#292d36"><div class="route-list">'+ordered.map((p,i)=>(i+1)+'. '+esc(p.name)).join('<br>')+'</div>';hideLoading();toast('Optimisation terminée.')}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
 addPoint({name:'Départ',lat:'',lon:''});addPoint({name:'Destination',lat:'',lon:''});window.addEventListener('resize',()=>map.invalidateSize());
-</script></body></html>'''.replace('__TILE_URL__', TILE_URL).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit()))
+</script></body></html>'''.replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID).replace('__TIUN_PRODUCT_ID__', TIUN_PRODUCT_ID).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit())).replace('__TILE_URL__', TILE_URL).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit()))
 
 # ========================= ENGINE =========================
 # SwiftRoute FAST: ACO + adaptive 2-opt + early stopping.
