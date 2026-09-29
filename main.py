@@ -38,12 +38,15 @@ TIUN_PRODUCT_ID = os.getenv("TIUN_PRODUCT_ID", "p-live-0df3781")
 WHATSAPP_CONTACT = os.getenv("WHATSAPP_CONTACT", "+509 41 81 7761")
 EMAIL_CONTACT = os.getenv("EMAIL_CONTACT", "abrahamdawintz410@gmail.com")
 TIUN_SNIPPET_ID = os.getenv("TIUN_SNIPPET_ID", "JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR")
-TIUN_SECRET_KEY = os.getenv("TIUN_SECRET_KEY", "")
+# Tiun server-side verification. The API key must stay on Render, never in HTML/JS.
+TIUN_API_BASE = os.getenv("TIUN_API_BASE", "https://api-sandbox.tiun.live").rstrip("/")
+TIUN_API_KEY = os.getenv("TIUN_API_KEY", "")
 GEOCODING_URL = os.getenv("GEOCODING_URL", "https://nominatim.openstreetmap.org/search")
 GEOCODING_USER_AGENT = os.getenv("GEOCODING_USER_AGENT", "SwiftRoute/1.0 contact=admin@swiftroute.example")
 ROUTING_URL = os.getenv("ROUTING_URL", "https://router.project-osrm.org")
 TILE_URL = os.getenv("TILE_URL", "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png")
 DATABASE_PATH = os.getenv("SWIFTROUTE_DB", "swiftroute.db")
+DUREE_ESSAI_JOURS = 7
 MAX_POINTS_REQUETE = 1000
 MAX_CSV_POINTS = 1000
 
@@ -58,6 +61,11 @@ def db_connect():
 
 def init_database():
     conn = db_connect()
+    conn.execute("""CREATE TABLE IF NOT EXISTS trials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE,
+        email_hash TEXT NOT NULL, client_name TEXT NOT NULL, ip_hash TEXT NOT NULL,
+        token_jti TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1, usage_count INTEGER NOT NULL DEFAULT 0)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS cities (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
         lat REAL NOT NULL, lon REAL NOT NULL)""")
@@ -93,6 +101,51 @@ init_database()
 def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
+def verifier_session_tiun(session_id: str):
+    """Vérifie une session Tiun directement auprès de l'API S2S.
+
+    200 = accès valide. 404 = session invalide/expirée/sans fonds.
+    Toute autre réponse est refusée par défaut (fail closed).
+    """
+    if not session_id:
+        raise HTTPException(401, "Session Tiun manquante.")
+    if not TIUN_API_KEY:
+        raise HTTPException(503, "La vérification Tiun n'est pas configurée sur le serveur.")
+
+    url = f"{TIUN_API_BASE}/live_api/s2s/v1/sessions/{quote(session_id, safe='')}/status"
+    req = URLRequest(url, method="PATCH", headers={"X-TIUN-API-KEY": TIUN_API_KEY})
+    try:
+        with urlopen(req, timeout=12) as response:
+            status = response.status
+    except Exception as exc:
+        # urllib expose les réponses HTTP d'erreur via HTTPError.
+        status = getattr(exc, "code", None)
+        if status is None:
+            raise HTTPException(502, "Impossible de vérifier la session Tiun.")
+
+    if status == 200:
+        return {"valid": True, "session_id": session_id}
+    if status == 404:
+        raise HTTPException(403, "Abonnement Tiun invalide, expiré ou sans fonds.")
+    if status == 401:
+        raise HTTPException(503, "La clé API Tiun du serveur est incorrecte.")
+    raise HTTPException(503, f"Tiun a retourné le statut {status}.")
+
+
+async def verifier_acces_swiftroute(
+    request: Request,
+    api_key: str = Security(api_key_header),
+    swiftroute_session: str = Cookie(default=None),
+):
+    """Autorise soit l'ancien accès API/session SwiftRoute, soit une session Tiun valide."""
+    tiun_session = request.headers.get("x-session-id")
+    if tiun_session:
+        verifier_session_tiun(tiun_session)
+        return {"client": "Tiun", "trial": False, "type_offre": "Abonnement Tiun", "tiun_session": tiun_session}
+    return await verifier_minuteur_cle_api(request, api_key, swiftroute_session)
+
+
+
 
 def normalize_email(email: str) -> str:
     return email.strip().lower()
@@ -109,7 +162,7 @@ def create_client_token(client_name, email, duration_days, trial=False):
     expiration = now + datetime.timedelta(days=duration_days)
     jti = secrets.token_urlsafe(32)
     payload = {"client":client_name,"email":email,"exp":int(expiration.timestamp()),"iat":int(now.timestamp()),
-               "jti":jti,"trial":False,"type_offre":f"Accès {duration_days} Jours"}
+               "jti":jti,"trial":trial,"type_offre":"Essai Gratuit 7 Jours" if trial else f"Accès {duration_days} Jours"}
     token = jwt.encode(payload, PHRASE_SECRETE_NORD, algorithm="HS256")
     return token,jti,expiration
 
@@ -140,27 +193,48 @@ def verify_token(token):
 
 
 def validate_api_token(token):
-    return verify_token(token)
+    infos=verify_token(token); jti=infos.get("jti")
+    if infos.get("trial") and jti:
+        conn=db_connect(); row=conn.execute("SELECT * FROM trials WHERE token_jti=? AND active=1",(jti,)).fetchone(); conn.close()
+        if not row: raise HTTPException(403,"Accès d'essai révoqué.")
+        expiration=datetime.datetime.fromisoformat(row["expires_at"])
+        if expiration <= datetime.datetime.now(datetime.timezone.utc): raise HTTPException(402,"Votre essai a expiré.")
+    return infos
+
+
+def mark_trial_usage(jti):
+    conn=db_connect(); conn.execute("UPDATE trials SET usage_count=usage_count+1 WHERE token_jti=?",(jti,)); conn.commit(); conn.close()
 
 
 async def verifier_minuteur_cle_api(request: Request, api_key: str = Security(api_key_header), swiftroute_session: str = Cookie(default=None)):
     # 1) API directe pour les développeurs
     if api_key:
-        return validate_api_token(api_key)
-
+        infos=validate_api_token(api_key)
+        if infos.get("trial") and infos.get("jti"): mark_trial_usage(infos["jti"])
+        return infos
     # 2) Session HttpOnly pour l'interface web
     session=get_session(swiftroute_session)
     if session:
-        return {
-            "client":session["client_name"],
-            "email":session["email"],
-            "jti":session["token_jti"],
-            "trial":False,
-            "type_offre":"Accès Client"
-        }
-
+        jti=session["token_jti"]
+        conn=db_connect(); trial=conn.execute("SELECT * FROM trials WHERE token_jti=? AND active=1",(jti,)).fetchone() if jti else None; conn.close()
+        if trial:
+            infos=validate_api_token(create_signed_token_from_jti(jti))
+        else:
+            # Session commerciale non-essai: les métadonnées sont suffisantes pour les routes web.
+            infos={"client":session["client_name"],"email":session["email"],"jti":jti,"trial":False,"type_offre":"Accès Client"}
+        if trial: mark_trial_usage(jti)
+        return infos
     raise HTTPException(403,"Authentification requise. Connectez-vous avec votre clé API.")
 
+
+def create_signed_token_from_jti(jti):
+    # Retrouve et re-signe temporairement les métadonnées d'un essai pour réutiliser
+    # la validation JWT. Le token original n'est pas stocké en clair en base.
+    conn=db_connect(); row=conn.execute("SELECT client_name,email,expires_at FROM trials WHERE token_jti=?",(jti,)).fetchone(); conn.close()
+    if not row: raise HTTPException(403,"Session d'essai invalide.")
+    exp=datetime.datetime.fromisoformat(row["expires_at"])
+    payload={"client":row["client_name"],"email":row["email"],"exp":int(exp.timestamp()),"iat":int(time.time()),"jti":jti,"trial":True,"type_offre":"Essai Gratuit 7 Jours"}
+    return jwt.encode(payload,PHRASE_SECRETE_NORD,algorithm="HS256")
 
 # ========================= GEOCODING =========================
 def normalize_city_name(value):
@@ -230,33 +304,49 @@ async def api_geocode_batch(requete:RequetePoints):
     if len(requete.points)>25: raise HTTPException(400,"Maximum 25 recherches d'adresse par opération. Pour 1000 points, utilisez GPS ou CSV.")
     return {"results":[{**geocode_global(p.name),"input":p.name} for p in requete.points]}
 
+# ========================= TIUN SERVER-SIDE VERIFICATION =========================
+class RequeteTiunSession(BaseModel):
+    session_id: str
+
+
+@app.post("/api/tiun/verify-session")
+async def api_tiun_verify_session(requete: RequeteTiunSession):
+    """Endpoint appelé après paywallHide pour vérifier la session Tiun côté serveur."""
+    return verifier_session_tiun(requete.session_id)
+
+
 # ========================= HOME =========================
 def obtenir_page_accueil():
     return '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Engine</title>
 <script type="module">import { tiun } from 'https://esm.sh/@tiun/sdk'; tiun.init({snippetId:'__TIUN_SNIPPET_ID__',language:'fr'});</script>
 <style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial,sans-serif}a{color:inherit;text-decoration:none}.nav{max-width:1180px;margin:auto;padding:22px;display:flex;justify-content:space-between;align-items:center}.brand{font-weight:900;font-size:21px}.nav a{margin-left:18px;color:#a1a1aa}.hero{max-width:1050px;margin:auto;text-align:center;padding:100px 22px 80px}.eyebrow{color:#f59e0b;font-weight:800;letter-spacing:2px}h1{font-size:clamp(44px,8vw,82px);margin:18px 0;letter-spacing:-3px}.hero p{color:#a1a1aa;max-width:760px;margin:0 auto 32px;line-height:1.7;font-size:18px}.btn{display:inline-block;padding:14px 20px;border-radius:12px;margin:5px;font-weight:800}.primary{background:#f59e0b;color:#09090b}.ghost{border:1px solid #27272a}.grid{max-width:1050px;margin:auto;padding:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#111113;border:1px solid #27272a;border-radius:18px;padding:25px}.card p{color:#a1a1aa;line-height:1.6}@media(max-width:800px){.grid{grid-template-columns:1fr}.nav{flex-wrap:wrap}}</style></head><body>
-<div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a><a href="/essai-gratuit">Abonnement</a></div></div>
-<section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées conçue pour traiter jusqu'à 1 000 points et présenter le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/essai-gratuit">Voir les abonnements</a></section>
+<div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a><a href="/essai-gratuit">Essai</a></div></div>
+<section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées conçue pour traiter jusqu'à 1 000 points et présenter le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/essai-gratuit">Démarrer l'essai 7 jours</a></section>
 <div class="grid"><div class="card"><h3>⚡ Optimisation</h3><p>Ordonnancement des points avec le moteur SwiftRoute.</p></div><div class="card"><h3>🌍 Carte</h3><p>Visualisation interactive et tracé routier lorsque le fournisseur est disponible.</p></div><div class="card"><h3>🔑 API</h3><p>Accès développeur avec clé API ou session client sécurisée.</p></div></div></body></html>'''.replace('__TILE_URL__', TILE_URL).replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID)
 
 @app.get("/",response_class=HTMLResponse)
 async def page_accueil_serveur(): return HTMLResponse(obtenir_page_accueil())
 
-# ========================= TIUN ACCESS =========================
+# ========================= TRIAL =========================
 @app.get("/essai-gratuit",response_class=HTMLResponse)
 async def page_essai_gratuit():
-    return HTMLResponse("""<!doctype html><html lang="fr"><head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SwiftRoute — Accès</title>
-<style>body{background:#09090b;color:#fff;font-family:Arial;padding:20px}.box{max-width:500px;margin:50px auto;background:#111113;border:1px solid #27272a;border-radius:18px;padding:28px}h1{color:#f59e0b}.btn{display:block;width:100%;box-sizing:border-box;padding:14px;margin-top:20px;border:0;border-radius:9px;background:#f59e0b;color:#09090b;font-weight:800;text-align:center;text-decoration:none}</style>
-</head><body><div class="box"><h1>🐜 SwiftRoute</h1><h2>Accès SwiftRoute</h2>
-<p>L’essai et l’abonnement sont maintenant gérés par Tiun.</p>
-<a class="btn" href="/workspace#billingPanel">Continuer avec Tiun</a>
-</div></body></html>""")
+    return HTMLResponse('''<!doctype html><html lang="fr"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Essai SwiftRoute</title><style>body{background:#09090b;color:#fff;font-family:Arial;padding:20px}.box{max-width:500px;margin:50px auto;background:#111113;border:1px solid #27272a;border-radius:18px;padding:28px}h1{color:#f59e0b}label{display:block;margin-top:16px}input{width:100%;padding:13px;margin-top:7px;box-sizing:border-box;background:#09090b;border:1px solid #3f3f46;color:#fff;border-radius:9px}button{width:100%;padding:14px;margin-top:20px;border:0;border-radius:9px;background:#f59e0b;font-weight:800}</style></head><body><div class="box"><h1>🐜 SwiftRoute</h1><h2>Essai gratuit — 7 jours</h2><p>Créez votre accès d'essai.</p><form method="post" action="/essai-gratuit"><label>Entreprise<input name="client_name" maxlength="120" required></label><label>E-mail<input type="email" name="email" maxlength="254" required></label><button>🚀 Commencer</button></form></div></body></html>''')
 
 @app.post("/essai-gratuit")
-async def ancien_endpoint_essai_gratuit():
-    return RedirectResponse("/workspace#billingPanel",303)
+async def creer_essai_gratuit(request:Request,client_name:str=Form(...),email:str=Form(...)):
+    client_name=client_name.strip(); email=normalize_email(email)
+    if not client_name or len(client_name)>120: raise HTTPException(400,"Nom d'entreprise invalide.")
+    if "@" not in email or len(email)>254: raise HTTPException(400,"Adresse e-mail invalide.")
+    ip_hash=hash_value(get_client_ip(request)); email_hash=hash_value(email); conn=db_connect()
+    if conn.execute("SELECT id FROM trials WHERE email_hash=?",(email_hash,)).fetchone(): conn.close(); return HTMLResponse("<h2>Cet e-mail a déjà utilisé un essai.</h2><a href='/workspace'>Espace Client</a>",409)
+    if conn.execute("SELECT id FROM trials WHERE ip_hash=?",(ip_hash,)).fetchone(): conn.close(); return HTMLResponse("<h2>Un essai a déjà été créé depuis ce réseau.</h2>",429)
+    token,jti,expiration=create_client_token(client_name,email,DUREE_ESSAI_JOURS,True); now=datetime.datetime.now(datetime.timezone.utc)
+    try:
+        conn.execute("INSERT INTO trials(email,email_hash,client_name,ip_hash,token_jti,created_at,expires_at,active,usage_count) VALUES(?,?,?,?,?,?,?,?,?)",(email,email_hash,client_name,ip_hash,jti,now.isoformat(),expiration.isoformat(),1,0)); conn.commit()
+    except sqlite3.IntegrityError: conn.close(); return HTMLResponse("<h2>Un essai existe déjà.</h2>",409)
+    conn.close(); session_id=create_session(client_name,email,jti,expiration); response=RedirectResponse("/workspace",303)
+    response.set_cookie("swiftroute_session",session_id,httponly=True,secure=True,samesite="lax",max_age=DUREE_ESSAI_JOURS*86400)
+    return response
 
 # ========================= CLIENT LOGIN =========================
 LOGIN_HTML='''<!doctype html><html lang="fr"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Espace Client — SwiftRoute</title><style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial}.wrap{min-height:100vh;display:grid;place-items:center;padding:20px}.box{width:min(460px,100%);background:#111113;border:1px solid #27272a;border-radius:22px;padding:30px;box-shadow:0 20px 80px #0008}h1{margin:0 0 8px}.muted{color:#a1a1aa;line-height:1.6}label{display:block;margin:20px 0 7px;font-weight:700}input{width:100%;box-sizing:border-box;padding:14px;background:#09090b;border:1px solid #3f3f46;border-radius:10px;color:#fff;font-family:monospace}button{width:100%;padding:14px;margin-top:18px;border:0;border-radius:10px;background:#f59e0b;font-weight:900;cursor:pointer}.links{display:flex;justify-content:space-between;margin-top:20px}.links a{color:#f59e0b;text-decoration:none}</style></head><body><div class="wrap"><div class="box"><div style="font-size:22px;font-weight:900">🐜 SWIFTROUTE</div><h1>Espace Client</h1><p class="muted">Connectez-vous avec la clé API qui vous a été fournie. La clé n'est pas placée dans l'URL.</p><form method="post" action="/client-login"><label>Clé API</label><input name="api_key" type="password" placeholder="Votre clé API" required autocomplete="off"><button>🔐 Se connecter</button></form><div class="links"><a href="/essai-gratuit">Nouvel utilisateur</a><a href="/">Accueil</a></div></div></div></body></html>'''
@@ -319,7 +409,7 @@ window.tiun = tiun;
 <div class="panel mapwrap" id="mapPanel"><div class="maptools"><button onclick="fitAll()">⌖ Recentrer</button><button id="markerToggle" onclick="toggleMarkers()">● Points ON</button><button onclick="focusMap()">Carte</button></div><div class="loading" id="loading"><div class="spinner"></div><b id="loadingText">Optimisation...</b><span class="muted">SwiftRoute Engine</span></div><div id="map"></div></div></section>
 <section class="panel section-panel" id="apiPanel"><h2>🔑 Developer Access</h2><p class="muted">Utilisez votre clé avec <code>X-API-KEY</code> pour les appels directs. L'interface web utilise une session HttpOnly.</p><div style="background:#090b0e;border:1px solid #2d3139;border-radius:10px;padding:12px;font-family:monospace;overflow:auto">POST /api/route<br>X-API-KEY: YOUR_API_KEY<br>Content-Type: application/json</div><div class="quick-actions"><button class="ghost" onclick="copyApiExample()">📋 Copier l'exemple API</button><button class="ghost" onclick="toast('La clé API reste protégée dans votre espace client.')">🔒 Sécurité</button></div></section>
 <section class="panel section-panel" id="usagePanel"><h2>📊 Usage</h2><p class="muted">Suivi de cette session et de la dernière optimisation effectuée.</p><div class="info-grid"><div class="info-card"><small class="muted">Points chargés</small><strong id="usagePoints">0</strong></div><div class="info-card"><small class="muted">Optimisations</small><strong id="usageRuns">0</strong></div><div class="info-card"><small class="muted">Dernier résultat</small><strong id="usageDistance">—</strong></div></div><div class="quick-actions"><button class="ghost" onclick="goSection('optimizer')">⚡ Nouvelle optimisation</button><button class="ghost" onclick="resetUsageView()">↻ Réinitialiser l'affichage</button></div></section>
-<section class="panel section-panel" id="billingPanel"><h2>💳 Billing & Tiun</h2><p class="muted">Gérez votre abonnement SwiftRoute avec Tiun, notre Merchant of Record.</p><div class="info-grid"><div class="info-card"><small class="muted">Statut</small><strong id="billingStatus" style="color:var(--green)">PRÊT</strong></div><div class="info-card"><small class="muted">Limite</small><strong>1 000</strong></div><div class="info-card"><small class="muted">Produit</small><strong style="font-size:16px">SwiftRoute</strong></div></div><div class="quick-actions"><button class="primary" onclick="startTiunCheckout()">💳 Prendre l'abonnement</button><button class="ghost" onclick="tiunLogin()">🔐 J'ai déjà un abonnement</button><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=SwiftRoute%20Billing">✉️ Contacter la facturation</a></div><div id="tiunStatus" class="result" style="display:none"></div></section>
+<section class="panel section-panel" id="billingPanel"><h2>💳 Billing & Tiun</h2><p class="muted">Gérez votre abonnement SwiftRoute avec Tiun, notre Merchant of Record.</p><div class="info-grid"><div class="info-card"><small class="muted">Statut</small><strong id="billingStatus" style="color:var(--green)">NON VÉRIFIÉ</strong></div><div class="info-card"><small class="muted">Limite</small><strong>1 000</strong></div><div class="info-card"><small class="muted">Produit</small><strong style="font-size:16px">SwiftRoute</strong></div></div><div class="quick-actions"><button class="primary" onclick="startTiunCheckout()">💳 Prendre l'abonnement</button><button class="ghost" onclick="tiunLogin()">🔐 J'ai déjà un abonnement</button><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=SwiftRoute%20Billing">✉️ Contacter la facturation</a></div><div id="tiunStatus" class="result" style="display:none"></div></section>
 <section class="panel section-panel" id="supportPanel"><h2>💬 Support</h2><p class="muted">Besoin d'aide pour l'API, la carte ou l'optimisation ? Contactez directement SwiftRoute.</p><div class="quick-actions"><a class="support-link" href="mailto:__EMAIL_CONTACT__?subject=Support%20SwiftRoute">✉️ E-mail support</a><a class="support-link" target="_blank" rel="noopener" href="https://wa.me/__WHATSAPP_DIGITS__?text=Bonjour%20SwiftRoute%2C%20j%27ai%20besoin%20d%27aide.">💬 WhatsApp</a><button class="ghost" onclick="showHelp()">❓ Aide rapide</button></div><div id="helpBox" class="result" style="display:none">1. Ajoutez vos points GPS, CSV ou via Recherche.<br>2. Vérifiez les coordonnées.<br>3. Lancez <b>OPTIMIZE ROUTE</b>.<br>4. Utilisez la carte pour contrôler l'itinéraire.</div></section>
 </div></main></div><div id="toast" class="toast"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
@@ -328,7 +418,7 @@ window.addEventListener('load',()=>goSection('dashboard',document.querySelector(
 L.tileLayer('__TILE_URL__',{maxZoom:19,subdomains:['a','b','c'],attribution:'&copy; OpenStreetMap contributors'}).on('tileerror',()=>{}).addTo(map);
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';clearTimeout(window._toast);window._toast=setTimeout(()=>x.style.display='none',3000)}
 
-async function startTiunCheckout(){
+function startTiunCheckout(){
   const status = document.getElementById('tiunStatus');
   const showStatus = (message) => {
     if(status){
@@ -337,49 +427,26 @@ async function startTiunCheckout(){
     }
   };
 
+  if(!window.tiun || typeof window.tiun.checkout !== 'function'){
+    showStatus("Tiun n'est pas encore prêt. Recharge la page puis réessaie.");
+    return;
+  }
+
   try{
-    if(!window.tiun){
-      showStatus("Le module Tiun n'a pas encore été chargé. Réessaie dans quelques secondes.");
-      return;
-    }
-
-    showStatus("Connexion au service de paiement Tiun…");
-
-    // Tiun charge son snippet de façon asynchrone.
-    // On attend explicitement qu'il soit prêt avant d'appeler checkout().
-    if(typeof window.tiun.waitForReady === 'function'){
-      await window.tiun.waitForReady();
-    }
-
-    if(typeof window.tiun.checkout !== 'function'){
-      showStatus("Le SDK Tiun est chargé, mais checkout() n'est pas disponible.");
-      return;
-    }
-
     showStatus("Ouverture du paiement Tiun…");
     window.tiun.checkout({productId:'__TIUN_PRODUCT_ID__'});
   }catch(error){
     console.error('[Tiun checkout]', error);
-    showStatus("Tiun n'a pas pu ouvrir le paiement. Vérifie le Snippet ID et le Product ID dans Render.");
+    showStatus("Impossible d'ouvrir le paiement Tiun. Vérifie le produit et le snippet Tiun.");
   }
 }
 
-async function tiunLogin(){
+function tiunLogin(){
+  if(!window.tiun || typeof window.tiun.login !== 'function'){
+    toast("Tiun n'est pas encore prêt.");
+    return;
+  }
   try{
-    if(!window.tiun){
-      toast("Le module Tiun n'a pas encore été chargé.");
-      return;
-    }
-
-    if(typeof window.tiun.waitForReady === 'function'){
-      await window.tiun.waitForReady();
-    }
-
-    if(typeof window.tiun.login !== 'function'){
-      toast("La connexion Tiun n'est pas disponible.");
-      return;
-    }
-
     window.tiun.login();
   }catch(error){
     console.error('[Tiun login]', error);
@@ -387,17 +454,62 @@ async function tiunLogin(){
   }
 }
 
+let currentTiunSessionId = localStorage.getItem('swiftroute_tiun_session') || '';
+
+async function verifyTiunSession(sessionId){
+  if(!sessionId) return false;
+  try{
+    const response = await fetch('/api/tiun/verify-session',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:sessionId})
+    });
+    if(!response.ok){
+      currentTiunSessionId='';
+      localStorage.removeItem('swiftroute_tiun_session');
+      return false;
+    }
+    currentTiunSessionId=sessionId;
+    localStorage.setItem('swiftroute_tiun_session',sessionId);
+    const status=document.getElementById('billingStatus');
+    if(status) status.textContent='ABONNÉ';
+    const box=document.getElementById('tiunStatus');
+    if(box){box.textContent='✓ Abonnement Tiun vérifié par le serveur.';box.style.display='block';}
+    return true;
+  }catch(error){
+    console.error('[Tiun verification]',error);
+    return false;
+  }
+}
+
+function apiHeaders(extra={}){
+  const headers={...extra};
+  if(currentTiunSessionId) headers['X-Session-Id']=currentTiunSessionId;
+  return headers;
+}
+
+async function apiFetch(url,options={}){
+  const opts={...options,headers:apiHeaders(options.headers||{})};
+  return fetch(url,opts);
+}
+
 if(window.tiun && typeof window.tiun.on === 'function'){
+  window.tiun.on('paywallHide', async (data) => {
+    const sessionId=data?.sessionId;
+    if(sessionId) await verifyTiunSession(sessionId);
+  });
   window.tiun.on('userChange', (data) => {
     const status = document.getElementById('billingStatus');
     if(!status) return;
     const access = data?.user?.productAccess || [];
-    status.textContent = access.includes('__TIUN_PRODUCT_ID__') ? 'ABONNÉ' : 'PRÊT';
+    if(access.includes('__TIUN_PRODUCT_ID__')) status.textContent='ABONNÉ';
   });
   window.tiun.on('error', (error) => {
     console.error('[Tiun event]', error);
   });
 }
+
+if(currentTiunSessionId) verifyTiunSession(currentTiunSessionId);
 function setActiveNav(key){
   document.querySelectorAll('.navbtn[data-nav]').forEach(b =>
     b.classList.toggle('active', b.dataset.nav === key)
@@ -483,7 +595,7 @@ async function classifyPoints(){
   try{
     const points=getPoints();
     showLoading('Analyse de la qualité géographique...');
-    const r=await fetch('/api/classify-points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points})});
+    const r=await apiFetch('/api/classify-points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points})});
     const data=await r.json();
     if(!r.ok) throw Error(data.detail||'Erreur de classification');
     const byKey=new Map(data.results.map(x=>[x.lat.toFixed(7)+'|'+x.lon.toFixed(7),x]));
@@ -496,7 +608,7 @@ async function classifyPoints(){
   }catch(e){hideLoading();toast(e.message)}
 }
 
-async function optimize(){let result=document.getElementById('result');try{let points=getPoints();showLoading("Calcul de l’ordre optimal...");let r=await fetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);drawMarkers(ordered);fitAll();showLoading('Calcul du tracé routier...');let rr=await fetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : tracé SwiftRoute affiché.');road={geometry:straightGeo(ordered),distance_km:data.distance_km,duration_min:'—',fallback:true}}if(routeLayer)map.removeLayer(routeLayer);routeLayer=L.geoJSON(road.geometry,{style:{color:'#f59e0b',weight:5,opacity:.95}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<b>✓ Itinéraire optimisé</b><div style="margin-top:7px;color:#a1a1aa">'+ordered.length+' points · '+(road.fallback?'tracé de secours':'tracé routier')+'</div><hr style="border-color:#292d36"><div class="route-list">'+ordered.map((p,i)=>(i+1)+'. '+esc(p.name)).join('<br>')+'</div>';hideLoading();toast('Optimisation terminée.')}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
+async function optimize(){let result=document.getElementById('result');try{let points=getPoints();showLoading("Calcul de l’ordre optimal...");let r=await apiFetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);drawMarkers(ordered);fitAll();showLoading('Calcul du tracé routier...');let rr=await apiFetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : tracé SwiftRoute affiché.');road={geometry:straightGeo(ordered),distance_km:data.distance_km,duration_min:'—',fallback:true}}if(routeLayer)map.removeLayer(routeLayer);routeLayer=L.geoJSON(road.geometry,{style:{color:'#f59e0b',weight:5,opacity:.95}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<b>✓ Itinéraire optimisé</b><div style="margin-top:7px;color:#a1a1aa">'+ordered.length+' points · '+(road.fallback?'tracé de secours':'tracé routier')+'</div><hr style="border-color:#292d36"><div class="route-list">'+ordered.map((p,i)=>(i+1)+'. '+esc(p.name)).join('<br>')+'</div>';hideLoading();toast('Optimisation terminée.')}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
 addPoint({name:'Départ',lat:'',lon:''});addPoint({name:'Destination',lat:'',lon:''});window.addEventListener('resize',()=>map.invalidateSize());
 </script></body></html>'''.replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID).replace('__TIUN_PRODUCT_ID__', TIUN_PRODUCT_ID).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit())).replace('__TILE_URL__', TILE_URL).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit()))
 
@@ -630,7 +742,7 @@ def calculer_route_precision(villes):
 class RequeteCalcul(BaseModel): villes:List[Tuple[float,float]]
 
 @app.post('/api/route')
-async def api_route(requete:RequeteCalcul,infos=Security(verifier_minuteur_cle_api)):
+async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftroute)):
     if len(requete.villes)>MAX_POINTS_REQUETE: raise HTTPException(400,'Maximum 1000 points par requête.')
     if len(requete.villes)<2: raise HTTPException(400,'Il faut au moins 2 points.')
     for lat,lon in requete.villes:
@@ -686,7 +798,7 @@ class RequeteClassification(BaseModel):
     points:List[PointGPS]
 
 @app.post('/api/classify-points')
-async def api_classify_points(requete:RequeteClassification,infos=Security(verifier_minuteur_cle_api)):
+async def api_classify_points(requete:RequeteClassification,infos=Security(verifier_acces_swiftroute)):
     if len(requete.points)<1: raise HTTPException(400,'Il faut au moins 1 point.')
     if len(requete.points)>MAX_POINTS_REQUETE: raise HTTPException(400,'Maximum 1000 points par requête.')
     for p in requete.points:
@@ -721,7 +833,7 @@ def _combine_geojson_lines(routes):
     return {'type':'Feature','properties':{},'geometry':{'type':'LineString','coordinates':coordinates}}
 
 @app.post('/api/road-route')
-async def api_road_route(requete:RequeteRoadRoute,infos=Security(verifier_minuteur_cle_api)):
+async def api_road_route(requete:RequeteRoadRoute,infos=Security(verifier_acces_swiftroute)):
     if len(requete.points)<2:raise HTTPException(400,'Il faut au moins 2 points.')
     if len(requete.points)>1000:raise HTTPException(400,'Maximum 1000 points par requête.')
     for p in requete.points:
@@ -739,7 +851,7 @@ async def api_road_route(requete:RequeteRoadRoute,infos=Security(verifier_minute
 # ========================= ADMIN =========================
 def obtenir_panneau_admin(cle_generee=''):
     result=f'''<div style="background:#27272a;padding:15px;margin-top:20px;border:1px dashed #a855f7;border-radius:8px;word-break:break-all;font-family:monospace"><strong>Clé générée :</strong><br><br>{cle_generee}</div>''' if cle_generee else ''
-    return f'''<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Admin</title></head><body style="background:#09090b;color:#fff;font-family:Arial;padding:25px"><div style="max-width:520px;margin:auto;background:#18181b;padding:25px;border-radius:12px"><h2>🎛️ Administration SwiftRoute</h2><p>Produit Tiun : {TIUN_PRODUCT_ID}</p><form action="/admin-panel/generer" method="post"><input name="username" placeholder="Identifiant" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input type="password" name="password" placeholder="Mot de passe" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input name="client_name" placeholder="Entreprise" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input type="email" name="email" placeholder="Email" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><select name="duration" style="width:100%;padding:12px"><option value="7">Accès 7 jours</option><option value="30">Entreprise 30 jours</option><option value="365">Corporate 1 an</option></select><br><br><button style="width:100%;padding:13px;background:#a855f7;color:#fff;border:0;border-radius:7px">Générer et activer</button></form>{result}</div></body></html>'''
+    return f'''<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Admin</title></head><body style="background:#09090b;color:#fff;font-family:Arial;padding:25px"><div style="max-width:520px;margin:auto;background:#18181b;padding:25px;border-radius:12px"><h2>🎛️ Administration SwiftRoute</h2><p>Produit Tiun : {TIUN_PRODUCT_ID}</p><form action="/admin-panel/generer" method="post"><input name="username" placeholder="Identifiant" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input type="password" name="password" placeholder="Mot de passe" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input name="client_name" placeholder="Entreprise" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><input type="email" name="email" placeholder="Email" required style="width:100%;padding:12px;box-sizing:border-box"><br><br><select name="duration" style="width:100%;padding:12px"><option value="7">Essai 7 jours</option><option value="30">Entreprise 30 jours</option><option value="365">Corporate 1 an</option></select><br><br><button style="width:100%;padding:13px;background:#a855f7;color:#fff;border:0;border-radius:7px">Générer et activer</button></form>{result}</div></body></html>'''
 
 @app.get('/admin-panel',response_class=HTMLResponse)
 async def vue_panneau_admin_serveur(cle_generee:str=''):return HTMLResponse(obtenir_panneau_admin(cle_generee))
@@ -748,7 +860,11 @@ async def vue_panneau_admin_serveur(cle_generee:str=''):return HTMLResponse(obte
 async def action_generer_cle_serveur(request:Request,username:str=Form(...),password:str=Form(...),client_name:str=Form(...),email:str=Form(...),duration:int=Form(...)):
     if username!=NOM_UTILISATEUR_ADMIN or password!=MOT_DE_PASSE_ADMIN:return HTMLResponse('<h2>Identifiants incorrects.</h2>',403)
     if duration not in (7,30,365):raise HTTPException(400,'Durée invalide.')
-    email=normalize_email(email);token,jti,expiration=create_client_token(client_name,email,duration,False)
+    email=normalize_email(email);token,jti,expiration=create_client_token(client_name,email,duration,duration==7)
+    if duration==7:
+        conn=db_connect();
+        if conn.execute('SELECT id FROM trials WHERE email_hash=?',(hash_value(email),)).fetchone():conn.close();return HTMLResponse('<h2>Cet e-mail possède déjà un essai.</h2>',409)
+        now=datetime.datetime.now(datetime.timezone.utc);conn.execute('INSERT INTO trials(email,email_hash,client_name,ip_hash,token_jti,created_at,expires_at,active,usage_count) VALUES(?,?,?,?,?,?,?,?,?)',(email,hash_value(email),client_name,hash_value(get_client_ip(request)),jti,now.isoformat(),expiration.isoformat(),1,0));conn.commit();conn.close()
     # Correction: un seul argument pour obtenir_panneau_admin.
     return HTMLResponse(obtenir_panneau_admin(token))
 
