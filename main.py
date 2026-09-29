@@ -320,18 +320,17 @@ def obtenir_page_accueil():
     return '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Engine</title>
 <script type="module">import { tiun } from 'https://esm.sh/@tiun/sdk'; tiun.init({snippetId:'__TIUN_SNIPPET_ID__',language:'fr'});</script>
 <style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial,sans-serif}a{color:inherit;text-decoration:none}.nav{max-width:1180px;margin:auto;padding:22px;display:flex;justify-content:space-between;align-items:center}.brand{font-weight:900;font-size:21px}.nav a{margin-left:18px;color:#a1a1aa}.hero{max-width:1050px;margin:auto;text-align:center;padding:100px 22px 80px}.eyebrow{color:#f59e0b;font-weight:800;letter-spacing:2px}h1{font-size:clamp(44px,8vw,82px);margin:18px 0;letter-spacing:-3px}.hero p{color:#a1a1aa;max-width:760px;margin:0 auto 32px;line-height:1.7;font-size:18px}.btn{display:inline-block;padding:14px 20px;border-radius:12px;margin:5px;font-weight:800}.primary{background:#f59e0b;color:#09090b}.ghost{border:1px solid #27272a}.grid{max-width:1050px;margin:auto;padding:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#111113;border:1px solid #27272a;border-radius:18px;padding:25px}.card p{color:#a1a1aa;line-height:1.6}@media(max-width:800px){.grid{grid-template-columns:1fr}.nav{flex-wrap:wrap}}</style></head><body>
-<div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a><a href="/workspace#billingPanel">Abonnement</a></div></div>
-<section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées conçue pour traiter jusqu'à 1 000 points et présenter le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/workspace#billingPanel">Prendre l'abonnement</a></section>
+<div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a><a href="/essai-gratuit">Essai</a></div></div>
+<section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées conçue pour traiter jusqu'à 1 000 points et présenter le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/essai-gratuit">Démarrer l'essai 7 jours</a></section>
 <div class="grid"><div class="card"><h3>⚡ Optimisation</h3><p>Ordonnancement des points avec le moteur SwiftRoute.</p></div><div class="card"><h3>🌍 Carte</h3><p>Visualisation interactive et tracé routier lorsque le fournisseur est disponible.</p></div><div class="card"><h3>🔑 API</h3><p>Accès développeur avec clé API ou session client sécurisée.</p></div></div></body></html>'''.replace('__TILE_URL__', TILE_URL).replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID)
 
 @app.get("/",response_class=HTMLResponse)
 async def page_accueil_serveur(): return HTMLResponse(obtenir_page_accueil())
 
 # ========================= TRIAL =========================
-@app.get("/essai-gratuit")
+@app.get("/essai-gratuit",response_class=HTMLResponse)
 async def page_essai_gratuit():
-    # Ancienne URL conservée pour compatibilité : le parcours commercial passe maintenant par Tiun.
-    return RedirectResponse("/workspace#billingPanel", status_code=303)
+    return HTMLResponse('''<!doctype html><html lang="fr"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Essai SwiftRoute</title><style>body{background:#09090b;color:#fff;font-family:Arial;padding:20px}.box{max-width:500px;margin:50px auto;background:#111113;border:1px solid #27272a;border-radius:18px;padding:28px}h1{color:#f59e0b}label{display:block;margin-top:16px}input{width:100%;padding:13px;margin-top:7px;box-sizing:border-box;background:#09090b;border:1px solid #3f3f46;color:#fff;border-radius:9px}button{width:100%;padding:14px;margin-top:20px;border:0;border-radius:9px;background:#f59e0b;font-weight:800}</style></head><body><div class="box"><h1>🐜 SwiftRoute</h1><h2>Essai gratuit — 7 jours</h2><p>Créez votre accès d'essai.</p><form method="post" action="/essai-gratuit"><label>Entreprise<input name="client_name" maxlength="120" required></label><label>E-mail<input type="email" name="email" maxlength="254" required></label><button>🚀 Commencer</button></form></div></body></html>''')
 
 @app.post("/essai-gratuit")
 async def creer_essai_gratuit(request:Request,client_name:str=Form(...),email:str=Form(...)):
@@ -354,8 +353,7 @@ LOGIN_HTML='''<!doctype html><html lang="fr"><head><meta name="viewport" content
 
 @app.get("/workspace",response_class=HTMLResponse)
 async def workspace(swiftroute_session:str=Cookie(default=None)):
-    # Le dashboard est accessible publiquement; les fonctions premium restent protégées
-    # côté serveur par X-Session-Id (Tiun) ou X-API-KEY / session SwiftRoute.
+    if not get_session(swiftroute_session): return HTMLResponse(LOGIN_HTML)
     return HTMLResponse(workspace_html())
 
 @app.get("/client-login",response_class=HTMLResponse)
@@ -381,35 +379,23 @@ def workspace_html():
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
 <script type="module">
 import { tiun } from 'https://esm.sh/@tiun/sdk';
-window.tiun = tiun;
-try {
-  const initResult = tiun.init({
-    snippetId: '__TIUN_SNIPPET_ID__',
-    language: 'fr',
-    onError: (error) => {
-      console.error('[Tiun]', error);
-      window.dispatchEvent(new CustomEvent('tiun:error', {detail: error}));
-    }
-  });
-  Promise.resolve(initResult).then(() => {
-    window.__tiunReady = true;
-    window.dispatchEvent(new Event('tiun-ready'));
-  }).catch((error) => {
-    console.error('[Tiun init]', error);
+tiun.init({
+  snippetId: '__TIUN_SNIPPET_ID__',
+  language: 'fr',
+  onError: (error) => {
+    console.error('[Tiun]', error);
     window.dispatchEvent(new CustomEvent('tiun:error', {detail: error}));
-  });
-} catch (error) {
-  console.error('[Tiun init]', error);
-  window.dispatchEvent(new CustomEvent('tiun:error', {detail: error}));
-}
+  }
+});
+window.tiun = tiun;
 </script>
 <style>
-*{box-sizing:border-box}:root{--bg:#08090b;--panel:#101216;--panel2:#151820;--line:#262a33;--muted:#8d95a3;--orange:#f59e0b;--orange2:#ffb52e;--green:#22c55e;--danger:#ef4444}body{margin:0;background:radial-gradient(circle at 70% -10%,#24200f 0,#08090b 34%);color:#f5f5f5;font-family:Inter,ui-sans-serif,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);background:#0b0d10eF;backdrop-filter:blur(16px);padding:20px 14px;display:flex;flex-direction:column}.logo{font-size:20px;font-weight:950;padding:8px 10px 28px}.logo span{color:var(--orange)}.navbtn{width:100%;text-align:left;background:transparent;border:1px solid transparent;color:#aeb5c0;padding:12px 13px;border-radius:10px;margin:3px 0;font-weight:700}.navbtn:hover,.navbtn.active{background:#191b20;border-color:#2a2e37;color:#fff}.navbtn.active{box-shadow:inset 3px 0 0 var(--orange)}.bottom{margin-top:auto}.main{min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0b0d10b8;backdrop-filter:blur(14px);position:sticky;top:0;z-index:900}.status{color:#9ca3af;font-size:13px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px;box-shadow:0 0 12px var(--green)}.content{padding:28px;max-width:1500px;margin:auto}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:22px}h1{font-size:34px;margin:0 0 6px;letter-spacing:-1.5px}.muted{color:var(--muted)}.primary{background:linear-gradient(135deg,var(--orange2),var(--orange));border:0;color:#0a0a0a;font-weight:900;padding:13px 17px;border-radius:11px;box-shadow:0 8px 28px #f59e0b25}.ghost{background:#17191e;color:#fff;border:1px solid #30343e;padding:12px 15px;border-radius:10px;font-weight:800}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.stat{background:linear-gradient(145deg,#13161b,#0f1115);border:1px solid var(--line);border-radius:15px;padding:18px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:28px;margin-top:8px;color:var(--orange)}.workspace{display:grid;grid-template-columns:410px minmax(0,1fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:18px;box-shadow:0 18px 50px #0002}.panel h2{font-size:17px;margin:0 0 15px}.tabs{display:flex;gap:7px;margin-bottom:14px}.tab{flex:1;background:#17191e;color:#aeb5c0;border:1px solid #292d36;padding:10px;border-radius:9px;font-weight:800}.tab.active{color:#fff;border-color:#8b5b08;background:#211a0c}.modepanel{display:none}.modepanel.active{display:block}label{display:block;color:#d6d8dd;font-size:12px;font-weight:800;margin:13px 0 6px}input,textarea{width:100%;background:#0a0c0f;color:#fff;border:1px solid #30343d;border-radius:9px;padding:12px;outline:none}input:focus{border-color:#9b6b0c;box-shadow:0 0 0 3px #f59e0b12}.searchrow{display:grid;grid-template-columns:1fr auto;gap:7px}.searchrow button{background:#20232a;border:1px solid #343944;color:#fff;border-radius:9px;padding:0 12px}.pointshead{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.counter{font-family:monospace;color:var(--orange)}.progress{height:5px;background:#262a31;border-radius:9px;overflow:hidden;margin:9px 0 12px}.progress i{display:block;height:100%;width:0;background:var(--orange);transition:width .25s}.gpslist{max-height:360px;overflow:auto;padding-right:3px}.gpsrow{display:grid;grid-template-columns:30px 1fr 1fr 34px;gap:5px;margin-bottom:6px}.gpsrow input{padding:9px;font-size:12px}.num{display:grid;place-items:center;color:#777f8d;font-size:11px}.remove{background:#191b20;color:#ef4444;border:1px solid #30343d;border-radius:8px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.big{grid-column:1/-1;padding:14px;border-radius:11px;font-size:15px}.mapwrap{padding:0;overflow:hidden;min-height:650px;position:relative}#map{height:100%;min-height:650px;background:#111}.maptools{position:absolute;top:14px;left:14px;z-index:700;display:flex;gap:7px;flex-wrap:wrap}.maptools button{background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:800;backdrop-filter:blur(10px)}.result{margin-top:14px;border:1px solid #6a4708;background:#17130a;border-radius:12px;padding:13px;display:none}.quality{margin-top:12px;padding:13px;border:1px solid #292d36;background:#0d0f13;border-radius:12px}.quality-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.quality-card{padding:10px;border:1px solid #292d36;border-radius:10px;background:#101216}.quality-card b{display:block;font-size:20px;margin-top:4px}.quality-list{max-height:240px;overflow:auto;margin-top:10px}.q-valid{color:#22c55e}.q-review{color:#f59e0b}.q-invalid{color:#ef4444}.q-unknown{color:#a1a1aa}@media(max-width:650px){.quality-grid{grid-template-columns:1fr 1fr}}.section-panel{margin-top:16px;scroll-margin-top:90px}
+*{box-sizing:border-box}:root{--bg:#08090b;--panel:#101216;--panel2:#151820;--line:#262a33;--muted:#8d95a3;--orange:#f59e0b;--orange2:#ffb52e;--green:#22c55e;--danger:#ef4444}body{margin:0;background:radial-gradient(circle at 70% -10%,#24200f 0,#08090b 34%);color:#f5f5f5;font-family:Inter,ui-sans-serif,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}.app{display:grid;grid-template-columns:190px 1fr;min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);background:#0b0d10eF;backdrop-filter:blur(16px);padding:20px 14px;display:flex;flex-direction:column}.logo{font-size:20px;font-weight:950;padding:8px 10px 28px}.logo span{color:var(--orange)}.navbtn{width:100%;text-align:left;background:transparent;border:1px solid transparent;color:#aeb5c0;padding:12px 13px;border-radius:10px;margin:3px 0;font-weight:700}.navbtn:hover,.navbtn.active{background:#191b20;border-color:#2a2e37;color:#fff}.navbtn.active{box-shadow:inset 3px 0 0 var(--orange)}.bottom{margin-top:auto}.main{min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0b0d10b8;backdrop-filter:blur(14px);position:sticky;top:0;z-index:900}.status{color:#9ca3af;font-size:13px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px;box-shadow:0 0 12px var(--green)}.content{padding:28px;max-width:1500px;margin:auto}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:22px}h1{font-size:34px;margin:0 0 6px;letter-spacing:-1.5px}.muted{color:var(--muted)}.primary{background:linear-gradient(135deg,var(--orange2),var(--orange));border:0;color:#0a0a0a;font-weight:900;padding:13px 17px;border-radius:11px;box-shadow:0 8px 28px #f59e0b25}.ghost{background:#17191e;color:#fff;border:1px solid #30343e;padding:12px 15px;border-radius:10px;font-weight:800}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.stat{background:linear-gradient(145deg,#13161b,#0f1115);border:1px solid var(--line);border-radius:15px;padding:18px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:28px;margin-top:8px;color:var(--orange)}.workspace{display:grid;grid-template-columns:350px minmax(0,1fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:18px;box-shadow:0 18px 50px #0002}.panel h2{font-size:17px;margin:0 0 15px}.tabs{display:flex;gap:7px;margin-bottom:14px}.tab{flex:1;background:#17191e;color:#aeb5c0;border:1px solid #292d36;padding:10px;border-radius:9px;font-weight:800}.tab.active{color:#fff;border-color:#8b5b08;background:#211a0c}.modepanel{display:none}.modepanel.active{display:block}label{display:block;color:#d6d8dd;font-size:12px;font-weight:800;margin:13px 0 6px}input,textarea{width:100%;background:#0a0c0f;color:#fff;border:1px solid #30343d;border-radius:9px;padding:12px;outline:none}input:focus{border-color:#9b6b0c;box-shadow:0 0 0 3px #f59e0b12}.searchrow{display:grid;grid-template-columns:1fr auto;gap:7px}.searchrow button{background:#20232a;border:1px solid #343944;color:#fff;border-radius:9px;padding:0 12px}.pointshead{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.counter{font-family:monospace;color:var(--orange)}.progress{height:5px;background:#262a31;border-radius:9px;overflow:hidden;margin:9px 0 12px}.progress i{display:block;height:100%;width:0;background:var(--orange);transition:width .25s}.gpslist{max-height:360px;overflow:auto;padding-right:3px}.gpsrow{display:grid;grid-template-columns:30px 1fr 1fr 34px;gap:5px;margin-bottom:6px}.gpsrow input{padding:9px;font-size:12px}.num{display:grid;place-items:center;color:#777f8d;font-size:11px}.remove{background:#191b20;color:#ef4444;border:1px solid #30343d;border-radius:8px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.big{grid-column:1/-1;padding:14px;border-radius:11px;font-size:15px}.mapwrap{padding:0;overflow:hidden;min-height:650px;position:relative}#map{height:100%;min-height:650px;background:#111}.maptools{position:absolute;top:14px;left:14px;z-index:700;display:flex;gap:7px;flex-wrap:wrap}.maptools button{background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:800;backdrop-filter:blur(10px)}.result{margin-top:14px;border:1px solid #6a4708;background:linear-gradient(145deg,#19150c,#111216);border-radius:14px;padding:15px;display:none;box-shadow:0 12px 30px #0004}.quality{margin-top:12px;padding:15px;border:1px solid #292d36;background:linear-gradient(145deg,#111419,#0d0f13);border-radius:14px}.quality-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.quality-card{padding:12px;min-height:76px;display:flex;flex-direction:column;justify-content:center;border:1px solid #292d36;border-radius:10px;background:#101216}.quality-card b{display:block;font-size:20px;margin-top:4px}.quality-list{max-height:360px;overflow:auto;margin-top:10px}.q-valid{color:#22c55e}.q-review{color:#f59e0b}.q-invalid{color:#ef4444}.q-unknown{color:#a1a1aa}@media(max-width:650px){.quality-grid{grid-template-columns:1fr 1fr}}.section-panel{margin-top:16px;scroll-margin-top:90px}
 .view-hidden{display:none!important}
 .content{min-height:calc(100vh - 72px)}
 .view-panel{margin-top:0}
 #optimizer{margin-top:0}
-.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.info-card{background:#0d0f13;border:1px solid #292d36;border-radius:13px;padding:15px}.info-card strong{display:block;font-size:22px;color:var(--orange);margin-top:5px}.quick-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.quick-actions button{flex:1;min-width:140px}.support-link{display:inline-flex;align-items:center;gap:8px;text-decoration:none;background:#17191e;color:#fff;border:1px solid #30343e;padding:11px 14px;border-radius:10px;font-weight:800}.navbtn .navtext{margin-left:8px}.route-list{max-height:230px;overflow:auto;line-height:1.75;color:#d2d6dd;font-size:13px}.toast{position:fixed;right:20px;bottom:20px;background:#17191e;border:1px solid #343944;padding:13px 15px;border-radius:11px;z-index:2000;display:none;box-shadow:0 20px 60px #0008}.loading{display:none;position:absolute;inset:0;background:#090b0ee8;z-index:800;align-items:center;justify-content:center;flex-direction:column;gap:14px}.spinner{width:40px;height:40px;border:3px solid #343944;border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1100px){.app{grid-template-columns:76px 1fr}.logo{font-size:0;text-align:center}.logo:first-letter{font-size:22px}.navbtn{font-size:0;text-align:center}.navbtn:first-letter{font-size:20px}.navbtn .navtext{display:none}.workspace{grid-template-columns:1fr}#map,.mapwrap{min-height:520px}.cards{grid-template-columns:repeat(2,1fr)}.info-grid{grid-template-columns:1fr 1fr}}@media(max-width:650px){.content{padding:15px}.top{padding:0 15px}.hero{align-items:flex-start;flex-direction:column}h1{font-size:28px}.cards{grid-template-columns:1fr 1fr;gap:8px}.stat{padding:12px}.stat strong{font-size:22px}.workspace{display:flex;flex-direction:column}.mapwrap{order:-1}#map{min-height:420px}.gpslist{max-height:280px}.info-grid{grid-template-columns:1fr}.side{padding:15px 10px}.navbtn{padding:12px 8px}}
+.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.info-card{background:#0d0f13;border:1px solid #292d36;border-radius:13px;padding:15px}.info-card strong{display:block;font-size:22px;color:var(--orange);margin-top:5px}.quick-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.quick-actions button{flex:1;min-width:140px}.support-link{display:inline-flex;align-items:center;gap:8px;text-decoration:none;background:#17191e;color:#fff;border:1px solid #30343e;padding:11px 14px;border-radius:10px;font-weight:800}.navbtn .navtext{margin-left:8px}.route-list{max-height:230px;overflow:auto;line-height:1.75;color:#d2d6dd;font-size:13px}.toast{position:fixed;right:20px;bottom:20px;background:#17191e;border:1px solid #343944;padding:13px 15px;border-radius:11px;z-index:2000;display:none;box-shadow:0 20px 60px #0008}.loading{display:none;position:absolute;inset:0;background:#090b0ee8;z-index:800;align-items:center;justify-content:center;flex-direction:column;gap:14px}.spinner{width:40px;height:40px;border:3px solid #343944;border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1100px){.app{grid-template-columns:60px 1fr}.logo{font-size:0;text-align:center}.logo:first-letter{font-size:22px}.navbtn{font-size:0;text-align:center}.navbtn:first-letter{font-size:20px}.navbtn .navtext{display:none}.workspace{grid-template-columns:1fr}#map,.mapwrap{min-height:520px}.cards{grid-template-columns:repeat(2,1fr)}.info-grid{grid-template-columns:1fr 1fr}}@media(max-width:650px){.content{padding:12px}.top{padding:0 15px}.hero{align-items:flex-start;flex-direction:column}h1{font-size:28px}.cards{grid-template-columns:1fr 1fr;gap:8px}.stat{padding:12px}.stat strong{font-size:22px}.workspace{display:flex;flex-direction:column}.mapwrap{order:-1}#map{min-height:420px}.gpslist{max-height:280px}.info-grid{grid-template-columns:1fr}.side{padding:15px 10px}.navbtn{padding:12px 8px}}
 </style></head><body>
 <div class="app"><aside class="side"><div class="logo">🐜 <span>SWIFTROUTE</span></div><button class="navbtn active" data-nav="dashboard" title="Dashboard" onclick="goSection('dashboard',this)">🏠 <span class="navtext">Dashboard</span></button><button class="navbtn" data-nav="optimizer" title="Optimizer" onclick="goSection('optimizer',this)">⚡ <span class="navtext">Optimizer</span></button><button class="navbtn" data-nav="map" title="Map" onclick="goSection('mapPanel',this)">🗺️ <span class="navtext">Map</span></button><button class="navbtn" data-nav="api" title="API" onclick="goSection('apiPanel',this)">🔑 <span class="navtext">API</span></button><button class="navbtn" data-nav="usage" title="Usage" onclick="goSection('usagePanel',this)">📊 <span class="navtext">Usage</span></button><button class="navbtn" data-nav="billing" title="Billing" onclick="goSection('billingPanel',this)">💳 <span class="navtext">Billing</span></button><button class="navbtn" data-nav="support" title="Support" onclick="goSection('supportPanel',this)">💬 <span class="navtext">Support</span></button><div class="bottom"><form action="/logout" method="post"><button class="navbtn" title="Déconnexion">↪️ <span class="navtext">Déconnexion</span></button></form></div></aside>
 <main class="main"><header class="top"><strong>Route Intelligence</strong><div class="status"><span class="dot"></span>Session active</div></header><div class="content">
@@ -432,26 +418,35 @@ window.addEventListener('load',()=>goSection('dashboard',document.querySelector(
 L.tileLayer('__TILE_URL__',{maxZoom:19,subdomains:['a','b','c'],attribution:'&copy; OpenStreetMap contributors'}).on('tileerror',()=>{}).addTo(map);
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';clearTimeout(window._toast);window._toast=setTimeout(()=>x.style.display='none',3000)}
 
-function startTiunCheckout(){
+async function startTiunCheckout(){
   const status = document.getElementById('tiunStatus');
   const showStatus = (message) => {
-    if(status){
-      status.textContent = message;
-      status.style.display = 'block';
-    }
+    if(status){ status.textContent = message; status.style.display = 'block'; }
   };
 
-  if(!window.tiun || typeof window.tiun.checkout !== 'function'){
-    showStatus("Tiun n'est pas encore prêt. Recharge la page puis réessaie.");
+  // L'SDK est chargé en module. Attendre brièvement qu'il soit disponible.
+  for(let i=0;i<30 && (!window.tiun);i++) await new Promise(r=>setTimeout(r,100));
+  if(!window.tiun){
+    showStatus("Tiun n'est pas encore chargé. Recharge la page puis réessaie.");
+    return;
+  }
+
+  const sdk=window.tiun;
+  const candidates=['showPaywall','openPaywall','checkout','paywall'];
+  const method=candidates.find(name=>typeof sdk[name]==='function');
+  if(!method){
+    console.error('[Tiun] Méthode de paiement disponible:', Object.keys(sdk));
+    showStatus("Le SDK Tiun est chargé, mais aucune méthode de paiement n'est exposée par ce snippet.");
     return;
   }
 
   try{
     showStatus("Ouverture du paiement Tiun…");
-    window.tiun.checkout({productId:'__TIUN_PRODUCT_ID__'});
+    const result=sdk[method]({productId:'__TIUN_PRODUCT_ID__'});
+    if(result && typeof result.then==='function') await result;
   }catch(error){
     console.error('[Tiun checkout]', error);
-    showStatus("Impossible d'ouvrir le paiement Tiun. Vérifie le produit et le snippet Tiun.");
+    showStatus("Tiun a refusé l'ouverture du paiement. Vérifie le produit Live et le snippet Tiun.");
   }
 }
 
@@ -507,30 +502,26 @@ async function apiFetch(url,options={}){
   return fetch(url,opts);
 }
 
-function initTiunEvents(){
-  if(window.__tiunEventsBound) return;
-  if(!window.tiun || typeof window.tiun.on !== 'function') return;
-  window.__tiunEventsBound = true;
+if(window.tiun && typeof window.tiun.on === 'function'){
   window.tiun.on('paywallHide', async (data) => {
     const sessionId=data?.sessionId;
     if(sessionId){
       const ok=await verifyTiunSession(sessionId);
-      if(ok) toast('✓ Abonnement Tiun activé et vérifié.');
+      const status=document.getElementById('billingStatus');
+      if(status) status.textContent=ok?'ABONNÉ':'NON VÉRIFIÉ';
     }
   });
   window.tiun.on('userChange', (data) => {
     const status = document.getElementById('billingStatus');
+    if(!status) return;
     const access = data?.user?.productAccess || [];
-    if(status && access.includes('__TIUN_PRODUCT_ID__')) status.textContent='ABONNÉ';
+    if(access.includes('__TIUN_PRODUCT_ID__')) status.textContent='ABONNÉ';
   });
   window.tiun.on('error', (error) => {
     console.error('[Tiun event]', error);
-    const box=document.getElementById('tiunStatus');
-    if(box){box.textContent='Tiun : une erreur est survenue. Vérifie le snippet, le produit et l’environnement Live.';box.style.display='block';}
   });
 }
-window.addEventListener('tiun-ready', initTiunEvents);
-if(window.__tiunReady) initTiunEvents();
+
 if(currentTiunSessionId) verifyTiunSession(currentTiunSessionId);
 function setActiveNav(key){
   document.querySelectorAll('.navbtn[data-nav]').forEach(b =>
