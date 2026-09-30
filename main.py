@@ -738,7 +738,13 @@ def calculer_route_scalable(villes):
     return route, distance
 
 
-def calculer_route_precision(villes):
+def calculer_route_precision(villes, distance_matrix=None):
+    """Optimisation TSP/VRP.
+
+    Si distance_matrix est fournie, elle est utilisée telle quelle. Cela permet
+    d'optimiser sur les distances routières OSRM plutôt que sur la distance
+    aérienne approximative.
+    """
     n=len(villes)
     if n<3:
         if n == 2:
@@ -749,9 +755,14 @@ def calculer_route_precision(villes):
     # Le nombre de points reste libre ; seul l'algorithme devient plus léger.
     if n > 1200:
         return calculer_route_scalable(villes)
-    latm=math.radians(sum(float(v[0]) for v in villes)/n); R=6371.0
-    plane=[(R*math.radians(float(lat))*0 + R*math.radians(float(lon))*math.cos(latm), R*math.radians(float(lat))) for lat,lon in villes]
-    dist=[[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23 for j in range(n)] for i in range(n)]
+    if distance_matrix is not None:
+        if len(distance_matrix) != n or any(len(row) != n for row in distance_matrix):
+            raise ValueError('Matrice de distances routières invalide.')
+        dist=[[float(distance_matrix[i][j]) for j in range(n)] for i in range(n)]
+    else:
+        latm=math.radians(sum(float(v[0]) for v in villes)/n); R=6371.0
+        plane=[(R*math.radians(float(lat))*0 + R*math.radians(float(lon))*math.cos(latm), R*math.radians(float(lat))) for lat,lon in villes]
+        dist=[[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23 for j in range(n)] for i in range(n)]
     pher=[[1.0]*n for _ in range(n)]
     best_route=[]; best_distance=float('inf')
 
@@ -813,6 +824,55 @@ def calculer_route_precision(villes):
 
 class RequeteCalcul(BaseModel): villes:List[Tuple[float,float]]
 
+def _fetch_osrm_distance_matrix(villes):
+    """Retourne une matrice de distances routières (mètres) via OSRM Table."""
+    coords=';'.join(f'{float(lon)},{float(lat)}' for lat,lon in villes)
+    url=f"{ROUTING_URL.rstrip('/')} /table/v1/driving/{coords}?annotations=distance".replace(' /table','/table')
+    req=URLRequest(url,headers={'User-Agent':GEOCODING_USER_AGENT})
+    try:
+        with urlopen(req,timeout=35) as response:
+            data=json.loads(response.read().decode('utf-8'))
+    except Exception as exc:
+        raise HTTPException(502,f'Service de matrice routière indisponible : {exc}')
+    if data.get('code')!='Ok' or not data.get('distances'):
+        raise HTTPException(502,'OSRM n’a pas pu calculer la matrice routière entre les points.')
+    return data['distances']
+
+def _optimiser_ordre_routier(villes):
+    """Optimise un petit itinéraire sur les distances routières réelles.
+
+    Le premier point est le départ et le dernier est la destination fixe.
+    Jusqu'à 10 points, on teste exactement toutes les permutations des étapes
+    intermédiaires ; au-delà, on utilise le moteur ACO avec la matrice OSRM.
+    """
+    n=len(villes)
+    if n < 2:
+        return list(range(n)), 0.0, False
+    if n == 2:
+        return [0,1], 0.0, False
+    if n > 50:
+        return None, None, False
+    matrix=_fetch_osrm_distance_matrix(villes)
+    if n <= 10:
+        import itertools
+        middle=range(1,n-1)
+        best=None; best_d=float('inf')
+        for perm in itertools.permutations(middle):
+            route=[0]+list(perm)+[n-1]
+            d=sum(float(matrix[a][b]) for a,b in zip(route,route[1:]))
+            if d < best_d:
+                best,best_d=route,d
+        return best,best_d/1000.0,True
+    # Pour les volumes plus grands, le moteur ACO conserve sa logique mais
+    # reçoit les distances routières OSRM au lieu des distances aériennes.
+    inter=[villes[0]]+villes[1:-1]
+    submatrix=[[float(matrix[i][j]) for j in range(n-1)] for i in range(n-1)]
+    ordre,_=calculer_route_precision(inter,distance_matrix=submatrix)
+    ordre=[i for i in ordre if i!=0]
+    route=[0]+ordre+[n-1]
+    d=sum(float(matrix[a][b]) for a,b in zip(route,route[1:]))
+    return route,d/1000.0,True
+
 @app.post('/api/route')
 async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftroute)):
     if len(requete.villes)<2: raise HTTPException(400,'Il faut au moins 2 points.')
@@ -821,15 +881,24 @@ async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftrou
     if len(requete.villes)==2:
         route=[0,1]; distance=calculer_route_precision(requete.villes)[1]
     else:
-        dest=len(requete.villes)-1
-        inter=[requete.villes[0]]+requete.villes[1:dest]
-        ordre,_=calculer_route_precision(inter)
-        ordre=[i for i in ordre if i!=0]
-        route=[0]+ordre+[dest]
-        distance=0.0
-        for a,b in zip(route,route[1:]):
-            va,vb=requete.villes[a],requete.villes[b]
-            distance+=math.hypot((float(va[0])-float(vb[0]))*111.0,(float(va[1])-float(vb[1]))*111.0*math.cos(math.radians((float(va[0])+float(vb[0]))/2)))
+        # Pour les itinéraires courants, l'ordre est maintenant calculé sur
+        # les vraies distances routières OSRM, avec départ et destination fixes.
+        try:
+            road_route, road_distance, used_road_matrix = _optimiser_ordre_routier(requete.villes)
+        except HTTPException:
+            road_route, road_distance, used_road_matrix = None, None, False
+
+        if road_route is not None:
+            route=road_route
+            distance=road_distance
+        else:
+            # Secours pour les très gros volumes ou si OSRM Table est indisponible.
+            dest=len(requete.villes)-1
+            inter=[requete.villes[0]]+requete.villes[1:dest]
+            ordre,_=calculer_route_precision(inter)
+            ordre=[i for i in ordre if i!=0]
+            route=[0]+ordre+[dest]
+            distance=sum(distance_directe_km(requete.villes[a],requete.villes[b]) for a,b in zip(route,route[1:]))
     return {'success':True,'client':infos.get('client'),'type_offre':infos.get('type_offre'),'route':route,'distance_km':round(distance,3),'points':len(requete.villes)}
 
 # ========================= POINT QUALITY / CLASSIFICATION =========================
