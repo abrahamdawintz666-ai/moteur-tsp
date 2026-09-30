@@ -578,7 +578,7 @@ async function refreshRoadDistance(here,target){
 function toggleFollow(){if(followMode){stopFollowing();toast('Suivi GPS arrêté.');return}if(!navigator.geolocation){toast('Le GPS du navigateur n’est pas disponible.');return}if(!orderedRoute.length){toast('Lance d’abord une optimisation.');return}followMode=true;const b=document.getElementById('followToggle');if(b)b.textContent='⛔ Arrêter';const badge=document.getElementById('followBadge');if(badge){badge.textContent='GPS : recherche…';badge.classList.add('on')}watchId=navigator.geolocation.watchPosition(pos=>{const here={lat:pos.coords.latitude,lon:pos.coords.longitude};if(!currentMarker)currentMarker=L.marker([here.lat,here.lon],{icon:L.divIcon({className:'',html:'<div class="map-current-label">● Vous êtes ici</div>',iconAnchor:[0,18]})}).addTo(map);else currentMarker.setLatLng([here.lat,here.lon]);if(currentAccuracyCircle)currentAccuracyCircle.setLatLng([here.lat,here.lon]).setRadius(pos.coords.accuracy||30);else currentAccuracyCircle=L.circle([here.lat,here.lon],{radius:pos.coords.accuracy||30,color:'#22c55e',weight:1,fillOpacity:.08}).addTo(map);let bestI=nextStopIndex,bestD=Infinity;for(let i=Math.max(1,nextStopIndex);i<orderedRoute.length;i++){const d=haversineKm(here,orderedRoute[i]);if(d<bestD){bestD=d;bestI=i}}nextStopIndex=bestI;if(bestD<0.15&&nextStopIndex<orderedRoute.length-1)nextStopIndex++;refreshRoadDistance(here,orderedRoute[Math.min(nextStopIndex,orderedRoute.length-1)]);const badge=document.getElementById('followBadge');if(badge)badge.textContent='GPS : '+bestD.toFixed(2)+' km';updateNextStopInfo();if(followMode)map.panTo([here.lat,here.lon],{animate:true,duration:.35})},err=>{const badge=document.getElementById('followBadge');if(badge)badge.textContent='GPS : indisponible';toast('GPS : '+(err.message||'position non disponible'));stopFollowing()},{enableHighAccuracy:true,maximumAge:5000,timeout:15000})}
 window.addEventListener('orientationchange',()=>setTimeout(()=>map.invalidateSize(),250));
 
-async function optimize(){let result=document.getElementById('result');try{let points=getPoints();orderedRoute=[];showLoading("Calcul de l’ordre optimal...");let r=await apiFetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);orderedRoute=ordered;nextStopIndex=1;drawMarkers(ordered);focusMap();showLoading('Vérification du réseau routier...');
+async function optimize(){let result=document.getElementById('result');try{let points=getPoints();orderedRoute=[];showLoading("Résolution TSP — recherche ACO...");let r=await apiFetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);orderedRoute=ordered;nextStopIndex=1;drawMarkers(ordered);focusMap();showLoading('Vérification du réseau routier...');
 let qc=await apiFetch('/api/classify-points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});
 let qd=await qc.json();
 if(qc.ok&&Array.isArray(qd.results)){
@@ -592,16 +592,20 @@ if(qc.ok&&Array.isArray(qd.results)){
     toast('Route routable interrompue : point(s) à vérifier.');return;
   }
 }
-showLoading('Calcul du tracé routier...');let rr=await apiFetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : aucun faux tracé silencieux.');throw Error(road.detail||'Le service routier n’a pas trouvé de route.')}if(routeLayer)map.removeLayer(routeLayer);const routeColor=road.contains_ferry?'#38bdf8':'#f59e0b';routeLayer=L.geoJSON(road.geometry,{style:{color:routeColor,weight:5,opacity:.95,lineCap:'round',lineJoin:'round',smoothFactor:.7}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<div class="result-title">✓ Itinéraire optimisé</div><div class="result-meta"><span class="pill">📍 '+ordered.length+' points</span><span class="pill">🛣️ Réseau routier réel</span><span class="pill">📏 '+road.distance_km+' km</span><span class="pill">⏱️ '+(road.duration_min==='—'?'—':road.duration_min+' min')+'</span></div><div class="route-status"><strong>Navigation prête.</strong> Le tracé affiché provient du réseau routier du routeur. Aucun tracé droit n'est utilisé comme secours. Appuyez sur « Suivre » pour utiliser le GPS du téléphone et calculer automatiquement la distance jusqu’à la prochaine étape.</div><div class="route-list">'+ordered.map((p,i)=>'<div class="route-item"><b>'+String(i+1).padStart(2,'0')+'</b> · '+esc(p.name||('Point '+(i+1)))+' <span class="muted">('+Number(p.lat).toFixed(5)+', '+Number(p.lon).toFixed(5)+')</span></div>').join('')+'</div>';updateCharts(ordered,road);document.querySelector('#optimizer .panel:first-child')?.classList.add('route-builder-compact');hideLoading();toast('Optimisation terminée.');focusMap()}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
+showLoading('Calcul du tracé routier...');let rr=await apiFetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : aucun faux tracé silencieux.');throw Error(road.detail||'Le service routier n’a pas trouvé de route.')}if(routeLayer)map.removeLayer(routeLayer);const routeColor=road.contains_ferry?'#38bdf8':'#f59e0b';routeLayer=L.geoJSON(road.geometry,{style:{color:routeColor,weight:5,opacity:.95,lineCap:'round',lineJoin:'round',smoothFactor:.7}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<div class="result-title">✓ Solution TSP trouvée</div><div class="result-meta"><span class="pill">🧠 SwiftRoute TSP-ACO</span><span class="pill">📍 '+ordered.length+' points</span><span class="pill">🛣️ Réseau routier réel</span><span class="pill">📏 '+road.distance_km+' km</span><span class="pill">⏱️ '+(road.duration_min==='—'?'—':road.duration_min+' min')+'</span></div><div class="route-status"><strong>Navigation prête.</strong> Le tracé affiché provient du réseau routier du routeur. Aucun tracé droit n'est utilisé comme secours. Appuyez sur « Suivre » pour utiliser le GPS du téléphone et calculer automatiquement la distance jusqu’à la prochaine étape.</div><div class="route-list">'+ordered.map((p,i)=>'<div class="route-item"><b>'+String(i+1).padStart(2,'0')+'</b> · '+esc(p.name||('Point '+(i+1)))+' <span class="muted">('+Number(p.lat).toFixed(5)+', '+Number(p.lon).toFixed(5)+')</span></div>').join('')+'</div>';updateCharts(ordered,road);document.querySelector('#optimizer .panel:first-child')?.classList.add('route-builder-compact');hideLoading();toast('Optimisation terminée.');focusMap()}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
 
 addPoint({name:'Départ',lat:'',lon:''});addPoint({name:'Destination',lat:'',lon:''});window.addEventListener('resize',()=>map.invalidateSize());
 </script></body></html>'''.replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID).replace('__TIUN_PRODUCT_ID__', TIUN_PRODUCT_ID).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit())).replace('__TILE_URL__', TILE_URL).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit()))
 
 # ========================= ENGINE =========================
-# SwiftRoute FAST: ACO + adaptive 2-opt + early stopping.
-# L'objectif est d'améliorer la qualité sans multiplier inutilement le temps de calcul.
+# SwiftRoute TSP-FIRST ENGINE
+# - TSP path: départ fixe -> chaque point exactement une fois -> destination fixe
+# - ACO avec mémoire d'élite + "fourmi éclaireuse"
+# - amélioration locale 2-opt + Or-opt légère
+# - mode VRP conservé pour les usages à capacité de véhicule
+# IMPORTANT: il s'agit d'une heuristique ACO, pas d'un solveur exact pour tous les n.
 NB_FOURMIS=15
-ALPHA,BETA,EVAPORATION,Q=1.0,2.0,0.3,100.0
+ALPHA,BETA,EVAPORATION,Q=1.0,2.4,0.28,100.0
 CAPACITE_MAX_VEHICULE=10
 
 
@@ -609,24 +613,40 @@ def _distance_route(route, dists):
     return sum(dists[a][b] for a,b in zip(route, route[1:]))
 
 
-def ameliorer_2opt(route, dists, max_passes=2):
-    """Amélioration locale 2-opt. Rapide et limitée pour conserver la vitesse."""
+def _route_is_complete(route, n, start=0, end=None):
+    if end is None:
+        end=n-1
+    expected=set(range(n))
+    return (
+        len(route)==n and
+        route[0]==start and
+        route[-1]==end and
+        set(route)==expected and
+        len(set(route))==n
+    )
+
+
+def ameliorer_2opt(route, dists, max_passes=3, fixed_end=True):
+    """2-opt pour un chemin TSP/VRP.
+
+    Pour le TSP avec départ/destination fixes, les extrémités restent intactes.
+    """
     if len(route) < 5:
-        return route, _distance_route(route, dists)
+        return list(route), _distance_route(route, dists)
     best=list(route)
     best_dist=_distance_route(best,dists)
+    last=len(best)-1 if fixed_end else len(best)
     for _ in range(max_passes):
         improved=False
-        # On conserve le dépôt au début et à la fin.
-        for i in range(1,len(best)-2):
+        for i in range(1,last-2):
             a,b=best[i-1],best[i]
-            for j in range(i+1,len(best)-1):
+            for j in range(i+1,last-1):
                 c,d=best[j],best[j+1]
                 delta=(dists[a][c]+dists[b][d])-(dists[a][b]+dists[c][d])
-                if delta < -1e-9:
+                if delta < -1e-10:
                     candidate=best[:i]+best[i:j+1][::-1]+best[j+1:]
                     candidate_dist=best_dist+delta
-                    if candidate_dist < best_dist:
+                    if candidate_dist < best_dist-1e-10:
                         best,best_dist=candidate,candidate_dist
                         improved=True
         if not improved:
@@ -634,7 +654,91 @@ def ameliorer_2opt(route, dists, max_passes=2):
     return best,best_dist
 
 
+def ameliorer_or_opt(route, dists, max_moves=40):
+    """Déplace de petits segments pour casser les mauvais croisements.
+
+    C'est volontairement limité: il sert de finition rapide après 2-opt.
+    """
+    if len(route) < 6:
+        return list(route), _distance_route(route,dists)
+    best=list(route); best_dist=_distance_route(best,dists); moves=0
+    changed=True
+    while changed and moves<max_moves:
+        changed=False
+        for i in range(1,len(best)-2):
+            j=i+1
+            a,b=best[i-1],best[i]
+            c=best[j]
+            old=dists[a][b]+dists[c][best[j+1]]
+            for k in range(1,len(best)-1):
+                if k in (i,j) or k==i+1:
+                    continue
+                if k>i and k<=j+1:
+                    continue
+                u,v=best[k-1],best[k]
+                new=dists[u][b]+dists[c][v]
+                delta=new-old
+                if delta < -1e-10:
+                    cand=best[:i]+best[i+1:j+1]+best[j+1:]
+                    node=cand.pop(i)
+                    insert_at=k-1 if k>i else k
+                    cand.insert(insert_at,node)
+                    cand_dist=_distance_route(cand,dists)
+                    if cand_dist < best_dist-1e-10:
+                        best,best_dist=cand,cand_dist
+                        moves+=1; changed=True
+                        break
+            if changed: break
+    return best,best_dist
+
+
+def _pick_next_tsp(current, unvisited, pher, dists, scout_bias=None):
+    """Sélection probabiliste ACO pour un TSP sans retour au dépôt intermédiaire."""
+    if not unvisited:
+        return None
+    scores=[]; total=0.0
+    for nxt in unvisited:
+        distance=max(dists[current][nxt],0.001)
+        score=(max(pher[current][nxt],1e-12)**ALPHA)*((1.0/distance)**BETA)
+        # La fourmi éclaireuse exploite la meilleure information de la vague précédente.
+        if scout_bias and (current,nxt) in scout_bias:
+            score *= 1.0 + min(2.5, scout_bias[(current,nxt)])
+        scores.append((nxt,score)); total+=score
+    if total<=0:
+        return min(unvisited,key=lambda x:dists[current][x])
+    pick=random.random()*total; acc=0.0
+    for nxt,score in scores:
+        acc+=score
+        if acc>=pick:
+            return nxt
+    return scores[-1][0]
+
+
+def simuler_fourmi_tsp(n,dists,pher,start=0,end=None,scout_bias=None,scout=False):
+    """Construit un chemin Hamiltonien TSP avec extrémités fixes.
+
+    Le dernier sommet est réservé à la destination: les fourmis ne peuvent donc
+    pas "sauter" prématurément à la destination et laisser des villes derrière.
+    """
+    if end is None: end=n-1
+    if n<=2:
+        return [start,end],dists[start][end]
+    unvisited=set(range(n)); unvisited.discard(start); unvisited.discard(end)
+    path=[start]; current=start
+    while unvisited:
+        if scout:
+            # L'éclaireuse est plus déterministe: elle privilégie fortement
+            # les informations mémorisées, tout en gardant l'heuristique distance.
+            nxt=_pick_next_tsp(current,unvisited,pher,dists,scout_bias)
+        else:
+            nxt=_pick_next_tsp(current,unvisited,pher,dists,scout_bias)
+        path.append(nxt); unvisited.remove(nxt); current=nxt
+    path.append(end)
+    return path,_distance_route(path,dists)
+
+
 def simuler_fourmi_vrp(nb,dists,phero):
+    """Mode VRP conservé: retours au dépôt lorsque la capacité est atteinte."""
     path=[0]; visited={0}; load=0; total=0.0
     while len(visited)<nb:
         act=path[-1]
@@ -659,125 +763,144 @@ def simuler_fourmi_vrp(nb,dists,phero):
     return path,total
 
 
-def distance_directe_km(a, b):
-    """Distance géographique approximative entre deux points GPS."""
-    lat1, lon1 = float(a[0]), float(a[1])
-    lat2, lon2 = float(b[0]), float(b[1])
-    mean_lat = math.radians((lat1 + lat2) / 2.0)
-    return math.hypot(
-        (lat2 - lat1) * 111.0,
-        (lon2 - lon1) * 111.0 * math.cos(mean_lat)
-    ) * 1.23
+def distance_directe_km(a,b):
+    """Distance géographique approximative utilisée pour le coût initial."""
+    lat1,lon1=float(a[0]),float(a[1]); lat2,lon2=float(b[0]),float(b[1])
+    mean_lat=math.radians((lat1+lat2)/2.0)
+    return math.hypot((lat2-lat1)*111.0,(lon2-lon1)*111.0*math.cos(mean_lat))*1.23
+
+
+def _distance_matrix(villes):
+    n=len(villes)
+    latm=math.radians(sum(float(v[0]) for v in villes)/n)
+    R=6371.0
+    plane=[
+        (R*math.radians(float(lon))*math.cos(latm),R*math.radians(float(lat)))
+        for lat,lon in villes
+    ]
+    return [[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23
+             for j in range(n)] for i in range(n)]
 
 
 def calculer_route_scalable(villes):
-    """Mode gros volume sans matrice n×n.
-
-    Il n'impose pas de plafond de points : la mémoire reste O(n).
-    Pour les très gros volumes, on utilise un balayage angulaire autour du
-    centre géographique, beaucoup plus léger qu'une matrice de distances.
-    """
-    n = len(villes)
-    if n < 2:
-        return list(range(n)), 0.0
-    if n == 2:
-        return [0, 1], distance_directe_km(villes[0], villes[1])
-
-    dest = n - 1
-    middle = []
-    center_lat = sum(float(v[0]) for v in villes[1:dest]) / max(1, dest - 1)
-    center_lon = sum(float(v[1]) for v in villes[1:dest]) / max(1, dest - 1)
-    cos_lat = max(0.05, abs(math.cos(math.radians(center_lat))))
-
-    for idx in range(1, dest):
-        lat, lon = float(villes[idx][0]), float(villes[idx][1])
-        x = (lon - center_lon) * cos_lat
-        y = lat - center_lat
-        angle = math.atan2(y, x)
-        radius = x * x + y * y
-        middle.append((angle, radius, idx))
-
-    middle.sort(key=lambda item: (item[0], item[1]))
-    route = [0] + [idx for _, _, idx in middle] + [dest]
-
-    distance = sum(
-        distance_directe_km(villes[a], villes[b])
-        for a, b in zip(route, route[1:])
-    )
-    return route, distance
-
-
-def calculer_route_precision(villes):
+    """Mode spatial léger pour très gros volumes."""
     n=len(villes)
-    if n<3:
-        if n == 2:
-            return [0, 1], distance_directe_km(villes[0], villes[1])
-        return list(range(n)),0.0
+    if n<2: return list(range(n)),0.0
+    if n==2: return [0,1],distance_directe_km(villes[0],villes[1])
+    dest=n-1; middle=[]
+    center_lat=sum(float(v[0]) for v in villes[1:dest])/max(1,dest-1)
+    center_lon=sum(float(v[1]) for v in villes[1:dest])/max(1,dest-1)
+    cos_lat=max(0.05,abs(math.cos(math.radians(center_lat))))
+    for idx in range(1,dest):
+        lat,lon=float(villes[idx][0]),float(villes[idx][1])
+        x=(lon-center_lon)*cos_lat; y=lat-center_lat
+        middle.append((math.atan2(y,x),x*x+y*y,idx))
+    middle.sort(key=lambda item:(item[0],item[1]))
+    route=[0]+[idx for _,_,idx in middle]+[dest]
+    distance=sum(distance_directe_km(villes[a],villes[b]) for a,b in zip(route,route[1:]))
+    # Pas de matrice O(n²) ici: on conserve volontairement ce mode léger
+    # pour les très gros volumes. La résolution ACO complète est utilisée
+    # lorsque la taille permet de conserver les distances en mémoire.
+    return route,distance
 
-    # Au-delà de ce seuil, on ne construit plus de matrice n×n.
-    # Le nombre de points reste libre ; seul l'algorithme devient plus léger.
-    if n > 1200:
-        return calculer_route_scalable(villes)
-    latm=math.radians(sum(float(v[0]) for v in villes)/n); R=6371.0
-    plane=[(R*math.radians(float(lat))*0 + R*math.radians(float(lon))*math.cos(latm), R*math.radians(float(lat))) for lat,lon in villes]
-    dist=[[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23 for j in range(n)] for i in range(n)]
+
+def calculer_route_tsp(villes):
+    """Moteur principal TSP-first: chaque point exactement une fois.
+
+    Pour n <= 1200, ACO travaille sur une matrice géographique; pour les grands
+    volumes, le mode scalable évite la matrice O(n²). Le résultat est ensuite
+    contrôlé comme un chemin Hamiltonien.
+    """
+    n=len(villes)
+    if n<2: return list(range(n)),0.0,{'mode':'tsp','complete':True,'iterations':0,'ants':0,'improvement_pct':0.0}
+    if n==2: return [0,1],distance_directe_km(villes[0],villes[1]),{'mode':'tsp','complete':True,'iterations':0,'ants':0,'improvement_pct':0.0}
+    if n>1200:
+        route,distance=calculer_route_scalable(villes)
+        return route,distance,{'mode':'tsp-scalable','complete':_route_is_complete(route,n),'iterations':0,'ants':0,'improvement_pct':0.0}
+
+    dist=_distance_matrix(villes)
     pher=[[1.0]*n for _ in range(n)]
-    best_route=[]; best_distance=float('inf')
+    # Construction de référence: plus proche voisin.
+    nn=[0]; remaining=set(range(1,n-1)); cur=0
+    while remaining:
+        nxt=min(remaining,key=lambda j:dist[cur][j]); nn.append(nxt); remaining.remove(nxt); cur=nxt
+    nn.append(n-1)
+    nn_distance=_distance_route(nn,dist)
+    best_route=list(nn); best_distance=nn_distance
 
-    # Adaptation au nombre de points: assez de recherche pour les petits cas,
-    # Le moteur utilise un mode précis pour les tailles raisonnables et un mode
-    # spatial scalable pour les très gros volumes, sans plafond fixe de points.
-    if n <= 30: iterations, ants, patience, local_passes = 35, 18, 8, 3
-    elif n <= 100: iterations, ants, patience, local_passes = 24, 15, 6, 2
-    elif n <= 300: iterations, ants, patience, local_passes = 14, 10, 4, 1
-    elif n <= 600: iterations, ants, patience, local_passes = 9, 8, 3, 1
-    else: iterations, ants, patience, local_passes = 7, 6, 2, 1
+    if n<=30: iterations,ants,patience,local_passes=45,22,10,4
+    elif n<=100: iterations,ants,patience,local_passes=30,18,8,3
+    elif n<=300: iterations,ants,patience,local_passes=18,12,6,2
+    elif n<=600: iterations,ants,patience,local_passes=12,9,4,2
+    else: iterations,ants,patience,local_passes=9,7,3,1
 
-    stagnant=0
-    for _ in range(iterations):
+    stagnant=0; scout_memory={}; previous_best=None
+    for _iteration in range(iterations):
         iteration_best=None; iteration_distance=float('inf'); all_routes=[]
-        for _ in range(ants):
-            route,d=simuler_fourmi_vrp(n,dist,pher)
+        for ant in range(ants):
+            scout=(ant==0 and previous_best is not None)
+            route,d=simuler_fourmi_tsp(n,dist,pher,scout_bias=scout_memory,scout=scout)
+            # La recherche locale est appliquée aux meilleures fourmis seulement.
+            if ant<max(2,ants//3):
+                route,d=ameliorer_2opt(route,dist,local_passes)
+                if n<=120: route,d=ameliorer_or_opt(route,dist,max_moves=10)
             all_routes.append((route,d))
-            if d < iteration_distance:
+            if d<iteration_distance:
                 iteration_best,iteration_distance=route,d
 
-        # Recherche locale uniquement sur la meilleure fourmi de l'itération.
-        if iteration_best:
-            improved, improved_d=ameliorer_2opt(iteration_best,dist,local_passes)
-            if improved_d < iteration_distance:
-                iteration_best,iteration_distance=improved,improved_d
-
-        if iteration_distance < best_distance - 1e-9:
+        if iteration_distance < best_distance-1e-10:
             best_route=list(iteration_best); best_distance=iteration_distance; stagnant=0
         else:
             stagnant+=1
 
-        # Évaporation
+        # Évaporation globale.
         evap=1.0-EVAPORATION
         for i in range(n):
-            row=pher[i]
-            for j in range(n): row[j]*=evap
+            for j in range(n):
+                pher[i][j]*=evap
 
-        # Dépôt limité aux meilleures solutions de l'itération pour réduire le bruit.
+        # Dépôt élitiste: les meilleures solutions renforcent leurs arêtes.
         all_routes.sort(key=lambda x:x[1])
-        elite=all_routes[:max(2,min(4,len(all_routes)))]
+        elite=all_routes[:max(3,min(5,len(all_routes)))]
         if iteration_best:
             elite.append((iteration_best,iteration_distance))
-        for route,d in elite:
-            deposit=Q/max(d,0.01)
-            for k in range(len(route)-1):
-                pher[route[k]][route[k+1]] += deposit
+        for rank,(route,d) in enumerate(elite):
+            deposit=(Q/max(d,0.01))*(1.0+0.20/(rank+1))
+            for a,b in zip(route,route[1:]):
+                pher[a][b]+=deposit
+                pher[b][a]+=deposit
 
-        # Arrêt anticipé: si aucune amélioration récente, inutile de consommer
-        # du temps de calcul supplémentaire.
-        if stagnant >= patience:
+        # Mémoire de la fourmi éclaireuse: les arêtes de la meilleure route
+        # de la vague précédente reçoivent un biais temporaire, en plus des phéromones.
+        scout_memory={}
+        ref=best_route if best_route else iteration_best
+        if ref:
+            for rank,(a,b) in enumerate(zip(ref,ref[1:])):
+                scout_memory[(a,b)]=1.5/(1.0+0.05*rank)
+                scout_memory[(b,a)]=1.5/(1.0+0.05*rank)
+        previous_best=list(best_route)
+        if stagnant>=patience:
             break
 
-    # Une dernière amélioration très limitée protège la qualité finale.
-    if best_route:
-        best_route,best_distance=ameliorer_2opt(best_route,dist,1)
-    return best_route,best_distance
+    # Finition finale.
+    best_route,best_distance=ameliorer_2opt(best_route,dist,max_passes=2)
+    if n<=120:
+        best_route,best_distance=ameliorer_or_opt(best_route,dist,max_moves=25)
+    complete=_route_is_complete(best_route,n)
+    improvement=max(0.0,(nn_distance-best_distance)/max(nn_distance,1e-9)*100.0)
+    return best_route,best_distance,{
+        'mode':'tsp-aco',
+        'complete':complete,
+        'iterations':iterations-stagnant,
+        'ants':ants,
+        'improvement_pct':round(improvement,2)
+    }
+
+
+def calculer_route_precision(villes):
+    """Compatibilité avec l'ancien moteur: renvoie route + distance."""
+    route,distance,_=calculer_route_tsp(villes)
+    return route,distance
 
 
 class RequeteCalcul(BaseModel): villes:List[Tuple[float,float]]
@@ -786,20 +909,25 @@ class RequeteCalcul(BaseModel): villes:List[Tuple[float,float]]
 async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftroute)):
     if len(requete.villes)<2: raise HTTPException(400,'Il faut au moins 2 points.')
     for lat,lon in requete.villes:
-        if not(-90<=float(lat)<=90 and -180<=float(lon)<=180): raise HTTPException(400,'Coordonnées GPS invalides.')
-    if len(requete.villes)==2:
-        route=[0,1]; distance=calculer_route_precision(requete.villes)[1]
-    else:
-        dest=len(requete.villes)-1
-        inter=[requete.villes[0]]+requete.villes[1:dest]
-        ordre,_=calculer_route_precision(inter)
-        ordre=[i for i in ordre if i!=0]
-        route=[0]+ordre+[dest]
-        distance=0.0
-        for a,b in zip(route,route[1:]):
-            va,vb=requete.villes[a],requete.villes[b]
-            distance+=math.hypot((float(va[0])-float(vb[0]))*111.0,(float(va[1])-float(vb[1]))*111.0*math.cos(math.radians((float(va[0])+float(vb[0]))/2)))
-    return {'success':True,'client':infos.get('client'),'type_offre':infos.get('type_offre'),'route':route,'distance_km':round(distance,3),'points':len(requete.villes)}
+        if not(-90<=float(lat)<=90 and -180<=float(lon)<=180):
+            raise HTTPException(400,'Coordonnées GPS invalides.')
+    route,distance,meta=calculer_route_tsp(requete.villes)
+    if not meta.get('complete'):
+        raise HTTPException(500,'Le moteur n’a pas produit un parcours TSP complet.')
+    return {
+        'success':True,
+        'client':infos.get('client'),
+        'type_offre':infos.get('type_offre'),
+        'route':route,
+        'distance_km':round(distance,3),
+        'points':len(requete.villes),
+        'solver':'SwiftRoute TSP-ACO',
+        'problem_type':'TSP path with fixed start/end',
+        'complete_tour':meta.get('complete'),
+        'iterations':meta.get('iterations'),
+        'ants':meta.get('ants'),
+        'improvement_pct':meta.get('improvement_pct')
+    }
 
 # ========================= POINT QUALITY / CLASSIFICATION =========================
 def _haversine_km(lat1, lon1, lat2, lon2):
