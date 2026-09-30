@@ -310,7 +310,20 @@ async def api_tiun_verify_session(requete: RequeteTiunSession):
 def obtenir_page_accueil():
     return '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SwiftRoute Engine</title>
 <script type="module">import { tiun } from 'https://esm.sh/@tiun/sdk'; tiun.init({snippetId:'__TIUN_SNIPPET_ID__',language:'fr'});</script>
-<style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial,sans-serif}a{color:inherit;text-decoration:none}.nav{max-width:1180px;margin:auto;padding:22px;display:flex;justify-content:space-between;align-items:center}.brand{font-weight:900;font-size:21px}.nav a{margin-left:18px;color:#a1a1aa}.hero{max-width:1050px;margin:auto;text-align:center;padding:100px 22px 80px}.eyebrow{color:#f59e0b;font-weight:800;letter-spacing:2px}h1{font-size:clamp(44px,8vw,82px);margin:18px 0;letter-spacing:-3px}.hero p{color:#a1a1aa;max-width:760px;margin:0 auto 32px;line-height:1.7;font-size:18px}.btn{display:inline-block;padding:14px 20px;border-radius:12px;margin:5px;font-weight:800}.primary{background:#f59e0b;color:#09090b}.ghost{border:1px solid #27272a}.grid{max-width:1050px;margin:auto;padding:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#111113;border:1px solid #27272a;border-radius:18px;padding:25px}.card p{color:#a1a1aa;line-height:1.6}@media(max-width:800px){.grid{grid-template-columns:1fr}.nav{flex-wrap:wrap}}</style></head><body>
+<style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Inter,Arial,sans-serif}a{color:inherit;text-decoration:none}.nav{max-width:1180px;margin:auto;padding:22px;display:flex;justify-content:space-between;align-items:center}.brand{font-weight:900;font-size:21px}.nav a{margin-left:18px;color:#a1a1aa}.hero{max-width:1050px;margin:auto;text-align:center;padding:100px 22px 80px}.eyebrow{color:#f59e0b;font-weight:800;letter-spacing:2px}h1{font-size:clamp(44px,8vw,82px);margin:18px 0;letter-spacing:-3px}.hero p{color:#a1a1aa;max-width:760px;margin:0 auto 32px;line-height:1.7;font-size:18px}.btn{display:inline-block;padding:14px 20px;border-radius:12px;margin:5px;font-weight:800}.primary{background:#f59e0b;color:#09090b}.ghost{border:1px solid #27272a}.grid{max-width:1050px;margin:auto;padding:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#111113;border:1px solid #27272a;border-radius:18px;padding:25px}.card p{color:#a1a1aa;line-height:1.6}@media(max-width:800px){.grid{grid-template-columns:1fr}.nav{flex-wrap:wrap}}<style>
+.seq-item{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 0}
+.seq-badge{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid #39414d;background:#171b21;font-weight:800}
+.seq-badge.start{border-color:#22c55e}
+.seq-main{display:flex;flex-direction:column;min-width:0}
+.seq-main b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seq-main span{font-size:11px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seq-distance{font-size:12px;font-weight:800;color:#f59e0b;white-space:nowrap}
+.seq-connector{height:12px;border-left:2px solid #39414d;margin-left:15px}
+.point-dot{width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.45)}
+.point-dot.start{background:#22c55e}.point-dot.end{background:#ef4444}.point-dot.water{background:#2563eb}
+.point-popup{font-size:12px;line-height:1.45}.point-popup b{font-size:14px}.popup-country{font-weight:700;color:#64748b}.popup-muted{font-size:11px;color:#64748b}
+@media(max-width:700px){.seq-item{grid-template-columns:38px minmax(0,1fr) auto}.seq-main b{font-size:13px}}
+</style></style></head><body>
 <div class="nav"><div class="brand">🐜 SWIFTROUTE</div><div><a href="/docs">API Docs</a><a href="/workspace">Espace Client</a></div></div>
 <section class="hero"><div class="eyebrow">ANTSTRIKE COMMERCIAL · ROUTE OPTIMIZATION</div><h1>SWIFTROUTE ENGINE</h1><p>Une infrastructure d'optimisation de tournées dont la capacité dépend des ressources disponibles sur le serveur et présente le résultat sur une carte interactive.</p><a class="btn primary" href="/workspace">Ouvrir l'espace client</a><a class="btn ghost" href="/client-login?subscribe=1">Prendre un abonnement</a></section>
 <div class="grid"><div class="card"><h3>⚡ Optimisation</h3><p>Ordonnancement des points avec le moteur SwiftRoute.</p></div><div class="card"><h3>🌍 Carte</h3><p>Visualisation interactive et tracé routier lorsque le fournisseur est disponible.</p></div><div class="card"><h3>🔑 API</h3><p>Accès développeur avec clé API ou session client sécurisée.</p></div></div></body></html>'''.replace('__TILE_URL__', TILE_URL).replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID)
@@ -370,8 +383,8 @@ window.tiun = tiun;
 /* SwiftRoute visual/navigation layer */
 .route-builder-compact{padding:10px 12px!important}.route-builder-compact .gpslist{max-height:120px!important}.route-builder-compact .quality{display:none}.route-builder-compact .tabs{margin-bottom:8px}.route-builder-compact .actions{grid-template-columns:1fr auto auto}.route-builder-compact .actions .big{grid-column:auto;padding:10px 14px}
 .mapwrap{transition:min-height .25s ease,box-shadow .25s ease}.mapwrap.map-fullscreen{position:fixed;inset:0;width:100vw;height:100vh;min-height:100vh!important;z-index:2500;border-radius:0;margin:0;box-shadow:0 0 0 100vmax #000}.mapwrap.map-fullscreen #map{height:100vh;min-height:100vh}.map-fullscreen .maptools{top:max(14px,env(safe-area-inset-top));left:14px}.map-fullscreen .maptools .exit-map{display:inline-flex!important}.exit-map{display:none!important}
-.follow-badge{position:absolute;right:14px;top:14px;z-index:701;background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:900;backdrop-filter:blur(10px)}.follow-badge.on{border-color:#22c55e;color:#86efac}.point-label.water{border-color:#38bdf8!important;color:#bae6fd!important;background:#082f49!important}.point-label.review{border-color:#f59e0b!important}.point-label{background:#0c0e12eF;color:#fff;border:1px solid #4b5563;border-radius:7px;padding:2px 5px;font-size:9px;font-weight:800;white-space:nowrap;box-shadow:0 3px 10px #0006;max-width:170px;overflow:hidden;text-overflow:ellipsis}.point-label.point-label-hidden{display:none}.point-label.start{border-color:#22c55e}.point-label.end{border-color:#ef4444}.map-current-label{background:#111827;color:#fff;border:1px solid #22c55e;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;box-shadow:0 6px 20px #0007}
-.route-status{margin-top:10px;padding:11px 13px;border:1px solid #26333b;border-radius:12px;background:#0b1114;color:#dbeafe;font-size:13px}.route-status strong{color:#86efac}.analytics{display:none;margin-top:12px;padding:15px;border:1px solid #292d36;border-radius:16px;background:linear-gradient(145deg,#12161b,#0c0f13);box-shadow:0 16px 42px #0004}.analytics.visible{display:block}.analytics-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.analytics-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:12px;margin-top:12px}@media (max-width:700px){.analytics-grid{grid-template-columns:1fr}.analytics{padding:12px}.chart-card{min-width:0}.bar-row{grid-template-columns:76px minmax(0,1fr) 58px}}.chart-card{border:1px solid #292d36;border-radius:13px;padding:13px;background:#0b0e12}.chart-title{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9ca3af;font-weight:900;margin-bottom:10px}.bar-row{display:grid;grid-template-columns:88px 1fr 62px;gap:8px;align-items:center;margin:9px 0;font-size:12px}.bar-track{height:9px;border-radius:999px;background:#20242c;overflow:hidden}.bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#f59e0b,#fcd34d);width:0;transition:width .6s ease}.sequence{display:flex;flex-direction:column;align-items:flex-start;gap:0;overflow:auto;max-height:420px;padding:8px 0}.seq-node{min-width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:#171b22;border:1px solid #3a414d;color:#fff;font-size:11px;font-weight:900}.seq-node.start{border-color:#22c55e}.seq-node.end{border-color:#ef4444}.seq-line{width:2px;height:16px;min-width:2px;background:#4b5563;margin-left:14px}.next-stop{margin-top:10px;padding:10px;border-radius:10px;background:#11161b;border:1px solid #26333b;font-size:12px}
+.follow-badge{position:absolute;right:14px;top:14px;z-index:701;background:#0c0e12eF;border:1px solid #30343d;color:#fff;padding:9px 11px;border-radius:9px;font-weight:900;backdrop-filter:blur(10px)}.follow-badge.on{border-color:#22c55e;color:#86efac}.point-label.water{border-color:#38bdf8!important;color:#bae6fd!important;background:#082f49!important}.point-label.review{border-color:#f59e0b!important}.point-label{background:#0c0e12eF;color:#fff;border:1px solid #4b5563;border-radius:7px;padding:3px 6px;font-size:10px;font-weight:900;white-space:nowrap;box-shadow:0 4px 14px #0006}.point-label.start{border-color:#22c55e}.point-label.end{border-color:#ef4444}.map-current-label{background:#111827;color:#fff;border:1px solid #22c55e;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;box-shadow:0 6px 20px #0007}
+.route-status{margin-top:10px;padding:11px 13px;border:1px solid #26333b;border-radius:12px;background:#0b1114;color:#dbeafe;font-size:13px}.route-status strong{color:#86efac}.analytics{display:none;margin-top:12px;padding:15px;border:1px solid #292d36;border-radius:16px;background:linear-gradient(145deg,#12161b,#0c0f13);box-shadow:0 16px 42px #0004}.analytics.visible{display:block}.analytics-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.analytics-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:12px;margin-top:12px}.chart-card{border:1px solid #292d36;border-radius:13px;padding:13px;background:#0b0e12}.chart-title{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9ca3af;font-weight:900;margin-bottom:10px}.bar-row{display:grid;grid-template-columns:88px 1fr 62px;gap:8px;align-items:center;margin:9px 0;font-size:12px}.bar-track{height:9px;border-radius:999px;background:#20242c;overflow:hidden}.bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#f59e0b,#fcd34d);width:0;transition:width .6s ease}.sequence{display:flex;align-items:center;gap:4px;overflow:auto;padding:8px 0}.seq-node{min-width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:#171b22;border:1px solid #3a414d;color:#fff;font-size:11px;font-weight:900}.seq-node.start{border-color:#22c55e}.seq-node.end{border-color:#ef4444}.seq-line{height:2px;min-width:16px;background:#4b5563}.next-stop{margin-top:10px;padding:10px;border-radius:10px;background:#11161b;border:1px solid #26333b;font-size:12px}
 @media(max-width:700px){.analytics-grid{grid-template-columns:1fr}.mapwrap{min-height:62vh!important}#map{min-height:62vh}.route-builder-compact .actions{grid-template-columns:1fr 1fr}.route-builder-compact .actions .big{grid-column:1/-1}.follow-badge{top:64px}.bar-row{grid-template-columns:72px 1fr 54px}}
 
 .view-hidden{display:none!important}
@@ -398,7 +411,7 @@ window.tiun = tiun;
 </div></main></div><div id="toast" class="toast"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 let map=L.map('map').setView([19.5,-72.3],8);
-window.addEventListener('load',()=>goSection('dashboard',document.querySelector('.navbtn[data-nav="dashboard"]'))); let routeLayer=null,routeGuideLayer=null,markers=[],gpsPoints=[],searchPoints={depart:null,destination:null,stops:[]}; let markerVisible=true; let optimizationRuns=0; let lastDistance='—'; let orderedRoute=[]; let watchId=null; let followMode=false; let currentMarker=null; let currentAccuracyCircle=null; let nextStopIndex=1;
+window.addEventListener('load',()=>goSection('dashboard',document.querySelector('.navbtn[data-nav="dashboard"]'))); let routeLayer=null,markers=[],gpsPoints=[],searchPoints={depart:null,destination:null,stops:[]}; let markerVisible=true; let optimizationRuns=0; let lastDistance='—'; let orderedRoute=[]; let watchId=null; let followMode=false; let currentMarker=null; let currentAccuracyCircle=null; let nextStopIndex=1;
 L.tileLayer('__TILE_URL__',{maxZoom:19,subdomains:['a','b','c'],attribution:'&copy; OpenStreetMap contributors'}).on('tileerror',()=>{}).addTo(map);
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';clearTimeout(window._toast);window._toast=setTimeout(()=>x.style.display='none',3000)}
 
@@ -541,36 +554,89 @@ function renderPerformancePanel(){
   t.textContent=document.getElementById('sTime')?.textContent||'—';
   p.textContent=orderedRoute.length||gpsPoints.length||0;
   const chart=document.getElementById('perfChart');
-  if(chart){ const raw=String(lastDistance||'').replace(',','.'); const n=parseFloat(raw); const width=Number.isFinite(n)?Math.max(8,Math.min(100,n/10)):0; chart.innerHTML=Number.isFinite(n)?`<div class="bar-row"><span>Distance</span><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div><b>${esc(lastDistance)}</b></div><div class="bar-row"><span>Points</span><div class="bar-track"><div class="bar-fill" style="width:${Math.min(100,(gpsPoints.length||orderedRoute.length)*2)}%"></div></div><b>${gpsPoints.length||orderedRoute.length}</b></div>`:'<div class="muted">Aucune optimisation disponible.</div>'; }
+  if(chart){
+    const raw=String(lastDistance||'').replace(',','.'); const n=parseFloat(raw);
+    const width=Number.isFinite(n)?Math.max(8,Math.min(100,n/10)):0;
+    chart.innerHTML=Number.isFinite(n)
+      ? `<div class="bar-row"><span>Distance</span><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div><b>${esc(lastDistance)}</b></div><div class="bar-row"><span>Points</span><div class="bar-track"><div class="bar-fill" style="width:${Math.min(100,(gpsPoints.length||orderedRoute.length)*2)}%"></div></div><b>${gpsPoints.length||orderedRoute.length}</b></div>`
+      : '<div class="muted">Aucune optimisation disponible.</div>';
+  }
   const seq=document.getElementById('perfSequence');
-  if(seq){ seq.innerHTML=''; const arr=orderedRoute.length?orderedRoute:gpsPoints; arr.slice(0,80).forEach((pt,i)=>{const n=document.createElement('div');n.className='seq-node '+(i===0?'start ':'')+(i===arr.length-1?'end':'');n.textContent=String(i+1);seq.appendChild(n);if(i<arr.slice(0,80).length-1){const line=document.createElement('div');line.className='seq-line';seq.appendChild(line);}}); }
-  const next=document.getElementById('perfNext'); if(next) next.textContent=arr?.length>1?`Itinéraire : ${arr.length} étapes calculées.`:'Aucun itinéraire calculé.';
+  const arr=orderedRoute.length?orderedRoute:gpsPoints.map((x,i)=>({name:x.name||('Point '+(i+1)),lat:Number(x.lat),lon:Number(x.lon),country:x.country||''}));
+  if(seq){
+    if(!arr.length){seq.innerHTML='<div class="muted">Aucun itinéraire calculé.</div>';}
+    else{
+      seq.innerHTML=arr.slice(0,600).map((pt,i)=>{
+        const next=arr[i+1], km=next?haversineKm(pt,next):null;
+        const parts=String(pt.name||('Point '+(i+1))).split(',').map(x=>x.trim()).filter(Boolean);
+        const place=parts[0]||('Point '+(i+1));
+        const country=pt.country||parts[parts.length-1]||'Lieu GPS';
+        return `<div class="seq-item"><div class="seq-badge ${i===0?'start':''}">${i+1}</div><div class="seq-main"><b>${esc(place)}</b><span>${esc(country)}</span></div><div class="seq-distance">${km!==null?esc(km.toFixed(km<100?1:0))+' km':'FIN'}</div></div>${i<arr.length-1?'<div class="seq-connector"></div>':''}`;
+      }).join('');
+    }
+  }
+  const next=document.getElementById('perfNext');
+  if(next) next.textContent=arr.length>1?`Ordre optimal : ${arr.length} points · distances géométriques entre étapes.`:'Aucun itinéraire calculé.';
 }
-
 function showHelp(){let x=document.getElementById('helpBox');x.style.display=x.style.display==='none'?'block':'none'}
 
 function switchMode(name,btn){document.querySelectorAll('.modepanel').forEach(x=>x.classList.remove('active'));document.getElementById('mode-'+name).classList.add('active');document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));btn.classList.add('active')}
 function esc(v){return String(v??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]))}
-function renderGPS(){let box=document.getElementById('gpslist');box.innerHTML='';gpsPoints.forEach((p,i)=>{let r=document.createElement('div');r.className='gpsrow';r.innerHTML=`<div class="num">${i+1}</div><input value="${esc(p.name||'')}" placeholder="Ville / nom" onchange="gpsPoints[${i}].name=this.value"><input value="${esc(p.lat)}" placeholder="latitude" onchange="gpsPoints[${i}].lat=this.value"><input value="${esc(p.lon)}" placeholder="longitude" onchange="gpsPoints[${i}].lon=this.value"><button class="remove" onclick="gpsPoints.splice(${i},1);renderGPS()">×</button>`;box.appendChild(r)});document.getElementById('count').textContent=gpsPoints.length;document.getElementById('bar').style.width=(gpsPoints.length ? '100%' : '0%');document.getElementById('sPoints').textContent=gpsPoints.length;updateUsage()}
-function addPoint(p={name:'',lat:'',lon:''}){gpsPoints.push(p);renderGPS()}
-function clearAll(){stopFollowing();orderedRoute=[];document.getElementById('analyticsPanel')?.classList.remove('visible');document.querySelector('#optimizer .panel:first-child')?.classList.remove('route-builder-compact');gpsPoints=[];searchPoints={depart:null,destination:null,stops:[]};renderGPS();if(routeLayer){map.removeLayer(routeLayer);routeLayer=null};if(routeGuideLayer){map.removeLayer(routeGuideLayer);routeGuideLayer=null};markers.forEach(m=>map.removeLayer(m));markers=[];document.getElementById('result').style.display='none';document.getElementById('qualityBox').style.display='none';document.getElementById('qualityBox').innerHTML='';document.getElementById('sRoad').textContent='—';document.getElementById('sTime').textContent='—';lastDistance='—';document.getElementById('perfDistance').textContent='—';document.getElementById('perfTime').textContent='—';document.getElementById('perfPoints').textContent='0';document.getElementById('perfChart').innerHTML='<div class="muted">Lancez une optimisation pour afficher les données.</div>';document.getElementById('perfSequence').innerHTML='';document.getElementById('perfNext').textContent='Aucun itinéraire calculé.';updateUsage()}
+let mapEditTimer=null;
+function refreshMapFromInputs(focusFirst=false){
+  clearTimeout(mapEditTimer);
+  mapEditTimer=setTimeout(()=>{
+    const pts=gpsPoints.filter(valid).map((p,i)=>({name:p.name||('Point '+(i+1)),lat:Number(p.lat),lon:Number(p.lon),country:p.country||''}));
+    drawMarkers(pts);
+    if(focusFirst&&pts.length)map.setView([pts[0].lat,pts[0].lon],14,{animate:true});
+  },120);
+}
+function renderGPS(){
+  let box=document.getElementById('gpslist');box.innerHTML='';
+  gpsPoints.forEach((p,i)=>{
+    let r=document.createElement('div');r.className='gpsrow';
+    r.innerHTML=`<div class="num">${i+1}</div><input value="${esc(p.name||'')}" placeholder="Ville / nom" onchange="gpsPoints[${i}].name=this.value;refreshMapFromInputs(${i===0})"><input value="${esc(p.lat)}" placeholder="latitude" onchange="gpsPoints[${i}].lat=this.value;refreshMapFromInputs(${i===0})"><input value="${esc(p.lon)}" placeholder="longitude" onchange="gpsPoints[${i}].lon=this.value;refreshMapFromInputs(${i===0})"><button class="remove" onclick="gpsPoints.splice(${i},1);renderGPS();refreshMapFromInputs(false)">×</button>`;
+    box.appendChild(r);
+  });
+  document.getElementById('count').textContent=gpsPoints.length;
+  document.getElementById('bar').style.width=(gpsPoints.length?'100%':'0%');
+  document.getElementById('sPoints').textContent=gpsPoints.length;
+  updateUsage();
+}
+function addPoint(p={name:'',lat:'',lon:''}){gpsPoints.push(p);renderGPS();if(valid(p)){drawMarkers(gpsPoints);if(gpsPoints.length===1)focusFirstPoint()}}
+function clearAll(){stopFollowing();orderedRoute=[];document.getElementById('analyticsPanel')?.classList.remove('visible');document.querySelector('#optimizer .panel:first-child')?.classList.remove('route-builder-compact');gpsPoints=[];searchPoints={depart:null,destination:null,stops:[]};renderGPS();if(routeLayer){map.removeLayer(routeLayer);routeLayer=null};markers.forEach(m=>map.removeLayer(m));markers=[];document.getElementById('result').style.display='none';document.getElementById('qualityBox').style.display='none';document.getElementById('qualityBox').innerHTML='';document.getElementById('sRoad').textContent='—';document.getElementById('sTime').textContent='—';lastDistance='—';updateUsage()}
 function valid(p){return Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lon))&&Number(p.lat)>=-90&&Number(p.lat)<=90&&Number(p.lon)>=-180&&Number(p.lon)<=180}
-function getPoints(){let points;if(document.getElementById('mode-search').classList.contains('active')){if(!searchPoints.depart||!searchPoints.destination)throw Error('Ajoutez un départ et une destination.');points=[searchPoints.depart,...searchPoints.stops,searchPoints.destination]}else points=gpsPoints.map((p,i)=>({name:p.name||'Point '+(i+1),lat:Number(p.lat),lon:Number(p.lon),originalIndex:i}));if(points.length<2)throw Error('Il faut au moins 2 points.');if(points.some(p=>!valid(p)))throw Error('Une coordonnée est invalide.');return points}
-async function importCSV(){let f=document.getElementById('csv').files[0];if(!f)return toast('Choisissez un fichier CSV.');let text=await f.text();let lines=text.split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean);let start=/lat.*lon/i.test(lines[0])?1:0;let arr=[];for(let i=start;i<lines.length;i++){let a=lines[i].split(',').map(x=>x.trim());if(a.length<2)continue;let hasName=a.length>=3&&!Number.isFinite(Number(a[0]));let name=hasName?a[0]:'Point '+(arr.length+1);let lat=Number(hasName?a[1]:a[0]),lon=Number(hasName?a[2]:a[1]);if(Number.isFinite(lat)&&Number.isFinite(lon))arr.push({name,lat,lon})}gpsPoints=arr;renderGPS();switchMode('gps',document.querySelector('.tab'));toast(arr.length+' points importés.')}
-async function searchPlace(type){let id=type==='depart'?'departQ':type==='dest'?'destQ':'stopQ';let q=document.getElementById(id).value.trim();if(!q)return;const status=document.getElementById('searchStatus');if(status){status.className='search-result';status.innerHTML='<div class="label">Recherche en cours</div><div class="place">'+esc(q)+'</div>';}try{let r=await fetch('/api/geocode?q='+encodeURIComponent(q));let d=await r.json();if(!r.ok)throw Error(d.detail||'Lieu introuvable');let p={name:d.display_name,lat:Number(d.lat),lon:Number(d.lon),originalIndex:(type==='depart'?0:(type==='stop'?searchPoints.stops.length+1:searchPoints.stops.length+1))};if(type==='depart')searchPoints.depart=p;else if(type==='dest')searchPoints.destination=p;else searchPoints.stops.push(p);if(status){status.className='search-result';status.innerHTML='<div class="label">Résultat trouvé</div><div class="place">✓ '+esc(p.name)+'</div><div class="coords">LAT '+p.lat.toFixed(6)+' · LON '+p.lon.toFixed(6)+'</div>';}toast('Lieu ajouté à la route');drawSearchPreview();focusMap();}catch(e){if(status){status.className='search-result';status.innerHTML='<div class="label" style="color:#ef4444">Recherche</div><div class="place">'+esc(e.message)+'</div>';}toast(e.message)}}
+function getPoints(){let points;if(document.getElementById('mode-search').classList.contains('active')){if(!searchPoints.depart||!searchPoints.destination)throw Error('Ajoutez un départ et une destination.');points=[searchPoints.depart,...searchPoints.stops,searchPoints.destination]}else points=gpsPoints.map((p,i)=>({name:p.name||'Point '+(i+1),lat:Number(p.lat),lon:Number(p.lon)}));if(points.length<2)throw Error('Il faut au moins 2 points.');if(points.some(p=>!valid(p)))throw Error('Une coordonnée est invalide.');return points}
+async function importCSV(){let f=document.getElementById('csv').files[0];if(!f)return toast('Choisissez un fichier CSV.');let text=await f.text();let lines=text.split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean);let start=/lat.*lon/i.test(lines[0])?1:0;let arr=[];for(let i=start;i<lines.length;i++){let a=lines[i].split(',').map(x=>x.trim());if(a.length<2)continue;let hasName=a.length>=3&&!Number.isFinite(Number(a[0]));let name=hasName?a[0]:'Point '+(arr.length+1);let lat=Number(hasName?a[1]:a[0]),lon=Number(hasName?a[2]:a[1]);if(Number.isFinite(lat)&&Number.isFinite(lon))arr.push({name,lat,lon})}gpsPoints=arr;renderGPS();switchMode('gps',document.querySelector('.tab'));drawMarkers(gpsPoints);focusFirstPoint();toast(arr.length+' points importés.')}
+async function searchPlace(type){let id=type==='depart'?'departQ':type==='dest'?'destQ':'stopQ';let q=document.getElementById(id).value.trim();if(!q)return;const status=document.getElementById('searchStatus');if(status){status.className='search-result';status.innerHTML='<div class="label">Recherche en cours</div><div class="place">'+esc(q)+'</div>';}try{let r=await fetch('/api/geocode?q='+encodeURIComponent(q));let d=await r.json();if(!r.ok)throw Error(d.detail||'Lieu introuvable');let p={name:d.display_name,lat:Number(d.lat),lon:Number(d.lon)};if(type==='depart')searchPoints.depart=p;else if(type==='dest')searchPoints.destination=p;else searchPoints.stops.push(p);if(status){status.className='search-result';status.innerHTML='<div class="label">Résultat trouvé</div><div class="place">✓ '+esc(p.name)+'</div><div class="coords">LAT '+p.lat.toFixed(6)+' · LON '+p.lon.toFixed(6)+'</div>';}toast('Lieu ajouté à la route');drawSearchPreview();focusMap();}catch(e){if(status){status.className='search-result';status.innerHTML='<div class="label" style="color:#ef4444">Recherche</div><div class="place">'+esc(e.message)+'</div>';}toast(e.message)}}
 function drawSearchPreview(){const pts=[];if(searchPoints.depart)pts.push(searchPoints.depart);pts.push(...searchPoints.stops);if(searchPoints.destination)pts.push(searchPoints.destination);if(pts.length){drawMarkers(pts);fitAll();}}
 
 function showLoading(t){document.getElementById('loadingText').textContent=t;document.getElementById('loading').style.display='flex'}function hideLoading(){document.getElementById('loading').style.display='none'}
 function clearMarkers(){markers.forEach(m=>map.removeLayer(m));markers=[]}
-function pointDisplayName(p,i){let n=String(p?.name||('Point '+(i+1))).trim();if(!n)return 'Point '+(i+1);return n.split(',')[0].trim().slice(0,48)}
-function pointCountry(p){if(p?.country)return String(p.country);const n=String(p?.name||'');const parts=n.split(',').map(x=>x.trim()).filter(Boolean);return parts.length>1?parts[parts.length-1]:''}
-function pointPopup(p,i,total){const name=pointDisplayName(p,i),country=pointCountry(p);const lat=Number(p.lat),lon=Number(p.lon);return '<div style="min-width:190px"><b>'+esc(name)+'</b>'+(country?'<div>'+esc(country)+'</div>':'')+'<div>Latitude : '+lat.toFixed(6)+'</div><div>Longitude : '+lon.toFixed(6)+'</div></div>'}
-function makePointIcon(i,p,total){const cls=i===0?'route-start':(i===total-1?'route-end':'route-stop');return L.divIcon({className:'',html:'<div class="route-point-dot '+cls+'"></div>',iconSize:[14,14],iconAnchor:[7,7]})}
-function drawMarkers(points){clearMarkers();points.forEach((p,i)=>{const m=L.marker([Number(p.lat),Number(p.lon)],{icon:makePointIcon(i,p,points.length),keyboard:true,title:pointDisplayName(p,i)}).addTo(map);m.bindPopup(pointPopup(p,i,points.length),{closeButton:true,autoPan:true,maxWidth:240});markers.push(m)});updatePointLabelVisibility()}
-function updatePointLabelVisibility(){}
-function geometricKm(a,b){const R=6371.0088,p1=Number(a[1])*Math.PI/180,p2=Number(b[1])*Math.PI/180,dp=p2-p1,dl=(Number(b[0])-Number(a[0]))*Math.PI/180;const x=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(x)))}
-function drawRouteGuide(geometry){if(routeGuideLayer){map.removeLayer(routeGuideLayer);routeGuideLayer=null}const coords=geometry?.geometry?.coordinates||[];if(coords.length<2)return;const step=Math.max(1,Math.ceil(coords.length/80));let cumulative=0;const dots=[];for(let i=0;i<coords.length;i+=step){if(i>0){for(let j=i-step+1;j<=i&&j<coords.length;j++)cumulative+=geometricKm(coords[j-1],coords[j])}const c=coords[i];dots.push(L.circleMarker([c[1],c[0]],{radius:2.4,weight:1,opacity:.8,fillOpacity:.9,interactive:true}).bindTooltip('Distance géométrique : '+cumulative.toFixed(2)+' km',{direction:'top',sticky:true}));}const last=coords[coords.length-1];if(!dots.length||dots[dots.length-1].getLatLng().lat!==last[1]||dots[dots.length-1].getLatLng().lng!==last[0])dots.push(L.circleMarker([last[1],last[0]],{radius:2.4,weight:1,opacity:.8,fillOpacity:.9}).bindTooltip('Distance géométrique : '+cumulative.toFixed(2)+' km',{direction:'top',sticky:true}));routeGuideLayer=L.layerGroup(dots).addTo(map)}
-function fitAll(){if(routeLayer)map.fitBounds(routeLayer.getBounds(),{padding:[45,45]});else if(markers.length){let g=L.featureGroup(markers);map.fitBounds(g.getBounds(),{padding:[45,45]})}setTimeout(updatePointLabelVisibility,60)}
+function makePointIcon(i,p,total){
+  const base=i===0?'start':(i===total-1?'end':'');
+  const status=p.classification?.status==='invalid'?'water':(p.classification?.status==='review'?'review':'');
+  const cls=(base+' '+status).trim();
+  return L.divIcon({className:'',html:'<div class="point-dot '+cls+'"></div>',iconSize:[18,18],iconAnchor:[9,9]});
+}
+function popupForPoint(p,i){
+  const rawName=p.name||('Point '+(i+1));
+  const parts=rawName.split(',').map(x=>x.trim()).filter(Boolean);
+  const place=parts[0]||rawName;
+  const country=p.country||p.classification?.country||parts[parts.length-1]||'Lieu GPS';
+  const extra=p.classification?'<br><span class="popup-muted">'+esc(p.classification.label)+'</span>':'';
+  return '<div class="point-popup"><b>'+esc(place)+'</b><br><span class="popup-country">'+esc(country)+'</span><br>Latitude : '+Number(p.lat).toFixed(6)+'<br>Longitude : '+Number(p.lon).toFixed(6)+extra+'</div>';
+}
+function drawMarkers(points){
+  clearMarkers();
+  points.forEach((p,i)=>{
+    let m=L.marker([p.lat,p.lon],{icon:makePointIcon(i,p,points.length),title:(i+1)+'. '+(p.name||'Point')}).addTo(map);
+    m.bindPopup(popupForPoint(p,i),{maxWidth:260});
+    markers.push(m);
+  });
+}
+function fitAll(){if(routeLayer)map.fitBounds(routeLayer.getBounds(),{padding:[45,45]});else if(markers.length){let g=L.featureGroup(markers);map.fitBounds(g.getBounds(),{padding:[45,45]})}}
+function focusFirstPoint(){if(!gpsPoints.length||!valid(gpsPoints[0]))return;const p=gpsPoints[0];map.setView([Number(p.lat),Number(p.lon)],14,{animate:true});setTimeout(()=>map.invalidateSize(),180)}
 function toggleMarkers(){markerVisible=!markerVisible;markers.forEach(m=>markerVisible?m.addTo(map):map.removeLayer(m));let b=document.getElementById('markerToggle');if(b)b.textContent=markerVisible?'● Points ON':'○ Points OFF';toast(markerVisible?'Points affichés':'Points masqués')}
 function focusMap(){goSection('mapPanel');setTimeout(()=>{map.invalidateSize();if(routeLayer||markers.length)fitAll();},250)}
 function toggleMapFullscreen(force){const panel=document.getElementById('mapPanel');if(!panel)return;const open=typeof force==='boolean'?force:!panel.classList.contains('map-fullscreen');panel.classList.toggle('map-fullscreen',open);document.body.style.overflow=open?'hidden':'';setTimeout(()=>map.invalidateSize(),80);if(open)toast('Carte plein écran : portrait ou paysage pris en charge.')}
@@ -611,7 +677,6 @@ async function refreshRoadDistance(here,target){
 }
 function toggleFollow(){if(followMode){stopFollowing();toast('Suivi GPS arrêté.');return}if(!navigator.geolocation){toast('Le GPS du navigateur n’est pas disponible.');return}if(!orderedRoute.length){toast('Lance d’abord une optimisation.');return}followMode=true;const b=document.getElementById('followToggle');if(b)b.textContent='⛔ Arrêter';const badge=document.getElementById('followBadge');if(badge){badge.textContent='GPS : recherche…';badge.classList.add('on')}watchId=navigator.geolocation.watchPosition(pos=>{const here={lat:pos.coords.latitude,lon:pos.coords.longitude};if(!currentMarker)currentMarker=L.marker([here.lat,here.lon],{icon:L.divIcon({className:'',html:'<div class="map-current-label">● Vous êtes ici</div>',iconAnchor:[0,18]})}).addTo(map);else currentMarker.setLatLng([here.lat,here.lon]);if(currentAccuracyCircle)currentAccuracyCircle.setLatLng([here.lat,here.lon]).setRadius(pos.coords.accuracy||30);else currentAccuracyCircle=L.circle([here.lat,here.lon],{radius:pos.coords.accuracy||30,color:'#22c55e',weight:1,fillOpacity:.08}).addTo(map);let bestI=nextStopIndex,bestD=Infinity;for(let i=Math.max(1,nextStopIndex);i<orderedRoute.length;i++){const d=haversineKm(here,orderedRoute[i]);if(d<bestD){bestD=d;bestI=i}}nextStopIndex=bestI;if(bestD<0.15&&nextStopIndex<orderedRoute.length-1)nextStopIndex++;refreshRoadDistance(here,orderedRoute[Math.min(nextStopIndex,orderedRoute.length-1)]);const badge=document.getElementById('followBadge');if(badge)badge.textContent='GPS : '+bestD.toFixed(2)+' km';updateNextStopInfo();if(followMode)map.panTo([here.lat,here.lon],{animate:true,duration:.35})},err=>{const badge=document.getElementById('followBadge');if(badge)badge.textContent='GPS : indisponible';toast('GPS : '+(err.message||'position non disponible'));stopFollowing()},{enableHighAccuracy:true,maximumAge:5000,timeout:15000})}
 window.addEventListener('orientationchange',()=>setTimeout(()=>map.invalidateSize(),250));
-map.on('zoomend moveend',()=>setTimeout(updatePointLabelVisibility,30));
 
 async function optimize(){let result=document.getElementById('result');try{let points=getPoints();orderedRoute=[];showLoading("Calcul de l’ordre optimal...");let r=await apiFetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({villes:points.map(p=>[p.lat,p.lon])})});let data=await r.json();if(!r.ok)throw Error(data.detail||'Erreur moteur');let ordered=data.route.filter((v,i,a)=>i===0||v!==0).map(i=>points[i]);if(ordered[ordered.length-1]!==points[points.length-1])ordered.push(points[points.length-1]);orderedRoute=ordered;nextStopIndex=1;drawMarkers(ordered);focusMap();showLoading('Vérification du réseau routier...');
 let qc=await apiFetch('/api/classify-points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});
@@ -627,9 +692,9 @@ if(qc.ok&&Array.isArray(qd.results)){
     toast('Route routable interrompue : point(s) à vérifier.');return;
   }
 }
-showLoading('Calcul du tracé routier...');let rr=await apiFetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : aucun faux tracé silencieux.');throw Error(road.detail||'Le service routier n’a pas trouvé de route.')}if(routeLayer)map.removeLayer(routeLayer);routeLayer=L.geoJSON(road.geometry,{style:{color:'#f59e0b',weight:7,opacity:.96,lineCap:'round',lineJoin:'round',smoothFactor:1.1}}).addTo(map);drawRouteGuide(road.geometry);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<div class="result-title">✓ Itinéraire optimisé</div><div class="result-meta"><span class="pill">📍 '+ordered.length+' points</span><span class="pill">🛣️ Route routable</span><span class="pill">📏 '+road.distance_km+' km</span><span class="pill">⏱️ '+(road.duration_min==='—'?'—':road.duration_min+' min')+'</span></div><div class="route-status"><strong>Navigation prête.</strong> Appuyez sur « Suivre » pour utiliser le GPS du téléphone et calculer automatiquement la distance jusqu’à la prochaine étape.</div><div class="route-list">'+ordered.map((p,i)=>'<div class="route-item"><b>'+String(i+1).padStart(2,'0')+'</b> · '+esc(p.name||('Point '+(i+1)))+' <span class="muted">('+Number(p.lat).toFixed(5)+', '+Number(p.lon).toFixed(5)+(p.originalIndex!=null?' · origine '+(Number(p.originalIndex)+1):'')+')</span></div>').join('')+'</div>';updateCharts(ordered,road);renderPerformancePanel();document.querySelector('#optimizer .panel:first-child')?.classList.add('route-builder-compact');hideLoading();toast('Optimisation terminée.');focusMap()}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
+showLoading('Calcul du tracé routier...');let rr=await apiFetch('/api/road-route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:ordered})});let road=await rr.json();if(!rr.ok){toast('Routeur indisponible : aucun faux tracé silencieux.');throw Error(road.detail||'Le service routier n’a pas trouvé de route.')}if(routeLayer)map.removeLayer(routeLayer);routeLayer=L.geoJSON(road.geometry,{style:{color:'#f59e0b',weight:7,opacity:.96,lineCap:'round',lineJoin:'round',smoothFactor:1.1}}).addTo(map);fitAll();document.getElementById('sRoad').textContent=road.distance_km+' km';document.getElementById('sTime').textContent=(road.duration_min==='—'?'—':road.duration_min+' min');optimizationRuns++;lastDistance=road.distance_km+' km';updateUsage();result.style.display='block';result.innerHTML='<div class="result-title">✓ Itinéraire optimisé</div><div class="result-meta"><span class="pill">📍 '+ordered.length+' points</span><span class="pill">🛣️ Route routable</span><span class="pill">📏 '+road.distance_km+' km</span><span class="pill">⏱️ '+(road.duration_min==='—'?'—':road.duration_min+' min')+'</span></div><div class="route-status"><strong>Navigation prête.</strong> Appuyez sur « Suivre » pour utiliser le GPS du téléphone et calculer automatiquement la distance jusqu’à la prochaine étape.</div><div class="route-list">'+ordered.map((p,i)=>'<div class="route-item"><b>'+String(i+1).padStart(2,'0')+'</b> · '+esc(p.name||('Point '+(i+1)))+' <span class="muted">('+Number(p.lat).toFixed(5)+', '+Number(p.lon).toFixed(5)+')</span></div>').join('')+'</div>';updateCharts(ordered,road);renderPerformancePanel();document.querySelector('#optimizer .panel:first-child')?.classList.add('route-builder-compact');hideLoading();toast('Optimisation terminée.');focusMap()}catch(e){hideLoading();result.style.display='block';result.innerHTML='<span style="color:#ef4444">Erreur :</span> '+esc(e.message);toast(e.message)}}
 
-addPoint({name:'Départ',lat:'',lon:''});addPoint({name:'Destination',lat:'',lon:''});window.addEventListener('resize',()=>map.invalidateSize());
+window.addEventListener('resize',()=>map.invalidateSize());
 </script></body></html>'''.replace('__TIUN_SNIPPET_ID__', TIUN_SNIPPET_ID).replace('__TIUN_PRODUCT_ID__', TIUN_PRODUCT_ID).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit())).replace('__TILE_URL__', TILE_URL).replace('__EMAIL_CONTACT__', EMAIL_CONTACT).replace('__WHATSAPP_DIGITS__', ''.join(c for c in WHATSAPP_CONTACT if c.isdigit()))
 
 # ========================= ENGINE =========================
@@ -742,13 +807,7 @@ def calculer_route_scalable(villes):
     return route, distance
 
 
-def calculer_route_precision(villes, distance_matrix=None):
-    """Optimisation TSP/VRP.
-
-    Si distance_matrix est fournie, elle est utilisée telle quelle. Cela permet
-    d'optimiser sur les distances routières OSRM plutôt que sur la distance
-    aérienne approximative.
-    """
+def calculer_route_precision(villes):
     n=len(villes)
     if n<3:
         if n == 2:
@@ -759,14 +818,9 @@ def calculer_route_precision(villes, distance_matrix=None):
     # Le nombre de points reste libre ; seul l'algorithme devient plus léger.
     if n > 1200:
         return calculer_route_scalable(villes)
-    if distance_matrix is not None:
-        if len(distance_matrix) != n or any(len(row) != n for row in distance_matrix):
-            raise ValueError('Matrice de distances routières invalide.')
-        dist=[[float(distance_matrix[i][j]) for j in range(n)] for i in range(n)]
-    else:
-        latm=math.radians(sum(float(v[0]) for v in villes)/n); R=6371.0
-        plane=[(R*math.radians(float(lat))*0 + R*math.radians(float(lon))*math.cos(latm), R*math.radians(float(lat))) for lat,lon in villes]
-        dist=[[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23 for j in range(n)] for i in range(n)]
+    latm=math.radians(sum(float(v[0]) for v in villes)/n); R=6371.0
+    plane=[(R*math.radians(float(lat))*0 + R*math.radians(float(lon))*math.cos(latm), R*math.radians(float(lat))) for lat,lon in villes]
+    dist=[[0.0 if i==j else math.hypot(plane[i][0]-plane[j][0],plane[i][1]-plane[j][1])*1.23 for j in range(n)] for i in range(n)]
     pher=[[1.0]*n for _ in range(n)]
     best_route=[]; best_distance=float('inf')
 
@@ -828,55 +882,6 @@ def calculer_route_precision(villes, distance_matrix=None):
 
 class RequeteCalcul(BaseModel): villes:List[Tuple[float,float]]
 
-def _fetch_osrm_distance_matrix(villes):
-    """Retourne une matrice de distances routières (mètres) via OSRM Table."""
-    coords=';'.join(f'{float(lon)},{float(lat)}' for lat,lon in villes)
-    url=f"{ROUTING_URL.rstrip('/')} /table/v1/driving/{coords}?annotations=distance".replace(' /table','/table')
-    req=URLRequest(url,headers={'User-Agent':GEOCODING_USER_AGENT})
-    try:
-        with urlopen(req,timeout=35) as response:
-            data=json.loads(response.read().decode('utf-8'))
-    except Exception as exc:
-        raise HTTPException(502,f'Service de matrice routière indisponible : {exc}')
-    if data.get('code')!='Ok' or not data.get('distances'):
-        raise HTTPException(502,'OSRM n’a pas pu calculer la matrice routière entre les points.')
-    return data['distances']
-
-def _optimiser_ordre_routier(villes):
-    """Optimise un petit itinéraire sur les distances routières réelles.
-
-    Le premier point est le départ et le dernier est la destination fixe.
-    Jusqu'à 10 points, on teste exactement toutes les permutations des étapes
-    intermédiaires ; au-delà, on utilise le moteur ACO avec la matrice OSRM.
-    """
-    n=len(villes)
-    if n < 2:
-        return list(range(n)), 0.0, False
-    if n == 2:
-        return [0,1], 0.0, False
-    if n > 50:
-        return None, None, False
-    matrix=_fetch_osrm_distance_matrix(villes)
-    if n <= 10:
-        import itertools
-        middle=range(1,n-1)
-        best=None; best_d=float('inf')
-        for perm in itertools.permutations(middle):
-            route=[0]+list(perm)+[n-1]
-            d=sum(float(matrix[a][b]) for a,b in zip(route,route[1:]))
-            if d < best_d:
-                best,best_d=route,d
-        return best,best_d/1000.0,True
-    # Pour les volumes plus grands, le moteur ACO conserve sa logique mais
-    # reçoit les distances routières OSRM au lieu des distances aériennes.
-    inter=[villes[0]]+villes[1:-1]
-    submatrix=[[float(matrix[i][j]) for j in range(n-1)] for i in range(n-1)]
-    ordre,_=calculer_route_precision(inter,distance_matrix=submatrix)
-    ordre=[i for i in ordre if i!=0]
-    route=[0]+ordre+[n-1]
-    d=sum(float(matrix[a][b]) for a,b in zip(route,route[1:]))
-    return route,d/1000.0,True
-
 @app.post('/api/route')
 async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftroute)):
     if len(requete.villes)<2: raise HTTPException(400,'Il faut au moins 2 points.')
@@ -885,24 +890,15 @@ async def api_route(requete:RequeteCalcul,infos=Security(verifier_acces_swiftrou
     if len(requete.villes)==2:
         route=[0,1]; distance=calculer_route_precision(requete.villes)[1]
     else:
-        # Pour les itinéraires courants, l'ordre est maintenant calculé sur
-        # les vraies distances routières OSRM, avec départ et destination fixes.
-        try:
-            road_route, road_distance, used_road_matrix = _optimiser_ordre_routier(requete.villes)
-        except HTTPException:
-            road_route, road_distance, used_road_matrix = None, None, False
-
-        if road_route is not None:
-            route=road_route
-            distance=road_distance
-        else:
-            # Secours pour les très gros volumes ou si OSRM Table est indisponible.
-            dest=len(requete.villes)-1
-            inter=[requete.villes[0]]+requete.villes[1:dest]
-            ordre,_=calculer_route_precision(inter)
-            ordre=[i for i in ordre if i!=0]
-            route=[0]+ordre+[dest]
-            distance=sum(distance_directe_km(requete.villes[a],requete.villes[b]) for a,b in zip(route,route[1:]))
+        dest=len(requete.villes)-1
+        inter=[requete.villes[0]]+requete.villes[1:dest]
+        ordre,_=calculer_route_precision(inter)
+        ordre=[i for i in ordre if i!=0]
+        route=[0]+ordre+[dest]
+        distance=0.0
+        for a,b in zip(route,route[1:]):
+            va,vb=requete.villes[a],requete.villes[b]
+            distance+=math.hypot((float(va[0])-float(vb[0]))*111.0,(float(va[1])-float(vb[1]))*111.0*math.cos(math.radians((float(va[0])+float(vb[0]))/2)))
     return {'success':True,'client':infos.get('client'),'type_offre':infos.get('type_offre'),'route':route,'distance_km':round(distance,3),'points':len(requete.villes)}
 
 # ========================= POINT QUALITY / CLASSIFICATION =========================
