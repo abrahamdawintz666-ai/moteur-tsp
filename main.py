@@ -5,12 +5,13 @@ from typing import List, Optional
 import sqlite3
 import math
 import hashlib
+import uuid
 from datetime import datetime, timedelta
 
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.6")
+app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.7")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -440,21 +441,87 @@ def admin_login():
 def admin_dash(admin_key: str = Form(...)):
     if hash_key(admin_key) != ADMIN_MASTER_HASH:
         return "<body style='background:#0f172a; color:white; text-align:center; padding-top:100px;'><h2>Accès Refusé</h2><a href='/admin' style='color:#38bdf8;'>Retour</a></body>"
+    
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT id, raw_key, client_name, plan_type, expires_at, sub_status FROM subscriptions")
     rows = cursor.fetchall()
     conn.close()
+    
     rows_html = "".join([f"<tr><td>{r[0]}</td><td><code>{r[1]}</code></td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4][:10]}</td><td><b>{r[5]}</b></td></tr>" for r in rows])
+    
     return f"""
     <body style="background:#0f172a; color:white; font-family:sans-serif; padding:20px;">
-        <div style="max-width:800px; margin:0 auto; background:#1e293b; padding:20px; border-radius:12px; border:1px solid #334155;">
-            <h2>Dashboard Admin</h2>
-            <table style="width:100%; border-collapse:collapse; margin-top:15px;">
-                <tr><th>ID</th><th>Clé</th><th>Client</th><th>Plan</th><th>Expire</th><th>Statut</th></tr>
+        <div style="max-width:900px; margin:0 auto; background:#1e293b; padding:25px; border-radius:12px; border:1px solid #334155;">
+            <h2>Dashboard Admin - Gestion des Clés Clients</h2>
+            
+            <div style="background:#0f172a; padding:15px; border-radius:8px; border:1px solid #334155; margin-bottom:20px;">
+                <h3 style="margin-top:0; color:#38bdf8;">Générer une nouvelle clé client</h3>
+                <form action="/admin/create-key" method="POST" style="display:flex; gap:10px; align-items:flex-end;">
+                    <input type="hidden" name="admin_key" value="{admin_key}">
+                    <div style="flex:1;">
+                        <label style="font-size:12px;">Nom de l'entreprise :</label>
+                        <input type="text" name="client_name" placeholder="ex: Transport Express" required style="margin:4px 0 0 0; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:6px; width:100%;">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:12px;">Plan :</label>
+                        <select name="plan_type" style="margin:4px 0 0 0; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:6px; width:100%;">
+                            <option value="30 jours">30 jours (1 500 $)</option>
+                            <option value="365 jours">365 jours (17 500 $)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <button type="submit" style="background:#059669; color:white; border:none; padding:9px 15px; border-radius:6px; font-weight:700; cursor:pointer; height:37px;">Créer la clé</button>
+                    </div>
+                </form>
+            </div>
+
+            <h3 style="color:#cbd5e1; margin-bottom:5px;">Liste des abonnés actifs :</h3>
+            <table style="width:100%; border-collapse:collapse; margin-top:5px;">
+                <tr><th>ID</th><th>Clé API</th><th>Client</th><th>Plan</th><th>Expire</th><th>Statut</th></tr>
                 {rows_html}
             </table>
-            <br><a href="/" style="color:#38bdf8; text-decoration:none;">&larr; Retour au site</a>
+            <br><a href="/" style="color:#38bdf8; text-decoration:none;">&larr; Retour au site principal</a>
+        </div>
+    </body>
+    """
+
+@app.post("/admin/create-key", response_class=HTMLResponse)
+def admin_create_key(admin_key: str = Form(...), client_name: str = Form(...), plan_type: str = Form(...)):
+    if hash_key(admin_key) != ADMIN_MASTER_HASH:
+        return "<body style='background:#0f172a; color:white; text-align:center; padding-top:100px;'><h2>Accès Refusé</h2><a href='/admin' style='color:#38bdf8;'>Retour</a></body>"
+    
+    raw_new_key = f"key-{uuid.uuid4().hex[:10]}"
+    now = datetime.now()
+    days = 365 if "365" in plan_type else 30
+    expire = now + timedelta(days=days)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO subscriptions (api_key_hash, raw_key, client_name, plan_type, created_at, expires_at, sub_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (hash_key(raw_new_key), raw_new_key, client_name, plan_type, now.isoformat(), expire.isoformat(), "active")
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Erreur insertion: {e}")
+    conn.close()
+    
+    # Redirige proprement vers le dashboard en repassant la clé admin via un formulaire invisible ou en réaffichant la page
+    return f"""
+    <body style="background:#0f172a; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;">
+        <div style="background:#1e293b; padding:30px; border-radius:12px; border:1px solid #334155; text-align:center; max-width:450px;">
+            <h3 style="color:#10b981; margin-top:0;">Clé créée avec succès !</h3>
+            <p style="font-size:13px; color:#94a3b8;">Voici la clé API pour <b>{client_name}</b> :</p>
+            <div style="background:#0f172a; padding:12px; border-radius:8px; border:1px solid #38bdf8; color:#38bdf8; font-family:monospace; font-size:15px; margin:15px 0; word-break:break-all;">
+                {raw_new_key}
+            </div>
+            <p style="font-size:12px; color:#f59e0b;">Copiez cette clé dès maintenant. Elle ne sera plus affichée en clair de cette façon.</p>
+            <form action="/admin/dashboard" method="POST">
+                <input type="hidden" name="admin_key" value="{admin_key}">
+                <button type="submit" style="background:#2563eb; color:white; border:none; padding:10px 20px; border-radius:6px; font-weight:700; cursor:pointer; width:100%;">Retour au Dashboard</button>
+            </form>
         </div>
     </body>
     """
