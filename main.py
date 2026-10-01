@@ -93,7 +93,7 @@ def verify_solana_transaction(tx_signature, expected_sol_amount):
     except Exception as e:
         return False, f"Erreur de connexion RPC Solana : {str(e)}"
 
-# --- TEMPLATE DE BASE AVEC NAVBAR COMMUNE ---
+# --- NAVBAR COMMUNE ---
 NAVBAR_HTML = """
 <nav style="background: #1e293b; border-bottom: 1px solid #334155; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1000;">
     <div style="font-size: 20px; font-weight: bold; color: #38bdf8; display: flex; align-items: center; gap: 10px;">
@@ -449,4 +449,6 @@ def logout():
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # TRÈS IMPORTANT POUR RENDER : Utilisation du port dynamique fourni par l'hébergeur
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
