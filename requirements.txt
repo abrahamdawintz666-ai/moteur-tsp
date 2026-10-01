@@ -3,3 +3,6 @@ uvicorn
 pydantic
 ortools
 python-multipart
+Flask==3
+requests
+gunicorn
