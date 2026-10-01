@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, Form
 from fastapi.responses import HTMLResponse
-from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from typing import List, Optional
 import sqlite3
@@ -11,9 +10,8 @@ from datetime import datetime, timedelta
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.1")
+app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.3")
 
-# Gestionnaire d'erreurs globales pour voir le problème exact directement sur l'écran si ça plante
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     return HTMLResponse(
@@ -22,6 +20,7 @@ async def global_exception_handler(request, exc):
     )
 
 DB_FILE = "enterprise_database.db"
+SOLANA_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
 def hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
@@ -30,7 +29,6 @@ def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,17 +41,6 @@ def init_db():
                 status TEXT DEFAULT 'active'
             )
         ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                api_key_used TEXT,
-                endpoint TEXT,
-                timestamp TEXT,
-                status TEXT
-            )
-        ''')
-
         cursor.execute("SELECT COUNT(*) FROM subscriptions")
         if cursor.fetchone()[0] == 0:
             raw_demo = "demo-key-12345"
@@ -71,7 +58,6 @@ def init_db():
 init_db()
 
 ADMIN_MASTER_HASH = hash_key("CLE-ADMIN-MAITRE-999")
-SOLANA_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 
 class Location(BaseModel):
     id: str
@@ -88,6 +74,7 @@ class OptimizationRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    wallet = SOLANA_WALLET
     return f"""
     <!DOCTYPE html>
     <html lang="fr">
@@ -110,6 +97,14 @@ def home():
             .plan-btn-blue {{ background: #2563eb; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 14px; display: block; }}
             .crypto-box {{ background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; padding: 10px; border-radius: 8px; font-size: 12px; font-family: monospace; word-break: break-all; margin-top: 12px; color: #38bdf8; }}
             .portal-card, .console-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }}
+            
+            /* Styles des menus par onglets */
+            .menu-bar {{ display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; }}
+            .menu-tab {{ background: #0f172a; color: #94a3b8; border: 1px solid #334155; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; text-align: center; transition: 0.2s; }}
+            .menu-tab.active {{ background: #2563eb; color: white; border-color: #2563eb; }}
+            .menu-section {{ display: none; }}
+            .menu-section.active {{ display: block; }}
+
             input, select {{ width: 100%; padding: 10px 12px; margin: 6px 0 14px 0; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 8px; font-size: 14px; box-sizing: border-box; }}
             label {{ font-size: 13px; font-weight: 600; color: #cbd5e1; }}
             .calc-btn {{ background: #059669; color: white; border: none; width: 100%; padding: 12px; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }}
@@ -143,50 +138,71 @@ def home():
                 </div>
 
                 <div class="console-card">
-                    <h3 style="margin-top:0; color:#38bdf8;">📦 Données & Paramètres de Tournée</h3>
+                    <h3 style="margin-top:0; color:#38bdf8; margin-bottom: 12px;">🎛️ Console de Tournée Intelligente</h3>
                     
-                    <div style="background: #0f172a; padding: 10px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
-                        <label><b>1. Importer un fichier CSV</b> (id, lat, lng, demand)</label>
-                        <input type="file" id="csvFileInput" accept=".csv" style="margin-top:5px; margin-bottom:0;">
-                        <button onclick="handleCsvUpload()" style="background:#2563eb; color:white; border:none; padding:6px 10px; border-radius:6px; margin-top:6px; cursor:pointer; font-weight:600; font-size:12px;">Charger le CSV</button>
+                    <!-- Barre de menus / onglets -->
+                    <div class="menu-bar">
+                        <div class="menu-tab active" onclick="switchMenu('points', this)">📍 Clients & Points</div>
+                        <div class="menu-tab" onclick="switchMenu('config', this)">⚙️ Configuration</div>
+                        <div class="menu-tab" onclick="switchMenu('simulation', this)">🚀 Simulation & Carte</div>
                     </div>
 
-                    <div style="background: #0f172a; padding: 10px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
-                        <label><b>2. Ajouter un client manuellement</b></label>
-                        <div class="row-flex" style="margin-top:4px;">
-                            <div class="col"><input type="text" id="newId" placeholder="ID"></div>
-                            <div class="col"><input type="number" step="any" id="newLat" placeholder="Lat"></div>
-                            <div class="col"><input type="number" step="any" id="newLng" placeholder="Lng"></div>
-                            <div class="col"><input type="number" id="newDemand" placeholder="Demande"></div>
+                    <!-- MENU 1 : Gestion des points et clients -->
+                    <div id="menu-points" class="menu-section active">
+                        <div style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
+                            <label><b>Importer un fichier CSV</b> (id, lat, lng, demand)</label>
+                            <input type="file" id="csvFileInput" accept=".csv" style="margin-top:5px; margin-bottom:0;">
+                            <button onclick="handleCsvUpload()" style="background:#2563eb; color:white; border:none; padding:6px 10px; border-radius:6px; margin-top:8px; cursor:pointer; font-weight:600; font-size:12px;">Charger le CSV</button>
                         </div>
-                        <button onclick="addManualLocation()" style="background:#059669; color:white; border:none; padding:6px 10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px;">Ajouter</button>
+
+                        <div style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
+                            <label><b>Ajouter un client manuellement</b></label>
+                            <div class="row-flex" style="margin-top:4px;">
+                                <div class="col"><input type="text" id="newId" placeholder="ID"></div>
+                                <div class="col"><input type="number" step="any" id="newLat" placeholder="Lat"></div>
+                                <div class="col"><input type="number" step="any" id="newLng" placeholder="Lng"></div>
+                                <div class="col"><input type="number" id="newDemand" placeholder="Demande"></div>
+                            </div>
+                            <button onclick="addManualLocation()" style="background:#059669; color:white; border:none; padding:6px 10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px;">Ajouter le client</button>
+                        </div>
+
+                        <h4 style="margin-bottom:5px; color:#cbd5e1;">Clients enregistrés (<span id="countPoints">0</span>) :</h4>
+                        <div style="max-height: 140px; overflow-y: auto;">
+                            <table id="locationsTable">
+                                <tr><th>ID</th><th>Lat</th><th>Lng</th><th>Demande</th></tr>
+                            </table>
+                        </div>
                     </div>
 
-                    <div class="row-flex">
-                        <div class="col"><label>Dépôt Lat :</label><input type="number" step="any" id="depotLat" value="19.7578"></div>
-                        <div class="col"><label>Dépôt Lng :</label><input type="number" step="any" id="depotLng" value="-72.2042"></div>
-                    </div>
-                    <div class="row-flex">
-                        <div class="col"><label>Capacité Véhicule :</label><input type="number" id="vehicleCapacity" value="15"></div>
-                        <div class="col"><label>Nbr Véhicules :</label><input type="number" id="numVehicles" value="3"></div>
+                    <!-- MENU 2 : Configuration du dépôt et des véhicules -->
+                    <div id="menu-config" class="menu-section">
+                        <h4 style="margin-top:0; color:#38bdf8;">Paramètres du Dépôt (Point de départ)</h4>
+                        <div class="row-flex">
+                            <div class="col"><label>Dépôt Lat :</label><input type="number" step="any" id="depotLat" value="19.7578"></div>
+                            <div class="col"><label>Dépôt Lng :</label><input type="number" step="any" id="depotLng" value="-72.2042"></div>
+                        </div>
+
+                        <h4 style="color:#38bdf8; margin-top:10px;">Paramètres de la Flotte</h4>
+                        <div class="row-flex">
+                            <div class="col"><label>Capacité Véhicule :</label><input type="number" id="vehicleCapacity" value="15"></div>
+                            <div class="col"><label>Nbr Véhicules :</label><input type="number" id="numVehicles" value="3"></div>
+                        </div>
+                        <p style="font-size: 12px; color: #94a3b8;">Modifiez ces réglages avant de lancer l'algorithme d'optimisation.</p>
                     </div>
 
-                    <h4 style="margin-bottom:5px; color:#cbd5e1;">Clients chargés (<span id="countPoints">0</span>) :</h4>
-                    <div style="max-height: 120px; overflow-y: auto;">
-                        <table id="locationsTable">
-                            <tr><th>ID</th><th>Lat</th><th>Lng</th><th>Demande</th></tr>
-                        </table>
+                    <!-- MENU 3 : Simulation et Carte interactive -->
+                    <div id="menu-simulation" class="menu-section">
+                        <h4 style="margin-top:0; color:#38bdf8;">Lancement & Visualisation Cartographique</h4>
+                        <button class="calc-btn" onclick="runOptimization()">🚀 Lancer l'Optimisation OR-Tools</button>
+                        <div id="map"></div>
                     </div>
-
-                    <button class="calc-btn" style="margin-top: 15px;" onclick="runOptimization()">🚀 Lancer l'Optimisation OR-Tools</button>
-                    <div id="map"></div>
                 </div>
 
                 <div class="sub-card">
                     <div style="font-size: 16px; font-weight: 700; margin-bottom: 6px;">🛒 Renouvellement B2B</div>
                     <button class="plan-btn-green" onclick="alert('Transférez 1 500 $ vers l’adresse Solana ci-dessous, puis contactez l’admin pour activer 30 jours.')">⚡ Plan 30 Jours — 1 500 $</button>
                     <button class="plan-btn-blue" onclick="alert('Transférez 17 500 $ vers l’adresse Solana ci-dessous, puis contactez l’admin pour activer 365 jours.')">👑 Plan 365 Jours — 17 500 $</button>
-                    <div class="crypto-box"><strong>Adresse Solana :</strong><br>{SOLANA_WALLET}</div>
+                    <div class="crypto-box"><strong>Adresse Solana :</strong><br>{wallet}</div>
                 </div>
             </div>
         </div>
@@ -197,6 +213,28 @@ def home():
             let mapInstance = null;
             let currentLocations = [];
             let markersLayer = null;
+
+            // Fonction de gestion des onglets/menus
+            function switchMenu(menuId, tabElement) {{
+                document.querySelectorAll('.menu-section').forEach(sec => sec.classList.remove('active'));
+                document.querySelectorAll('.menu-tab').forEach(tab => tab.classList.remove('active'));
+                
+                document.getElementById('menu-' + menuId).classList.add('active');
+                tabElement.classList.add('active');
+
+                // Si on bascule sur la carte, on s'assure qu'elle s'affiche bien
+                if(menuId === 'simulation') {{
+                    setTimeout(() => {{
+                        if(!mapInstance) {{
+                            mapInstance = L.map('map').setView([19.7578, -72.2042], 13);
+                            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ maxZoom: 19 }}).addTo(mapInstance);
+                            markersLayer = L.layerGroup().addTo(mapInstance);
+                        }}
+                        mapInstance.invalidateSize();
+                        updateMapAndTable();
+                    }}, 200);
+                }}
+            }}
 
             function verifyApiKey() {{
                 const keyInput = document.getElementById('apiLoginInput').value.trim();
@@ -217,20 +255,11 @@ def home():
                         document.getElementById('saasContent').classList.remove('hidden');
                         const info = response.body;
                         document.getElementById('portalDetails').innerHTML = `
-                            <b>Entreprise :</b> ${info.client_name}<br>
-                            <b>Plan :</b> ${info.plan_type}<br>
-                            <b>Statut :</b> <span style="color:#10b981;">${info.status.toUpperCase()}</span><br>
-                            <b>Expire le :</b> ${info.expires_at}
+                            <b>Entreprise :</b> ${{info.client_name}}<br>
+                            <b>Plan :</b> ${{info.plan_type}}<br>
+                            <b>Statut :</b> <span style="color:#10b981;">${{info.status.toUpperCase()}}</span><br>
+                            <b>Expire le :</b> ${{info.expires_at}}
                         `;
-                        setTimeout(() => {{
-                            if(!mapInstance) {{
-                                mapInstance = L.map('map').setView([19.7578, -72.2042], 13);
-                                L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ maxZoom: 19 }}).addTo(mapInstance);
-                                markersLayer = L.layerGroup().addTo(mapInstance);
-                            }}
-                            mapInstance.invalidateSize();
-                            updateMapAndTable();
-                        }}, 200);
                     }}
                 }});
             }}
@@ -271,18 +300,21 @@ def home():
             }}
 
             function updateMapAndTable() {{
+                let html = "<tr><th>ID</th><th>Lat</th><th>Lng</th><th>Demande</th></tr>";
+                currentLocations.forEach(loc => {{
+                    html += `<tr><td>${{loc.id}}</td><td>${{loc.lat}}</td><td>${{loc.lng}}</td><td>${{loc.demand}}</td></tr>`;
+                }});
+                document.getElementById('locationsTable').innerHTML = html;
+                document.getElementById('countPoints').innerText = currentLocations.length;
+
                 if(!mapInstance) return;
                 markersLayer.clearLayers();
                 const depotLat = parseFloat(document.getElementById('depotLat').value);
                 const depotLng = parseFloat(document.getElementById('depotLng').value);
                 L.marker([depotLat, depotLng], {{icon: L.divIcon({className: 'depot', html: '🏠', iconSize: [20,20]})}}).addTo(markersLayer).bindPopup("Dépôt");
-                let html = "<tr><th>ID</th><th>Lat</th><th>Lng</th><th>Demande</th></tr>";
                 currentLocations.forEach(loc => {{
-                    html += `<tr><td>${loc.id}</td><td>${loc.lat}</td><td>${loc.lng}</td><td>${loc.demand}</td></tr>`;
                     L.marker([loc.lat, loc.lng]).addTo(markersLayer).bindPopup(loc.id);
                 }});
-                document.getElementById('locationsTable').innerHTML = html;
-                document.getElementById('countPoints').innerText = currentLocations.length;
             }}
 
             function runOptimization() {{
