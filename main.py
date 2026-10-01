@@ -8,8 +8,8 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
 DB_NAME = "database.db"
-ADMIN_PASSWORD = "admin"  # Mot de passe administrateur par défaut
-MERCHANT_SOL_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"  # Ton adresse Solana
+ADMIN_PASSWORD = "admin"  
+MERCHANT_SOL_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"  
 
 # Tarifs officiels
 PRICE_30_DAYS_USD = 1500
@@ -93,7 +93,7 @@ def verify_solana_transaction(tx_signature, expected_sol_amount):
     except Exception as e:
         return False, f"Erreur de connexion RPC Solana : {str(e)}"
 
-# --- NAVBAR COMMUNE ---
+# --- NAVBAR COMMUNE PERSISTANTE ---
 NAVBAR_HTML = """
 <nav style="background: #1e293b; border-bottom: 1px solid #334155; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1000;">
     <div style="font-size: 20px; font-weight: bold; color: #38bdf8; display: flex; align-items: center; gap: 10px;">
@@ -118,7 +118,7 @@ def index():
         <style>
             body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 0; }}
             .main-container {{ max-width: 1000px; margin: 40px auto; padding: 20px; }}
-            .hero {{ text-align: center; padding: 40px 20px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: 16px; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }}
+            .hero {{ text-align: center; padding: 50px 20px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: 16px; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }}
             h1 {{ color: #38bdf8; font-size: 38px; margin-bottom: 10px; }}
             .subtitle {{ color: #94a3b8; font-size: 16px; margin-bottom: 30px; max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.5; }}
             .plans {{ display: flex; gap: 30px; justify-content: center; margin-top: 40px; flex-wrap: wrap; }}
@@ -449,6 +449,5 @@ def logout():
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    # TRÈS IMPORTANT POUR RENDER : Utilisation du port dynamique fourni par l'hébergeur
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
