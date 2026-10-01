@@ -153,7 +153,7 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
 
 @app.get("/", response_class=HTMLResponse)
 async def afficher_dashboard():
-    return """
+    html_content = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -336,4 +336,5 @@ async def afficher_dashboard():
     </script>
 </body>
 </html>
-    """
+"""
+    return html_content
