@@ -4,13 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import math
+from datetime import datetime, timedelta
+import uuid
 from typing import List, Tuple
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(
-    title="GlobalRoute AI - Moteur Logistique Mondial",
-    description="API de calcul TSP exact par blocs avec coordonnées GPS réelles (Haversine) et Dashboard Intégré."
+    title="GlobalRoute AI - Enterprise SaaS",
+    description="Moteur d'optimisation TSP mondial avec gestion dynamique des abonnements et minuterie."
 )
 
 app.add_middleware(
@@ -21,9 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Base de données en mémoire des abonnés (Évolutive vers une BDD PostgreSQL/MongoDB)
 LES_ABONNES = {
-    "CLE-CLIENT-ALEX-78492": {"nom": "Alex Logistique", "actif": True},
-    "TEST-LIBRE": {"nom": "Mode Test Visuel & Dashboard", "actif": True}
+    "CLE-ADMIN-MAÎTRE-999": {
+        "nom": "Administration Générale", 
+        "email": "admin@globalroute.ai", 
+        "actif": True, 
+        "admin": True,
+        "expiration": None # Illimité pour le maître
+    }
 }
 
 API_KEY_NAME = "X-API-KEY"
@@ -31,13 +39,27 @@ api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def verifier_cle_api(api_key: str = Depends(api_key_header)):
     if not api_key or api_key not in LES_ABONNES:
-        raise HTTPException(status_code=403, detail="Accès refusé : Clé API invalide.")
-    if not LES_ABONNES[api_key]["actif"]:
-        raise HTTPException(status_code=402, detail="Accès suspendu : Abonnement non payé.")
-    return LES_ABONNES[api_key]
+        raise HTTPException(status_code=403, detail="Accès refusé : Clé API invalide ou absente.")
+    
+    abonne = LES_ABONNES[api_key]
+    if not abonne["actif"]:
+        raise HTTPException(status_code=402, detail="Accès suspendu : Compte désactivé.")
+    
+    # Vérification de la minuterie mondiale (Expiration)
+    if abonne.get("expiration"):
+        date_expiration = datetime.fromisoformat(abonne["expiration"])
+        if datetime.utcnow() > date_expiration:
+            raise HTTPException(status_code=401, detail="Accès refusé : La minuterie de la clé API a expiré.")
+            
+    return abonne
 
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
+
+class RequeteCreationCle(BaseModel):
+    nom_entreprise: str
+    email: str
+    duree_jours: int  # 30 ou 365
 
 def calculer_distance_haversine(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
     R = 6371.0
@@ -137,19 +159,55 @@ def diviser_et_conquerir_gps(villes: List[Tuple[float, float]], taille_bloc: int
 async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(verifier_cle_api)):
     n = len(requete.villes)
     if n < 2:
-        raise HTTPException(status_code=400, detail="Minimum 2 villes requises.")
+        raise HTTPException(status_code=400, detail="Minimum 2 points requis.")
     if n > 15000:
-        raise HTTPException(status_code=400, detail="Limite maximale de 15 000 villes atteinte.")
+        raise HTTPException(status_code=400, detail="Limite maximale de 15 000 points atteinte.")
 
     route, distance_km = diviser_et_conquerir_gps(requete.villes, taille_bloc=150)
 
     return {
-        "statut": "Succès - Moteur GPS & Blocs Synchronisés",
+        "statut": "Succès - Moteur Opérationnel",
         "client_reconnu": abonne["nom"],
+        "expiration_cle": abonne.get("expiration", "Illimité (Maître)"),
         "nombre_de_villes": n,
         "distance_totale_km": round(distance_km, 2),
         "ordre_de_visite_optimal": route
     }
+
+@app.post("/admin/generer-cle")
+async def generer_cle_admin(req: RequeteCreationCle, abonne: dict = Depends(verifier_cle_api)):
+    if not abonne.get("admin", False):
+        raise HTTPException(status_code=403, detail="Action interdite : Réservé à l'administrateur.")
+    
+    # Génération d'une clé unique structurée
+    prefixe = ''.join([c for c in req.nom_entreprise if c.isalnum()]).upper()[:4]
+    unique_suffix = uuid.uuid4().hex[:6].upper()
+    nouvelle_cle = f"GR-{prefixe}-{unique_suffix}"
+    
+    # Calcul de la minuterie mondiale (date d'expiration UTC)
+    date_expiration = datetime.utcnow() + timedelta(days=req.duree_jours)
+    
+    LES_ABONNES[nouvelle_cle] = {
+        "nom": req.nom_entreprise,
+        "email": req.email,
+        "actif": True,
+        "admin": False,
+        "expiration": date_expiration.isoformat()
+    }
+    
+    return {
+        "message": "Clé API générée avec succès.",
+        "cle_api": nouvelle_cle,
+        "entreprise": req.nom_entreprise,
+        "email": req.email,
+        "expiration": date_expiration.strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
+
+@app.get("/admin/cles")
+async def lister_cles_admin(abonne: dict = Depends(verifier_cle_api)):
+    if not abonne.get("admin", False):
+        raise HTTPException(status_code=403, detail="Réservé à l'administrateur.")
+    return {"cles_enregistrees": LES_ABONNES}
 
 @app.get("/", response_class=HTMLResponse)
 async def afficher_dashboard():
@@ -159,7 +217,7 @@ async def afficher_dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - Enterprise Logistics SaaS</title>
+    <title>GlobalRoute AI - Enterprise Logistics</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -168,73 +226,121 @@ async def afficher_dashboard():
     <style>
         :root {
             --primary: #2563eb;
-            --bg-main: #f8fafc;
+            --primary-dark: #1d4ed8;
+            --bg-main: #f1f5f9;
             --card-bg: #ffffff;
             --text-main: #0f172a;
             --text-muted: #64748b;
-            --border-color: #e2e8f0;
+            --border-color: #cbd5e1;
         }
-        body { font-family: 'Inter', sans-serif; background-color: var(--bg-main); color: var(--text-main); margin: 0; padding: 30px; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); padding: 24px 32px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); margin-bottom: 30px; }
-        .logo-area h1 { margin: 0; font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-        .user-badge { background: #eff6ff; color: var(--primary); padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 14px; }
-        .metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
-        .metric-card { background: var(--card-bg); padding: 24px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid var(--border-color); }
-        .metric-card h3 { margin: 0; font-size: 32px; font-weight: 700; color: var(--primary); }
-        .metric-card p { margin: 8px 0 0; color: var(--text-muted); font-size: 14px; font-weight: 500; }
-        .dashboard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 30px; margin-bottom: 30px; }
-        .card { background: var(--card-bg); padding: 24px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid var(--border-color); }
-        .card h2 { margin-top: 0; font-size: 18px; font-weight: 600; margin-bottom: 20px; }
-        #map { height: 480px; border-radius: 12px; width: 100%; z-index: 1; }
-        .btn-action { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; border: none; padding: 14px 28px; border-radius: 12px; cursor: pointer; font-weight: 600; font-size: 16px; width: 100%; margin-top: 20px; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3); transition: all 0.3s ease; }
-        .btn-action:hover { opacity: 0.95; transform: translateY(-1px); }
-        .legal-footer { background: var(--card-bg); padding: 24px 32px; border-radius: 16px; border: 1px solid var(--border-color); display: grid; grid-template-columns: 1fr 1fr; gap: 20px; font-size: 13px; color: var(--text-muted); }
-        .legal-footer h4 { color: var(--text-main); margin-top: 0; font-size: 14px; }
-        .legal-footer a { color: var(--primary); text-decoration: none; font-weight: 500; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-main); color: var(--text-main); margin: 0; padding: 15px; }
+        
+        .navbar { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); padding: 15px 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
+        .logo { font-size: 20px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+        .nav-auth { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .nav-auth input { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; width: 220px; }
+        .nav-auth button { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }
+        
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .metric-card { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border-color); }
+        .metric-card h3 { margin: 0; font-size: 26px; font-weight: 700; color: var(--primary); }
+        .metric-card p { margin: 5px 0 0; color: var(--text-muted); font-size: 13px; font-weight: 500; }
+
+        .dashboard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 20px; }
+        @media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; } }
+
+        .card { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border-color); }
+        .card h2 { margin-top: 0; font-size: 16px; font-weight: 600; margin-bottom: 15px; color: var(--text-main); }
+        
+        #map { height: 420px; border-radius: 10px; width: 100%; z-index: 1; }
+        .btn-action { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; border: none; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 15px; width: 100%; margin-top: 15px; box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2); }
+        .btn-action:hover { opacity: 0.9; }
+
+        /* Console Admin Pro */
+        .admin-panel { background: #1e293b; color: #f8fafc; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: none; }
+        .admin-panel h3 { margin-top: 0; color: #38bdf8; font-size: 16px; }
+        .form-group { margin-bottom: 12px; display: flex; flex-direction: column; gap: 5px; }
+        .form-group label { font-size: 13px; color: #cbd5e1; }
+        .form-group input, .form-group select { padding: 8px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 14px; }
+        .btn-admin-submit { background: #10b981; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 5px; }
+        .btn-admin-submit:hover { background: #059669; }
+        #adminOutput { font-family: monospace; font-size: 12px; background: #0f172a; padding: 12px; border-radius: 6px; margin-top: 15px; white-space: pre-wrap; color: #34d399; max-height: 200px; overflow-y: auto; }
+
+        .legal-footer { background: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; font-size: 12px; color: var(--text-muted); }
+        .legal-footer a { color: var(--primary); text-decoration: none; font-weight: 600; }
     </style>
 </head>
 <body>
 
-    <div class="header">
-        <div class="logo-area"><span>🌍</span> GlobalRoute AI</div>
-        <div class="user-badge">🚀 Mode Entreprise Actif</div>
+    <div class="navbar">
+        <div class="logo"><span>🌍</span> GlobalRoute AI SaaS</div>
+        <div class="nav-auth">
+            <input type="text" id="apiKeyInput" value="CLE-ADMIN-MAÎTRE-999" placeholder="Entrez votre Clé API...">
+            <button onclick="verifierAcces()">Valider</button>
+            <button onclick="basculerAdmin()" style="background: #0f172a;">Console Admin</button>
+        </div>
+    </div>
+
+    <!-- Console d'Administration pour Génération de Clés -->
+    <div id="adminSection" class="admin-panel">
+        <h3>🔐 Console d'Administration & Minuterie Mondiale</h3>
+        <p style="font-size: 13px; color: #94a3b8;">Générez des clés d'accès sur mesure avec une validité programmée pour vos clients SaaS.</p>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+            <div class="form-group">
+                <label>Nom de l'Entreprise :</label>
+                <input type="text" id="adminNomEntite" placeholder="Ex: Port-au-Prince Logistique">
+            </div>
+            <div class="form-group">
+                <label>Adresse Email :</label>
+                <input type="email" id="adminEmail" placeholder="client@entreprise.com">
+            </div>
+            <div class="form-group">
+                <label>Durée de l'Abonnement :</label>
+                <select id="adminDuree">
+                    <option value="30">30 Jours (1 mois)</option>
+                    <option value="365">365 Jours (1 an)</option>
+                </select>
+            </div>
+        </div>
+        <button class="btn-admin-submit" onclick="genererNouvelleCle()">⚡ Générer la Clé API & Minuterie</button>
+        
+        <div id="adminOutput">Résultat de la génération ou liste des abonnés apparaîtra ici...</div>
     </div>
 
     <div class="metrics-grid">
-        <div class="metric-card"><h3 id="kpi-villes">0</h3><p>Points de Livraison Traités</p></div>
-        <div class="metric-card"><h3 id="kpi-distance">0.0 km</h3><p>Distance Optimisée (GPS Haversine)</p></div>
-        <div class="metric-card"><h3 id="kpi-temps">0.00 s</h3><p>Vitesse du Moteur par Blocs</p></div>
+        <div class="metric-card"><h3 id="kpi-villes">0</h3><p>Points Traités</p></div>
+        <div class="metric-card"><h3 id="kpi-distance">0.0 km</h3><p>Distance Optimisée (Haversine)</p></div>
+        <div class="metric-card"><h3 id="kpi-temps">0.00 s</h3><p>Vitesse Moteur par Blocs</p></div>
     </div>
 
     <div class="dashboard-grid">
         <div class="card">
-            <h2>🗺️ Suivi des Itinéraires en Direct</h2>
+            <h2>🗺️ Carte interactive des tournées mondiales</h2>
             <div id="map"></div>
             <button id="btnLancer" class="btn-action" onclick="lancerCalculGlobal()">⚡ Lancer l'Optimisation Globale</button>
         </div>
         <div class="card">
-            <h2>📊 Performance Analytique</h2>
-            <canvas id="chartPerformance" width="400" height="320"></canvas>
+            <h2>📊 Répartition Analytique</h2>
+            <div style="position: relative; height: 280px; width: 100%;">
+                <canvas id="chartPerformance"></canvas>
+            </div>
         </div>
     </div>
 
     <div class="legal-footer">
         <div>
-            <h4>🔒 Politique de Confidentialité & Conditions d'Utilisation</h4>
-            <p>GlobalRoute AI protège vos données géographiques mondiales en garantissant des calculs mathématiques stricts et irréfutables pour vos tournées de livraison.</p>
+            <p><strong>GlobalRoute AI</strong> — Architecture Logistique & Théorie de l'Optimisation.</p>
         </div>
         <div>
-            <h4>📞 Support Technique & Fondateur</h4>
-            <p>Contact direct de l'administration :</p>
-            <p>📧 Email : <a href="mailto:abrahamdawintz410@gmail.com">abrahamdawintz410@gmail.com</a></p>
-            <p>💬 WhatsApp : <a href="https://wa.me/50941817761" target="_blank">+509 41 81 7761</a></p>
+            <p>Contact : <a href="mailto:abrahamdawintz410@gmail.com">abrahamdawintz410@gmail.com</a> | WhatsApp : <a href="https://wa.me/50941817761" target="_blank">+509 41 81 7761</a></p>
         </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         const map = L.map('map').setView([18.5944, -72.3074], 8);
-
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
             maxZoom: 19,
             attribution: '&copy; CARTO'
@@ -252,10 +358,82 @@ async def afficher_dashboard():
             [18.6500, -72.3500]
         ];
 
+        function verifierAcces() {
+            const cle = document.getElementById('apiKeyInput').value;
+            alert("Clé prête pour les requêtes : " + cle);
+        }
+
+        async function basculerAdmin() {
+            const section = document.getElementById('adminSection');
+            if (section.style.display === 'block') {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = 'block';
+            
+            // Charger la liste actuelle des abonnés à l'ouverture
+            const cleAdmin = document.getElementById('apiKeyInput').value;
+            try {
+                const rep = await fetch('/admin/cles', {
+                    headers: { 'X-API-KEY': cleAdmin }
+                });
+                const data = await rep.json();
+                if (rep.ok) {
+                    document.getElementById('adminOutput').innerText = "CLÉS ACTIVES ENREGISTRÉES :\n" + JSON.stringify(data.cles_enregistrees, null, 2);
+                } else {
+                    document.getElementById('adminOutput').innerText = "Erreur d'accès admin : " + data.detail;
+                }
+            } catch(e) {
+                document.getElementById('adminOutput').innerText = "Impossible de joindre la base des clés.";
+            }
+        }
+
+        async function genererNouvelleCle() {
+            const cleAdmin = document.getElementById('apiKeyInput').value;
+            const nomEntite = document.getElementById('adminNomEntite').value;
+            const email = document.getElementById('adminEmail').value;
+            const duree = parseInt(document.getElementById('adminDuree').value);
+
+            if (!nomEntite || !email) {
+                alert("Veuillez remplir le nom de l'entreprise et l'email.");
+                return;
+            }
+
+            try {
+                const rep = await fetch('/admin/generer-cle', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-KEY': cleAdmin
+                    },
+                    body: JSON.stringify({
+                        nom_entreprise: nomEntite,
+                        email: email,
+                        duree_jours: duree
+                    })
+                });
+
+                const resultat = await rep.json();
+                if (rep.ok) {
+                    document.getElementById('adminOutput').innerText = 
+                        `✅ CLÉ GÉNÉRÉE AVEC SUCCÈS !\n\n` +
+                        `Entreprise : ${resultat.entreprise}\n` +
+                        `Email : ${resultat.email}\n` +
+                        `Clé API : ${resultat.cle_api}\n` +
+                        `Expiration (Minuterie) : ${resultat.expiration}`;
+                } else {
+                    alert("Erreur : " + resultat.detail);
+                }
+            } catch (e) {
+                alert("Erreur réseau lors de la génération de la clé.");
+            }
+        }
+
         async function lancerCalculGlobal() {
             const bouton = document.getElementById('btnLancer');
+            const cle = document.getElementById('apiKeyInput').value;
             bouton.disabled = true;
-            bouton.innerText = "⏳ Calcul mathématique par blocs en cours...";
+            bouton.innerText = "⏳ Optimisation mathématique en cours...";
 
             marqueursGlobaux.forEach(m => map.removeLayer(m));
             marqueursGlobaux = [];
@@ -263,7 +441,7 @@ async def afficher_dashboard():
 
             listeVillesTest.forEach(coord => {
                 let marker = L.circleMarker(coord, {
-                    radius: 8,
+                    radius: 7,
                     fillColor: "#2563eb",
                     color: "#fff",
                     weight: 2,
@@ -278,7 +456,7 @@ async def afficher_dashboard():
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-API-KEY': 'TEST-LIBRE'
+                        'X-API-KEY': cle
                     },
                     body: JSON.stringify({ villes: listeVillesTest })
                 });
@@ -299,16 +477,16 @@ async def afficher_dashboard():
                         color: '#ef4444', 
                         weight: 4, 
                         opacity: 0.85,
-                        dashArray: '5, 5' 
+                        dashArray: '4, 4' 
                     }).addTo(map);
                     
-                    map.fitBounds(coucheRoute.getBounds(), { padding: [50, 50] });
+                    map.fitBounds(coucheRoute.getBounds(), { padding: [40, 40] });
                 } else {
-                    alert("Erreur du serveur : " + resultat.detail);
+                    alert("Accès refusé ou Expiré : " + resultat.detail);
                 }
             } catch (e) {
                 console.error(e);
-                alert("Impossible de joindre le moteur d'optimisation sur le serveur.");
+                alert("Erreur de connexion au serveur.");
             } finally {
                 bouton.disabled = false;
                 bouton.innerText = "⚡ Lancer l'Optimisation Globale";
@@ -319,15 +497,16 @@ async def afficher_dashboard():
         new Chart(ctx, {
             type: 'doughnut',
             data: {
-                labels: ['Blocs Exacts', 'Synchronisation 2-Opt', 'Calcul GPS'],
+                labels: ['Blocs Exacts', '2-Opt Local', 'Calcul GPS'],
                 datasets: [{
                     data: [70, 20, 10],
-                    backgroundColor: ['#2563eb', '#38bdf8', '#e2e8f0'],
+                    backgroundColor: ['#2563eb', '#38bdf8', '#cbd5e1'],
                     borderWidth: 0
                 }]
             },
             options: {
                 responsive: true,
+                maintainAspectRatio: false,
                 plugins: {
                     legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter' } } }
                 }
@@ -336,5 +515,5 @@ async def afficher_dashboard():
     </script>
 </body>
 </html>
-"""
+    """
     return html_content
