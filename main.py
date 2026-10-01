@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.5")
+app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.6")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -74,8 +74,7 @@ class OptimizationRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    wallet = SOLANA_WALLET
-    return f"""
+    html_content = """
     <!DOCTYPE html>
     <html lang="fr">
     <head>
@@ -84,36 +83,36 @@ def home():
         <title>GlobalRoute AI SaaS - Enterprise B2B</title>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 15px; }}
-            .main-container {{ max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 15px; }}
-            .header-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }}
-            .brand-title {{ font-size: 20px; font-weight: 800; color: #38bdf8; margin: 0; }}
-            .admin-btn {{ background: #334155; color: white; padding: 8px 14px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 13px; }}
-            .auth-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 25px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }}
-            .auth-card input {{ width: 100%; padding: 12px; margin: 15px 0; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 8px; font-size: 15px; box-sizing: border-box; text-align: center; }}
-            .auth-btn {{ background: #2563eb; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }}
-            .sub-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }}
-            .plan-btn-green {{ background: #059669; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 14px; margin-bottom: 10px; display: block; }}
-            .plan-btn-blue {{ background: #2563eb; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 14px; display: block; }}
-            .crypto-box {{ background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; padding: 10px; border-radius: 8px; font-size: 12px; font-family: monospace; word-break: break-all; margin-top: 12px; color: #38bdf8; }}
-            .portal-card, .console-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }}
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 15px; }
+            .main-container { max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 15px; }
+            .header-card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+            .brand-title { font-size: 20px; font-weight: 800; color: #38bdf8; margin: 0; }
+            .admin-btn { background: #334155; color: white; padding: 8px 14px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 13px; }
+            .auth-card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 25px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+            .auth-card input { width: 100%; padding: 12px; margin: 15px 0; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 8px; font-size: 15px; box-sizing: border-box; text-align: center; }
+            .auth-btn { background: #2563eb; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }
+            .sub-card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }
+            .plan-btn-green { background: #059669; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 14px; margin-bottom: 10px; display: block; }
+            .plan-btn-blue { background: #2563eb; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 14px; display: block; }
+            .crypto-box { background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; padding: 10px; border-radius: 8px; font-size: 12px; font-family: monospace; word-break: break-all; margin-top: 12px; color: #38bdf8; }
+            .portal-card, .console-card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }
             
-            .menu-bar {{ display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; }}
-            .menu-tab {{ background: #0f172a; color: #94a3b8; border: 1px solid #334155; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; text-align: center; transition: 0.2s; }}
-            .menu-tab.active {{ background: #2563eb; color: white; border-color: #2563eb; }}
-            .menu-section {{ display: none; }}
-            .menu-section.active {{ display: block; }}
+            .menu-bar { display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+            .menu-tab { background: #0f172a; color: #94a3b8; border: 1px solid #334155; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; text-align: center; transition: 0.2s; }
+            .menu-tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+            .menu-section { display: none; }
+            .menu-section.active { display: block; }
 
-            input, select {{ width: 100%; padding: 10px 12px; margin: 6px 0 14px 0; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 8px; font-size: 14px; box-sizing: border-box; }}
-            label {{ font-size: 13px; font-weight: 600; color: #cbd5e1; }}
-            .calc-btn {{ background: #059669; color: white; border: none; width: 100%; padding: 12px; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }}
-            .row-flex {{ display: flex; gap: 10px; }}
-            .col {{ flex: 1; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-            th, td {{ border: 1px solid #334155; padding: 8px; text-align: left; font-size: 12px; }}
-            th {{ background: #0f172a; color: #38bdf8; }}
-            #map {{ height: 350px; width: 100%; margin-top: 15px; border-radius: 10px; border: 1px solid #334155; }}
-            .hidden {{ display: none !important; }}
+            input, select { width: 100%; padding: 10px 12px; margin: 6px 0 14px 0; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+            label { font-size: 13px; font-weight: 600; color: #cbd5e1; }
+            .calc-btn { background: #059669; color: white; border: none; width: 100%; padding: 12px; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }
+            .row-flex { display: flex; gap: 10px; }
+            .col { flex: 1; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #334155; padding: 8px; text-align: left; font-size: 12px; }
+            th { background: #0f172a; color: #38bdf8; }
+            #map { height: 350px; width: 100%; margin-top: 15px; border-radius: 10px; border: 1px solid #334155; }
+            .hidden { display: none !important; }
         </style>
     </head>
     <body>
@@ -196,7 +195,7 @@ def home():
                     <div style="font-size: 16px; font-weight: 700; margin-bottom: 6px;">🛒 Renouvellement B2B</div>
                     <button class="plan-btn-green" onclick="alert('Transférez 1 500 $ vers l’adresse Solana ci-dessous, puis contactez l’admin pour activer 30 jours.')">⚡ Plan 30 Jours — 1 500 $</button>
                     <button class="plan-btn-blue" onclick="alert('Transférez 17 500 $ vers l’adresse Solana ci-dessous, puis contactez l’admin pour activer 365 jours.')">👑 Plan 365 Jours — 17 500 $</button>
-                    <div class="crypto-box"><strong>Adresse Solana :</strong><br>{wallet}</div>
+                    <div class="crypto-box"><strong>Adresse Solana :</strong><br>""" + SOLANA_WALLET + """</div>
                 </div>
             </div>
         </div>
@@ -208,94 +207,94 @@ def home():
             let currentLocations = [];
             let markersLayer = null;
 
-            function switchMenu(menuId, tabElement) {{
+            function switchMenu(menuId, tabElement) {
                 document.querySelectorAll('.menu-section').forEach(sec => sec.classList.remove('active'));
                 document.querySelectorAll('.menu-tab').forEach(tab => tab.classList.remove('active'));
                 
                 document.getElementById('menu-' + menuId).classList.add('active');
                 tabElement.classList.add('active');
 
-                if(menuId === 'simulation') {{
-                    setTimeout(() => {{
-                        if(!mapInstance) {{
+                if(menuId === 'simulation') {
+                    setTimeout(() => {
+                        if(!mapInstance) {
                             mapInstance = L.map('map').setView([19.7578, -72.2042], 13);
-                            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ maxZoom: 19 }}).addTo(mapInstance);
+                            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mapInstance);
                             markersLayer = L.layerGroup().addTo(mapInstance);
-                        }}
+                        }
                         mapInstance.invalidateSize();
                         updateMapAndTable();
-                    }}, 200);
-                }}
-            }}
+                    }, 200);
+                }
+            }
 
-            function verifyApiKey() {{
+            function verifyApiKey() {
                 const keyInput = document.getElementById('apiLoginInput').value.trim();
-                if(!keyInput) {{ alert("Entrez une clé."); return; }}
+                if(!keyInput) { alert("Entrez une clé."); return; }
 
-                fetch('/api/portal-info', {{
+                fetch('/api/portal-info', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ api_key: keyInput }})
-                }})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: keyInput })
+                })
                 .then(res => res.json().then(data => ({status: res.status, body: data})))
-                .then(response => {{
-                    if(response.status !== 200) {{
+                .then(response => {
+                    if(response.status !== 200) {
                         alert(response.body.detail || "Clé invalide.");
-                    }} else {{
+                    } else {
                         currentApiKey = keyInput;
                         document.getElementById('authSection').classList.add('hidden');
                         document.getElementById('saasContent').classList.remove('hidden');
                         const info = response.body;
                         document.getElementById('portalDetails').innerHTML = `
-                            <b>Entreprise :</b> ${{info.client_name}}<br>
-                            <b>Plan :</b> ${{info.plan_type}}<br>
-                            <b>Statut :</b> <span style="color:#10b981;">${{info.sub_status.toUpperCase()}}</span><br>
-                            <b>Expire le :</b> ${{info.expires_at}}
+                            <b>Entreprise :</b> ${info.client_name}<br>
+                            <b>Plan :</b> ${info.plan_type}<br>
+                            <b>Statut :</b> <span style="color:#10b981;">${info.sub_status.toUpperCase()}</span><br>
+                            <b>Expire le :</b> ${info.expires_at}
                         `;
-                    }}
-                }});
-            }}
+                    }
+                });
+            }
 
-            function handleCsvUpload() {{
+            function handleCsvUpload() {
                 const fileInput = document.getElementById('csvFileInput');
-                if(!fileInput.files.length) {{ alert("Sélectionnez un fichier."); return; }}
+                if(!fileInput.files.length) { alert("Sélectionnez un fichier."); return; }
                 const reader = new FileReader();
-                reader.onload = function(e) {{
+                reader.onload = function(e) {
                     const lines = e.target.result.split("\\n");
                     currentLocations = [];
-                    for(let i=1; i<lines.length; i++) {{
+                    for(let i=1; i<lines.length; i++) {
                         let line = lines[i].trim();
                         if(!line) continue;
                         let cols = line.split(",");
-                        if(cols.length >= 4) {{
-                            currentLocations.push({{ id: cols[0].trim(), lat: parseFloat(cols[1]), lng: parseFloat(cols[2]), demand: parseInt(cols[3]) }});
-                        }}
-                    }}
+                        if(cols.length >= 4) {
+                            currentLocations.push({ id: cols[0].trim(), lat: parseFloat(cols[1]), lng: parseFloat(cols[2]), demand: parseInt(cols[3]) });
+                        }
+                    }
                     updateMapAndTable();
                     alert("Import CSV réussi (" + currentLocations.length + " points).");
-                }};
+                };
                 reader.readAsText(fileInput.files[0]);
-            }}
+            }
 
-            function addManualLocation() {{
+            function addManualLocation() {
                 const id = document.getElementById('newId').value.trim();
                 const lat = parseFloat(document.getElementById('newLat').value);
                 const lng = parseFloat(document.getElementById('newLng').value);
                 const demand = parseInt(document.getElementById('newDemand').value);
-                if(!id || isNaN(lat) || isNaN(lng) || isNaN(demand)) {{ alert("Remplissez tous les champs."); return; }}
-                currentLocations.push({{ id, lat, lng, demand }});
+                if(!id || isNaN(lat) || isNaN(lng) || isNaN(demand)) { alert("Remplissez tous les champs."); return; }
+                currentLocations.push({ id, lat, lng, demand });
                 document.getElementById('newId').value = "";
                 document.getElementById('newLat').value = "";
                 document.getElementById('newLng').value = "";
                 document.getElementById('newDemand').value = "";
                 updateMapAndTable();
-            }}
+            }
 
-            function updateMapAndTable() {{
+            function updateMapAndTable() {
                 let html = "<tr><th>ID</th><th>Lat</th><th>Lng</th><th>Demande</th></tr>";
-                currentLocations.forEach(loc => {{
-                    html += `<tr><td>${{loc.id}}</td><td>${{loc.lat}}</td><td>${{loc.lng}}</td><td>${{loc.demand}}</td></tr>`;
-                }});
+                currentLocations.forEach(loc => {
+                    html += `<tr><td>${loc.id}</td><td>${loc.lat}</td><td>${loc.lng}</td><td>${loc.demand}</td></tr>`;
+                });
                 document.getElementById('locationsTable').innerHTML = html;
                 document.getElementById('countPoints').innerText = currentLocations.length;
 
@@ -303,53 +302,54 @@ def home():
                 markersLayer.clearLayers();
                 const depotLat = parseFloat(document.getElementById('depotLat').value);
                 const depotLng = parseFloat(document.getElementById('depotLng').value);
-                L.marker([depotLat, depotLng], {{icon: L.divIcon({className: 'depot', html: '🏠', iconSize: [20,20]})}}).addTo(markersLayer).bindPopup("Dépôt");
-                currentLocations.forEach(loc => {{
+                L.marker([depotLat, depotLng], {icon: L.divIcon({className: 'depot', html: '🏠', iconSize: [20,20]})}).addTo(markersLayer).bindPopup("Dépôt");
+                currentLocations.forEach(loc => {
                     L.marker([loc.lat, loc.lng]).addTo(markersLayer).bindPopup(loc.id);
-                }});
-            }}
+                });
+            }
 
-            function runOptimization() {{
-                if(currentLocations.length === 0) {{ alert("Ajoutez au moins un client."); return; }}
-                const payload = {{
+            function runOptimization() {
+                if(currentLocations.length === 0) { alert("Ajoutez au moins un client."); return; }
+                const payload = {
                     api_key: currentApiKey,
-                    depot: {{"id": "Depot", "lat": parseFloat(document.getElementById('depotLat').value), "lng": parseFloat(document.getElementById('depotLng').value), "demand": 0}},
+                    depot: {"id": "Depot", "lat": parseFloat(document.getElementById('depotLat').value), "lng": parseFloat(document.getElementById('depotLng').value), "demand": 0},
                     locations: currentLocations,
                     vehicle_capacity: parseInt(document.getElementById('vehicleCapacity').value),
                     num_vehicles: parseInt(document.getElementById('numVehicles').value)
-                }};
-                fetch('/api/optimize', {{
+                };
+                fetch('/api/optimize', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
-                }})
+                })
                 .then(res => res.json())
-                .then(data => {{
-                    if(data.routes) {{
+                .then(data => {
+                    if(data.routes) {
                         alert("Optimisation réussie ! Tournées : " + data.routes.length);
                         markersLayer.clearLayers();
                         const depotLat = parseFloat(document.getElementById('depotLat').value);
                         const depotLng = parseFloat(document.getElementById('depotLng').value);
                         L.marker([depotLat, depotLng]).addTo(markersLayer);
                         const colors = ['#2563eb', '#10b981', '#f59e0b', '#ef4444'];
-                        data.routes.forEach((route, idx) => {{
+                        data.routes.forEach((route, idx) => {
                             let pts = [[depotLat, depotLng]];
-                            route.forEach(pt => {{
+                            route.forEach(pt => {
                                 pts.push([pt.lat, pt.lng]);
                                 L.marker([pt.lat, pt.lng]).addTo(markersLayer);
-                            }});
+                            });
                             pts.push([depotLat, depotLng]);
-                            L.polyline(pts, {{color: colors[idx % colors.length], weight: 4}}).addTo(markersLayer);
-                        }});
-                    }} else {{
+                            L.polyline(pts, {color: colors[idx % colors.length], weight: 4}).addTo(markersLayer);
+                        });
+                    } else {
                         alert("Erreur d'optimisation.");
-                    }}
-                }});
-            }}
+                    }
+                });
+            }
         </script>
     </body>
     </html>
     """
+    return HTMLResponse(content=html_content)
 
 class PortalRequest(BaseModel):
     api_key: str
@@ -448,7 +448,7 @@ def admin_dash(admin_key: str = Form(...)):
     rows_html = "".join([f"<tr><td>{r[0]}</td><td><code>{r[1]}</code></td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4][:10]}</td><td><b>{r[5]}</b></td></tr>" for r in rows])
     return f"""
     <body style="background:#0f172a; color:white; font-family:sans-serif; padding:20px;">
-        <div style="max-width:800px; main:0 auto; background:#1e293b; padding:20px; border-radius:12px; border:1px solid #334155;">
+        <div style="max-width:800px; margin:0 auto; background:#1e293b; padding:20px; border-radius:12px; border:1px solid #334155;">
             <h2>Dashboard Admin</h2>
             <table style="width:100%; border-collapse:collapse; margin-top:15px;">
                 <tr><th>ID</th><th>Clé</th><th>Client</th><th>Plan</th><th>Expire</th><th>Statut</th></tr>
