@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import math
 from typing import List, Tuple
@@ -9,7 +10,7 @@ from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(
     title="GlobalRoute AI - Moteur Logistique Mondial",
-    description="API de calcul TSP exact par blocs avec coordonnées GPS réelles (Haversine)."
+    description="API de calcul TSP exact par blocs avec coordonnées GPS réelles (Haversine) et Dashboard Intégré."
 )
 
 app.add_middleware(
@@ -149,6 +150,11 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
         "distance_totale_km": round(distance_km, 2),
         "ordre_de_visite_optimal": route
     }
+
+# --- ROUTE PRINCIPALE : LE DASHBOARD PRO ET MONDIAL INTÉGRÉ ---
+@app.get("/", response_class=HTMLResponse)
+async def afficher_dashboard():
+    return """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -225,6 +231,7 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
             <p>💬 WhatsApp : <a href="https://wa.me/50941817761" target="_blank">+509 41 81 7761</a></p>
         </div>
     </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         const map = L.map('map').setView([18.5944, -72.3074], 8);
@@ -268,7 +275,7 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
 
             try {
                 let debut = performance.now();
-                const reponse = await fetch('http://127.0.0.1:8000/optimiser-tournee-gps/', {
+                const reponse = await fetch('/optimiser-tournee-gps/', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -330,3 +337,4 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
     </script>
 </body>
 </html>
+    """
