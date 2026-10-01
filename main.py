@@ -116,7 +116,7 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
         .client-login-input { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.3); background: #090d16; color: #fff; font-size: 14px; outline: none; }
         .client-login-btn { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0f172a; padding: 12px 20px; border: none; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 14px; }
 
-        .cta-box { display: flex; gap: 15px; justify-content: center; flex-wrap: column; }
+        .cta-box { display: flex; gap: 15px; justify-content: center; flex-direction: column; }
         @media(min-width: 480px) { .cta-box { flex-direction: row; } }
         .btn-main { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0f172a; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(56, 189, 248, 0.3); display: inline-block; flex: 1; }
         .btn-sec { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); display: inline-block; flex: 1; }
@@ -331,18 +331,18 @@ ADMIN_TEMPLATE = NAVBAR_HTML + """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin</title>
+    <title>Admin - GlobalRoute AI</title>
     <style>body { font-family: 'Inter', sans-serif; background: #090d16; color: #f8fafc; margin: 0; padding: 0; }</style>
 </head>
 <body>
-    <div style="max-width: 1000px; margin: 20px auto; background: #162032; padding: 25px; border-radius: 20px;">
+    <div style="max-width: 1000px; margin: 20px auto; background: #162032; padding: 25px; border-radius: 20px; border: 1px solid rgba(56,189,248,0.2);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-            <h1 style="font-size: 20px; margin:0;">Panel Admin</h1>
-            <a href="/logout" style="color:#ef4444; text-decoration:none; font-weight:bold; font-size:13px;">Déconnexion</a>
+            <h1 style="font-size: 20px; margin:0; color:#38bdf8;">Panel Admin - Liste des Clés</h1>
+            <a href="/logout" style="color:#ef4444; text-decoration:none; font-weight:bold; font-size:13px; border: 1px solid #ef4444; padding: 6px 12px; border-radius: 6px;">Déconnexion</a>
         </div>
         <div style="overflow-x: auto;">
             <table style="width:100%; border-collapse:collapse; font-size: 13px; text-align:left;">
-                <tr style="background:#0f172a; color:#38bdf8;"><th style="padding:10px;">ID</th><th style="padding:10px;">Clé</th><th style="padding:10px;">Formule</th><th style="padding:10px;">Statut</th></tr>
+                <tr style="background:#0f172a; color:#38bdf8;"><th style="padding:10px;">ID</th><th style="padding:10px;">Clé</th><th style="padding:10px;">Formule</th><th style="padding:10px;">Statut</th><th style="padding:10px;">Date</th></tr>
                 {{ rows_html | safe }}
             </table>
         </div>
@@ -363,10 +363,13 @@ LOGIN_TEMPLATE = NAVBAR_HTML + """
 <body>
     <div style="display:flex; justify-content:center; align-items:center; height:70vh; padding:15px;">
         <div style="background:#162032; padding:25px; border-radius:20px; width:100%; max-width:350px; text-align:center; border:1px solid rgba(56,189,248,0.2);">
-            <h2 style="font-size: 20px; margin-top:0;">Admin</h2>
+            <h2 style="font-size: 20px; margin-top:0; color:#38bdf8;">🔒 Espace Admin</h2>
+            {% if error %}
+            <p style="color:#ef4444; font-size:13px; margin-bottom:15px;">{{ error }}</p>
+            {% endif %}
             <form action="/admin" method="POST">
-                <input type="password" name="password" placeholder="Mot de passe" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:10px; border:1px solid rgba(148,163,184,0.3); background:#090d16; color:#fff; outline:none;"><br>
-                <button type="submit" style="background:#38bdf8; color:#0f172a; padding:12px; border:none; border-radius:10px; font-weight:bold; width:100%; cursor:pointer;">Entrer</button>
+                <input type="password" name="password" placeholder="Mot de passe (admin)" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:10px; border:1px solid rgba(148,163,184,0.3); background:#090d16; color:#fff; outline:none; font-size:14px;"><br>
+                <button type="submit" style="background:linear-gradient(135deg, #38bdf8, #0ea5e9); color:#0f172a; padding:12px; border:none; border-radius:10px; font-weight:bold; width:100%; cursor:pointer; font-size:14px;">Entrer</button>
             </form>
         </div>
     </div>
@@ -376,26 +379,31 @@ LOGIN_TEMPLATE = NAVBAR_HTML + """
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin():
+    error_msg = None
     if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
-            session['logged_in'] = True
-        else:
-            flash("Mot de passe incorrect")
+        entered_password = request.form.get('password', '').strip()
+        if entered_password == ADMIN_PASSWORD:
+            session['admin_logged'] = True
             return redirect(url_for('admin'))
+        else:
+            error_msg = "Mot de passe incorrect."
             
-    if session.get('logged_in'):
+    if session.get('admin_logged'):
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT id, key_code, plan, status, created_at, tx_signature FROM keys ORDER BY id DESC")
+        cursor.execute("SELECT id, key_code, plan, status, created_at FROM keys ORDER BY id DESC")
         keys = cursor.fetchall()
         conn.close()
-        rows_html = "".join([f"<tr><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[0]}</td><td style='padding:10px; border-bottom:1px solid #0f172a; font-family:monospace; color:#38bdf8;'>{k[1]}</td><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[2]}</td><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[3]}</td></tr>" for k in keys]) if keys else "<tr><td colspan='4' style='padding:15px; text-align:center; color:#94a3b8;'>Aucune clé enregistrée.</td></tr>"
+        
+        rows_html = "".join([f"<tr><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[0]}</td><td style='padding:10px; border-bottom:1px solid #0f172a; font-family:monospace; color:#38bdf8;'>{k[1]}</td><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[2]}</td><td style='padding:10px; border-bottom:1px solid #0f172a;'>{k[3]}</td><td style='padding:10px; border-bottom:1px solid #0f172a; color:#94a3b8;'>{k[4]}</td></tr>" for k in keys]) if keys else "<tr><td colspan='5' style='padding:15px; text-align:center; color:#94a3b8;'>Aucune clé enregistrée pour le moment.</td></tr>"
+        
         return render_template_string(ADMIN_TEMPLATE, rows_html=rows_html)
-    return render_template_string(LOGIN_TEMPLATE)
+    
+    return render_template_string(LOGIN_TEMPLATE, error=error_msg)
 
 @app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
+    session.pop('admin_logged', None)
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
