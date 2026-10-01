@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.3")
+app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.5")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -38,7 +38,7 @@ def init_db():
                 plan_type TEXT,
                 created_at TEXT,
                 expires_at TEXT,
-                status TEXT DEFAULT 'active'
+                sub_status TEXT DEFAULT 'active'
             )
         ''')
         cursor.execute("SELECT COUNT(*) FROM subscriptions")
@@ -47,7 +47,7 @@ def init_db():
             now = datetime.now()
             expire = now + timedelta(days=30)
             cursor.execute(
-                "INSERT INTO subscriptions (api_key_hash, raw_key, client_name, plan_type, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO subscriptions (api_key_hash, raw_key, client_name, plan_type, created_at, expires_at, sub_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (hash_key(raw_demo), raw_demo, "Client Test Global", "30 jours", now.isoformat(), expire.isoformat(), "active")
             )
         conn.commit()
@@ -98,7 +98,6 @@ def home():
             .crypto-box {{ background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; padding: 10px; border-radius: 8px; font-size: 12px; font-family: monospace; word-break: break-all; margin-top: 12px; color: #38bdf8; }}
             .portal-card, .console-card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; }}
             
-            /* Styles des menus par onglets */
             .menu-bar {{ display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; }}
             .menu-tab {{ background: #0f172a; color: #94a3b8; border: 1px solid #334155; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; flex: 1; text-align: center; transition: 0.2s; }}
             .menu-tab.active {{ background: #2563eb; color: white; border-color: #2563eb; }}
@@ -140,14 +139,12 @@ def home():
                 <div class="console-card">
                     <h3 style="margin-top:0; color:#38bdf8; margin-bottom: 12px;">🎛️ Console de Tournée Intelligente</h3>
                     
-                    <!-- Barre de menus / onglets -->
                     <div class="menu-bar">
                         <div class="menu-tab active" onclick="switchMenu('points', this)">📍 Clients & Points</div>
                         <div class="menu-tab" onclick="switchMenu('config', this)">⚙️ Configuration</div>
                         <div class="menu-tab" onclick="switchMenu('simulation', this)">🚀 Simulation & Carte</div>
                     </div>
 
-                    <!-- MENU 1 : Gestion des points et clients -->
                     <div id="menu-points" class="menu-section active">
                         <div style="background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
                             <label><b>Importer un fichier CSV</b> (id, lat, lng, demand)</label>
@@ -174,7 +171,6 @@ def home():
                         </div>
                     </div>
 
-                    <!-- MENU 2 : Configuration du dépôt et des véhicules -->
                     <div id="menu-config" class="menu-section">
                         <h4 style="margin-top:0; color:#38bdf8;">Paramètres du Dépôt (Point de départ)</h4>
                         <div class="row-flex">
@@ -187,10 +183,8 @@ def home():
                             <div class="col"><label>Capacité Véhicule :</label><input type="number" id="vehicleCapacity" value="15"></div>
                             <div class="col"><label>Nbr Véhicules :</label><input type="number" id="numVehicles" value="3"></div>
                         </div>
-                        <p style="font-size: 12px; color: #94a3b8;">Modifiez ces réglages avant de lancer l'algorithme d'optimisation.</p>
                     </div>
 
-                    <!-- MENU 3 : Simulation et Carte interactive -->
                     <div id="menu-simulation" class="menu-section">
                         <h4 style="margin-top:0; color:#38bdf8;">Lancement & Visualisation Cartographique</h4>
                         <button class="calc-btn" onclick="runOptimization()">🚀 Lancer l'Optimisation OR-Tools</button>
@@ -214,7 +208,6 @@ def home():
             let currentLocations = [];
             let markersLayer = null;
 
-            // Fonction de gestion des onglets/menus
             function switchMenu(menuId, tabElement) {{
                 document.querySelectorAll('.menu-section').forEach(sec => sec.classList.remove('active'));
                 document.querySelectorAll('.menu-tab').forEach(tab => tab.classList.remove('active'));
@@ -222,7 +215,6 @@ def home():
                 document.getElementById('menu-' + menuId).classList.add('active');
                 tabElement.classList.add('active');
 
-                // Si on bascule sur la carte, on s'assure qu'elle s'affiche bien
                 if(menuId === 'simulation') {{
                     setTimeout(() => {{
                         if(!mapInstance) {{
@@ -257,7 +249,7 @@ def home():
                         document.getElementById('portalDetails').innerHTML = `
                             <b>Entreprise :</b> ${{info.client_name}}<br>
                             <b>Plan :</b> ${{info.plan_type}}<br>
-                            <b>Statut :</b> <span style="color:#10b981;">${{info.status.toUpperCase()}}</span><br>
+                            <b>Statut :</b> <span style="color:#10b981;">${{info.sub_status.toUpperCase()}}</span><br>
                             <b>Expire le :</b> ${{info.expires_at}}
                         `;
                     }}
@@ -367,24 +359,24 @@ def get_portal_info(data: PortalRequest):
     hashed = hash_key(data.api_key)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT client_name, plan_type, expires_at, status FROM subscriptions WHERE api_key_hash = ?", (hashed,))
+    cursor.execute("SELECT client_name, plan_type, expires_at, sub_status FROM subscriptions WHERE api_key_hash = ?", (hashed,))
     row = cursor.fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=401, detail="Clé API introuvable.")
-    client_name, plan_type, expires_at, status = row
-    return {"client_name": client_name, "plan_type": plan_type, "expires_at": expires_at[:10], "status": status}
+    client_name, plan_type, expires_at, sub_status = row
+    return {"client_name": client_name, "plan_type": plan_type, "expires_at": expires_at[:10], "sub_status": sub_status}
 
 @app.post("/api/optimize")
 def optimize_routes(data: OptimizationRequest):
     hashed = hash_key(data.api_key)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT status FROM subscriptions WHERE api_key_hash = ?", (hashed,))
-    sub = cursor.fetchone()
+    cursor.execute("SELECT sub_status FROM subscriptions WHERE api_key_hash = ?", (hashed,))
+    sub_record = cursor.fetchone()
     conn.close()
     
-    if not sub:
+    if not sub_record:
         raise HTTPException(status_code=401, detail="Non autorisé.")
 
     if not data.locations:
@@ -429,7 +421,8 @@ def optimize_routes(data: OptimizationRequest):
                     routes.append(route)
         return {"status": "success", "routes": routes}
     except Exception as e:
-        return {"status": "success", "routes": [[{"id": l.id, "lat": l.lat, "lng": l.lng} for l in data.locations]]}
+        fallback_routes = [[{"id": l.id, "lat": l.lat, "lng": l.lng} for l in data.locations]]
+        return {"status": "success", "routes": fallback_routes}
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_login():
@@ -449,13 +442,13 @@ def admin_dash(admin_key: str = Form(...)):
         return "<body style='background:#0f172a; color:white; text-align:center; padding-top:100px;'><h2>Accès Refusé</h2><a href='/admin' style='color:#38bdf8;'>Retour</a></body>"
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, raw_key, client_name, plan_type, expires_at, status FROM subscriptions")
+    cursor.execute("SELECT id, raw_key, client_name, plan_type, expires_at, sub_status FROM subscriptions")
     rows = cursor.fetchall()
     conn.close()
     rows_html = "".join([f"<tr><td>{r[0]}</td><td><code>{r[1]}</code></td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4][:10]}</td><td><b>{r[5]}</b></td></tr>" for r in rows])
     return f"""
     <body style="background:#0f172a; color:white; font-family:sans-serif; padding:20px;">
-        <div style="max-width:800px; margin:0 auto; background:#1e293b; padding:20px; border-radius:12px; border:1px solid #334155;">
+        <div style="max-width:800px; main:0 auto; background:#1e293b; padding:20px; border-radius:12px; border:1px solid #334155;">
             <h2>Dashboard Admin</h2>
             <table style="width:100%; border-collapse:collapse; margin-top:15px;">
                 <tr><th>ID</th><th>Clé</th><th>Client</th><th>Plan</th><th>Expire</th><th>Statut</th></tr>
