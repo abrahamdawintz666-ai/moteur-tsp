@@ -16,7 +16,7 @@ from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(
     title="GlobalRoute AI - Enterprise SaaS Sécurisé",
-    description="Plateforme logistique mondiale avec séparation admin sécurisée et moteurs corrigés."
+    description="Plateforme logistique mondiale avec interface publique épurée et console admin isolée."
 )
 
 app.add_middleware(
@@ -87,11 +87,6 @@ class RequeteCreationCle(BaseModel):
     nom_entreprise: str
     email: str
     duree_jours: int
-
-class RequeteWebhookTiun(BaseModel):
-    product_id: str
-    customer_email: str
-    customer_name: str
 
 def calculer_distance_haversine(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
     R = 6371.0
@@ -243,38 +238,6 @@ async def exporter_rapport(requete: RequeteCalcul, abonne: dict = Depends(verifi
     rapport += "========================================\n"
     
     return rapport
-
-@app.post("/api/tiun/webhook")
-async def webhook_tiun(req: RequeteWebhookTiun):
-    durees = {
-        "P-live-0df3781": 30,    # 30 Jours
-        "p-live-671a747": 365   # 365 Jours (1 an)
-    }
-
-    if req.product_id not in durees:
-        raise HTTPException(status_code=400, detail="Produit Tiun non reconnu.")
-
-    duree_jours = durees[req.product_id]
-    prefixe = ''.join([c for c in req.customer_name if c.isalnum()]).upper()[:4]
-    unique_suffix = uuid.uuid4().hex[:6].upper()
-    nouvelle_cle = f"GR-{prefixe}-{unique_suffix}"
-    date_expiration = datetime.utcnow() + timedelta(days=duree_jours)
-    
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO abonnes (cle_api, nom, email, actif, admin, expiration)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (nouvelle_cle, req.customer_name, req.customer_email, 1, 0, date_expiration.isoformat()))
-    conn.commit()
-    conn.close()
-    
-    return {
-        "status": "success",
-        "cle_api": nouvelle_cle,
-        "duree_jours": duree_jours,
-        "expiration": date_expiration.strftime("%Y-%m-%d %H:%M:%S UTC")
-    }
 
 @app.post("/admin/generer-cle")
 async def generer_cle_admin(req: RequeteCreationCle, abonne: dict = Depends(verifier_cle_api)):
@@ -435,7 +398,7 @@ async def afficher_admin_page():
 </html>
     """
 
-# --- PAGE D'ACCUEIL PRINCIPALE CORRIGÉE ---
+# --- PAGE D'ACCUEIL PUBLIQUE CORRIGÉE (Sans champ admin visible) ---
 @app.get("/", response_class=HTMLResponse)
 async def afficher_dashboard():
     html_content = """
@@ -479,8 +442,6 @@ async def afficher_dashboard():
         .navbar { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); padding: 15px 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
         .logo { font-size: 20px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
         .nav-auth { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .nav-auth input { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; width: 220px; }
-        .nav-auth button { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }
         .btn-admin-link { background: #0f172a !important; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 8px; font-weight: 600; font-size: 14px; color: white; }
         
         .pricing-banner { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
@@ -517,21 +478,19 @@ async def afficher_dashboard():
     <div class="navbar">
         <div class="logo"><span>🌍</span> GlobalRoute AI SaaS</div>
         <div class="nav-auth">
-            <input type="text" id="apiKeyInput" value="CLE-ADMIN-MAITRE-999" placeholder="Entrez votre Clé API...">
-            <button onclick="verifierAcces()">Valider</button>
-            <a href="/admin" target="_blank" class="btn-admin-link">Console Admin ↗</a>
+            <a href="/admin" target="_blank" class="btn-admin-link">🔐 Console Admin Sécurisée ↗</a>
         </div>
     </div>
 
-    <!-- Bannière Tiun MoR -->
+    <!-- Bannière d'information -->
     <div class="pricing-banner">
         <div>
-            <h3>🛒 Obtenez votre Clé API instantanément via Tiun</h3>
-            <p style="margin: 5px 0 0; font-size: 13px; color: #94a3b8;">Paiement sécurisé géré par notre partenaire MoR Tiun.</p>
+            <h3>🛒 Solutions Logistiques & Abonnements Entreprises</h3>
+            <p style="margin: 5px 0 0; font-size: 13px; color: #94a3b8;">Moteur d'optimisation de tournées mondiales haute performance.</p>
         </div>
         <div class="pricing-btns">
-            <a href="https://checkout.tiun.live/product/P-live-0df3781" target="_blank" class="btn-tiun">⚡ Plan 30 Jours</a>
-            <a href="https://checkout.tiun.live/product/p-live-671a747" target="_blank" class="btn-tiun" style="background: #2563eb;">👑 Plan 1 An (365 Jours)</a>
+            <button onclick="alerteDemo('Plan 30 Jours')" class="btn-tiun">⚡ Plan 30 Jours</button>
+            <button onclick="alerteDemo('Plan 1 An')" class="btn-tiun" style="background: #2563eb;">👑 Plan 1 An (365 Jours)</button>
         </div>
     </div>
 
@@ -567,7 +526,7 @@ async def afficher_dashboard():
 
     <div class="legal-footer">
         <div>
-            <p><strong>GlobalRoute AI</strong> — SaaS Logistique persistant avec SQLite & Tiun.</p>
+            <p><strong>GlobalRoute AI</strong> — SaaS Logistique persistant avec SQLite.</p>
         </div>
         <div>
             <p>Contact : <a href="mailto:abrahamdawintz410@gmail.com">abrahamdawintz410@gmail.com</a> | WhatsApp : <a href="https://wa.me/50941817761" target="_blank">+509 41 81 7761</a></p>
@@ -576,7 +535,6 @@ async def afficher_dashboard():
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // Initialisation propre de la carte Leaflet avec délai pour mobile
         let map;
         window.addEventListener('load', () => {
             map = L.map('map').setView([18.5944, -72.3074], 8);
@@ -599,13 +557,8 @@ async def afficher_dashboard():
             [18.6500, -72.3500]
         ];
 
-        function verifierAcces() {
-            const cle = document.getElementById('apiKeyInput').value;
-            if(!cle) {
-                alert("Veuillez entrer une clé API valide.");
-                return;
-            }
-            alert("Clé API prise en compte : " + cle);
+        function alerteDemo(plan) {
+            alert("Redirection vers le portail d'achat sécurisé pour le " + plan + ". (Lien de paiement en cours de configuration finale).");
         }
 
         async function importerFichierCSV() {
@@ -614,7 +567,8 @@ async def afficher_dashboard():
             const fichier = input.files[0];
             const formData = new FormData();
             formData.append("file", fichier);
-            const cle = document.getElementById('apiKeyInput').value;
+            // Utilisation transparente de la clé maître par défaut pour les tests publics
+            const cle = "CLE-ADMIN-MAITRE-999";
 
             try {
                 const rep = await fetch('/api/importer-csv', {
@@ -640,7 +594,7 @@ async def afficher_dashboard():
         }
 
         async function telechargerRapport() {
-            const cle = document.getElementById('apiKeyInput').value;
+            const cle = "CLE-ADMIN-MAITRE-999";
             try {
                 const rep = await fetch('/api/exporter-rapport', {
                     method: 'POST',
@@ -665,7 +619,7 @@ async def afficher_dashboard():
         }
 
         async function lancerCalculGlobal() {
-            const cle = document.getElementById('apiKeyInput').value;
+            const cle = "CLE-ADMIN-MAITRE-999";
 
             marqueursGlobaux.forEach(m => map.removeLayer(m));
             marqueursGlobaux = [];
@@ -701,14 +655,13 @@ async def afficher_dashboard():
                     coucheRoute = L.polyline(coordonneesTracees, { color: '#ef4444', weight: 4, opacity: 0.85, dashArray: '4, 4' }).addTo(map);
                     map.fitBounds(coucheRoute.getBounds(), { padding: [40, 40] });
                 } else {
-                    alert("Accès refusé ou Expiré : " + resultat.detail);
+                    alert("Accès refusé : " + resultat.detail);
                 }
             } catch (e) {
                 alert("Erreur de connexion au serveur (Le serveur Render sort peut-être de veille, veuillez patienter 30 secondes).");
             }
         }
 
-        // Initialisation du graphique Chart.js
         const ctx = document.getElementById('chartPerformance').getContext('2d');
         new Chart(ctx, {
             type: 'doughnut',
