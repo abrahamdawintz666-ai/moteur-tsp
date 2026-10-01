@@ -17,8 +17,8 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(
-    title="GlobalRoute AI - Enterprise SaaS Sécurisé",
-    description="Plateforme logistique mondiale avec GPS temps réel, calculateur de distance, CVRP et console admin."
+    title="GlobalRoute AI - SaaS Logistique Mobile",
+    description="Plateforme logistique avec menu mobile, GPS temps réel, calculateur, CVRP et import."
 )
 
 app.add_middleware(
@@ -31,7 +31,6 @@ app.add_middleware(
 
 DB_FILE = "database.db"
 
-# Récupération sécurisée depuis les variables d'environnement de Render
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Boaram")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "CLE-ADMIN-MAITRE-999")
 
@@ -67,7 +66,7 @@ API_KEY_HEADER = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 def verifier_cle_api(api_key: str = Security(API_KEY_HEADER)):
     if not api_key:
-        raise HTTPException(status_code=401, detail="Clé API manquante dans les en-têtes (X-API-KEY). Veuillez entrer votre clé.")
+        raise HTTPException(status_code=401, detail="Clé API manquante. Veuillez l'entrer dans le menu Dashboard.")
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT nom, actif, admin, expiration FROM abonnes WHERE cle_api = ?", (api_key,))
@@ -88,7 +87,6 @@ def verifier_cle_api(api_key: str = Security(API_KEY_HEADER)):
             
     return {"nom": nom, "admin": bool(admin)}
 
-# --- MODÈLES DE DONNÉES ---
 class Point(BaseModel):
     id: int
     lat: float
@@ -99,7 +97,7 @@ class Point(BaseModel):
 class RouteRequest(BaseModel):
     depot: Point
     points: List[Point]
-    vehicule_capacite: int = 50
+    vehicule_capacite: int = 30
 
 class DistanceRequest(BaseModel):
     lat1: float
@@ -112,7 +110,6 @@ class AdminCreationRequest(BaseModel):
     email: str
     duree_jours: int = 30
 
-# --- MOTEUR OR-TOOLS & MATHS ---
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
@@ -191,7 +188,6 @@ def resoudre_cvrp_ortools(depot: Point, points: List[Point], vehicule_capacite: 
         
     return tournee, distance_totale_m / 1000.0, charge_totale
 
-# --- INTERFACE UTILISATEUR AVEC GPS & CALCULATEUR ---
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return """
@@ -200,101 +196,178 @@ async def index():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - SaaS Logistique Mondial & GPS</title>
+    <title>GlobalRoute AI - Application Mobile Logistique</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { font-family: 'Inter', sans-serif; background: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
-        header { background: #0f172a; color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
-        header h1 { margin: 0; font-size: 20px; color: #38bdf8; }
-        .main-container { max-width: 1350px; margin: 25px auto; padding: 0 20px; display: grid; grid-template-columns: 420px 1fr; gap: 25px; }
-        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        h2 { font-size: 15px; margin-top: 0; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 6px; }
+        body { font-family: 'Inter', sans-serif; background: #f1f5f9; color: #1e293b; margin: 0; padding: 0; }
+        header { background: #0f172a; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1000; }
+        header h1 { margin: 0; font-size: 16px; color: #38bdf8; }
+        
+        /* Barre de menu mobile */
+        .menu-bar { background: #1e293b; display: flex; overflow-x: auto; padding: 10px; gap: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .menu-btn { background: #334155; color: white; border: none; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+        .menu-btn.active { background: #2563eb; }
+
+        .container { max-width: 600px; margin: 15px auto; padding: 0 15px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 15px; }
+        h2 { font-size: 14px; margin-top: 0; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 6px; }
         .form-group { margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
         .form-group label { font-size: 12px; font-weight: 600; color: #475569; }
-        .form-group input { padding: 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 13px; }
-        .btn { background: #2563eb; color: white; border: none; padding: 10px 15px; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; font-size: 13px; margin-top: 5px; }
+        .form-group input, .form-group textarea { padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 14px; }
+        
+        .btn { background: #2563eb; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 600; cursor: pointer; width: 100%; font-size: 14px; margin-top: 5px; text-align: center; }
         .btn:hover { background: #1d4ed8; }
         .btn-gps { background: #10b981; }
         .btn-gps:hover { background: #059669; }
-        #map { height: 550px; width: 100%; border-radius: 8px; z-index: 1; }
-        #output, #distOutput { font-family: monospace; font-size: 11px; background: #0f172a; color: #34d399; padding: 10px; border-radius: 6px; margin-top: 10px; max-height: 120px; overflow-y: auto; }
-        .admin-link { color: #94a3b8; text-decoration: none; font-size: 13px; }
-        .admin-link:hover { color: white; }
-        .error-msg { color: #ef4444; font-size: 11px; }
+
+        #map { height: 400px; width: 100%; border-radius: 8px; z-index: 1; margin-top: 10px; }
+        #output, #distOutput { font-family: monospace; font-size: 12px; background: #0f172a; color: #34d399; padding: 12px; border-radius: 6px; margin-top: 10px; word-break: break-all; }
+        .admin-link { color: #94a3b8; text-decoration: none; font-size: 12px; }
+        .error-msg { color: #ef4444; font-size: 12px; }
     </style>
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI 🚀 (GPS & Mondial)</h1>
-        <a href="/admin" class="admin-link">🔒 Accès Console Admin</a>
+        <h1>GlobalRoute AI 📱</h1>
+        <a href="/admin" class="admin-link">🔒 Admin</a>
     </header>
 
-    <div class="main-container">
-        <!-- Colonne Gauche : Commandes -->
-        <div>
-            <!-- Clé & Paramètres -->
-            <div class="card">
-                <h2>🔑 Authentification Client</h2>
-                <div class="form-group">
-                    <label>Clé API Client :</label>
-                    <input type="password" id="apiKey" placeholder="Entrez votre clé API...">
-                    <span id="keyError" class="error-msg"></span>
-                </div>
-                
-                <h2 style="margin-top: 15px;">🚌 GPS & Dépôt Actuel</h2>
-                <button class="btn btn-gps" onclick="obtenirPositionGPS()">📍 Utiliser mon GPS en temps réel</button>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
-                    <div class="form-group"><label>Lat Dépôt :</label><input type="text" id="depotLat" value="48.8566"></div>
-                    <div class="form-group"><label>Lng Dépôt :</label><input type="text" id="depotLng" value="2.3522"></div>
-                </div>
-                <div class="form-group">
-                    <label>Capacité maximale du Bus :</label>
-                    <input type="number" id="vehiculeCapacite" value="30">
-                </div>
-
-                <button class="btn" onclick="lancerOptimisation()">Calculer la Tournée</button>
-                <div id="output">En attente...</div>
-            </div>
-
-            <!-- Calculateur de Distance entre 2 points -->
-            <div class="card">
-                <h2>📏 Calculateur Distance & Temps</h2>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                    <div class="form-group"><label>Lat Point A :</label><input type="text" id="latA" value="48.8566"></div>
-                    <div class="form-group"><label>Lng Point A :</label><input type="text" id="lngA" value="2.3522"></div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                    <div class="form-group"><label>Lat Point B :</label><input type="text" id="latB" value="48.8600"></div>
-                    <div class="form-group"><label>Lng Point B :</label><input type="text" id="lngB" value="2.3400"></div>
-                </div>
-                <button class="btn" style="background: #0284c7;" onclick="calculerDistanceDirecte()">Calculer Distance & Temps</button>
-                <div id="distOutput">Résultat du calcul entre 2 points...</div>
-            </div>
-        </div>
-
-        <!-- Colonne Droite : Carte Globale Leaflet -->
-        <div class="card" style="display: flex; flex-direction: column;">
-            <h2>🌍 Carte Interactive Mondiale en Temps Réel</h2>
-            <div id="map"></div>
-        </div>
+    <!-- Menu Principal en Barre Horizontale Défilante -->
+    <div class="menu-bar">
+        <button class="menu-btn active" onclick="switchTab('tab-dashboard', this)">🔑 Dashboard & Clé</button>
+        <button class="menu-btn" onclick="switchTab('tab-carte', this)">🗺️ Carte & GPS</button>
+        <button class="menu-btn" onclick="switchTab('tab-optimisation', this)">🚀 Optimisation</button>
+        <button class="menu-btn" onclick="switchTab('tab-calculateur', this)">📏 Distance & Temps</button>
+        <button class="menu-btn" onclick="switchTab('tab-import', this)">📂 Importer Points</button>
     </div>
 
-    <!-- Leaflet JS -->
+    <div class="container">
+        
+        <!-- ONGLET 1 : DASHBOARD & CLE API -->
+        <div id="tab-dashboard" class="tab-content active">
+            <div class="card">
+                <h2>🔑 Authentification et Clé API</h2>
+                <div class="form-group">
+                    <label>Entrez votre Clé API payée / active :</label>
+                    <input type="password" id="apiKey" placeholder="Ex: GR-XXXXXXXX...">
+                    <span id="keyError" class="error-msg"></span>
+                </div>
+                <button class="btn" onclick="sauvegarderCle()">Valider et Activer la Clé</button>
+                <div id="statusCle" style="margin-top: 10px; font-size: 13px; color: #10b981; font-weight: 600;"></div>
+            </div>
+            <div class="card">
+                <h2>ℹ️ Guide d'utilisation mobile</h2>
+                <p style="font-size: 13px; color: #475569; line-height: 1.5;">
+                    1. Entrez votre clé API ci-dessus et validez.<br>
+                    2. Allez dans l'onglet <b>Carte & GPS</b> pour activer votre position GPS.<br>
+                    3. Allez dans <b>Optimisation</b> pour calculer vos tournées.<br>
+                    4. Utilisez le <b>Calculateur</b> ou l'<b>Import</b> selon vos besoins.
+                </p>
+            </div>
+        </div>
+
+        <!-- ONGLET 2 : CARTE & GPS -->
+        <div id="tab-carte" class="tab-content">
+            <div class="card">
+                <h2>📍 Localisation GPS en Temps Réel</h2>
+                <button class="btn btn-gps" onclick="obtenirPositionGPS()">📍 Utiliser mon GPS actuel</button>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
+                    <div class="form-group"><label>Lat Dépôt :</label><input type="text" id="depotLat" value="19.738"></div>
+                    <div class="form-group"><label>Lng Dépôt :</label><input type="text" id="depotLng" value="-72.217"></div>
+                </div>
+                <h2>🗺️ Carte Interactive</h2>
+                <div id="map"></div>
+            </div>
+        </div>
+
+        <!-- ONGLET 3 : OPTIMISATION DE TOURNÉE -->
+        <div id="tab-optimisation" class="tab-content">
+            <div class="card">
+                <h2>🚀 Calculateur de Tournée (CVRP)</h2>
+                <div class="form-group">
+                    <label>Capacité maximale du Véhicule / Bus :</label>
+                    <input type="number" id="vehiculeCapacite" value="30">
+                </div>
+                <button class="btn" onclick="lancerOptimisation()">Lancer l'Optimisation</button>
+                <div id="output">En attente de calcul...</div>
+            </div>
+        </div>
+
+        <!-- ONGLET 4 : CALCULATEUR DE DISTANCE & TEMPS -->
+        <div id="tab-calculateur" class="tab-content">
+            <div class="card">
+                <h2>📏 Calculateur entre 2 Points</h2>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div class="form-group"><label>Lat Point A :</label><input type="text" id="latA" value="19.738"></div>
+                    <div class="form-group"><label>Lng Point A :</label><input type="text" id="lngA" value="-72.217"></div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div class="form-group"><label>Lat Point B :</label><input type="text" id="latB" value="19.750"></div>
+                    <div class="form-group"><label>Lng Point B :</label><input type="text" id="lngB" value="-72.200"></div>
+                </div>
+                <button class="btn" style="background: #0284c7;" onclick="calculerDistanceDirecte()">Calculer Distance & Temps</button>
+                <div id="distOutput">Résultat du calcul...</div>
+            </div>
+        </div>
+
+        <!-- ONGLET 5 : IMPORTER FICHIER -->
+        <div id="tab-import" class="tab-content">
+            <div class="card">
+                <h2>📂 Importer des Arrêts (CSV / Coordonnées)</h2>
+                <div class="form-group">
+                    <label>Coller vos points (format CSV : nom,lat,lng,demande) :</label>
+                    <textarea id="csvInput" rows="5" placeholder="Client A,19.74,-72.21,5&#10;Client B,19.75,-72.22,8"></textarea>
+                </div>
+                <button class="btn" onclick="importerPointsCSV()">Charger les points importés</button>
+                <div id="importOutput" style="font-size: 12px; color: #10b981; margin-top: 8px;"></div>
+            </div>
+        </div>
+
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        var map = L.map('map').setView([20, 0], 2);
+        // Gestion des onglets du menu
+        function switchTab(tabId, btnElement) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.menu-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            btnElement.classList.add('active');
+            if(tabId === 'tab-carte' && window.mapInstance) {
+                window.mapInstance.invalidateSize();
+            }
+        }
+
+        // Sauvegarde / Validation de la clé
+        function sauvegarderCle() {
+            const key = document.getElementById('apiKey').value;
+            if(!key) {
+                document.getElementById('keyError').innerText = "Veuillez entrer une clé valide.";
+                return;
+            }
+            document.getElementById('keyError').innerText = "";
+            document.getElementById('statusCle').innerText = "✅ Clé enregistrée et prête à l'emploi !";
+            alert("Clé validée avec succès ! Vous pouvez maintenant utiliser les autres onglets.");
+        }
+
+        // Initialisation Carte Leaflet
+        var map = L.map('map').setView([19.738, -72.217], 13);
+        window.mapInstance = map;
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
-            attribution: '&copy; OpenStreetMap contributors'
+            attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
         var layerGroup = L.layerGroup().addTo(map);
         var gpsMarker = null;
+        var pointsImportes Dynamiques = [];
 
-        // Fonction GPS du téléphone
+        // Fonction GPS téléphone
         function obtenirPositionGPS() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
@@ -305,33 +378,28 @@ async def index():
                         document.getElementById('depotLat').value = lat;
                         document.getElementById('depotLng').value = lng;
                         
-                        // Mettre à jour la carte avec la position GPS en temps réel
-                        map.setView([lat, lng], 14);
+                        map.setView([lat, lng], 15);
                         
-                        if (gpsMarker) {
-                            layerGroup.removeLayer(gpsMarker);
-                        }
+                        if (gpsMarker) { layerGroup.removeLayer(gpsMarker); }
                         gpsMarker = L.marker([lat, lng], {
                             icon: L.icon({
                                 iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
                                 shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
                                 iconSize: [25, 41], iconAnchor: [12, 41]
                             })
-                        }).addTo(layerGroup).bindPopup("<b>📍 Votre position GPS actuelle</b>").openPopup();
+                        }).addTo(layerGroup).bindPopup("<b>📍 Votre Position GPS Actuelle</b>").openPopup();
 
-                        alert("Position GPS détectée avec succès !");
+                        alert("GPS détecté et positionné avec succès !");
                     },
-                    (error) => {
-                        alert("Erreur de géolocalisation : " + error.message);
-                    },
+                    (error) => { alert("Erreur GPS : " + error.message); },
                     { enableHighAccuracy: true }
                 );
             } else {
-                alert("La géolocalisation n'est pas supportée par votre navigateur.");
+                alert("La géolocalisation n'est pas supportée par votre appareil.");
             }
         }
 
-        // Calculateur de distance et temps entre 2 points
+        // Calcul distance entre 2 points
         async function calculerDistanceDirecte() {
             const lat1 = parseFloat(document.getElementById('latA').value);
             const lng1 = parseFloat(document.getElementById('lngA').value);
@@ -339,7 +407,7 @@ async def index():
             const lng2 = parseFloat(document.getElementById('lngB').value);
             const key = document.getElementById('apiKey').value;
 
-            if(!key) { alert("Veuillez entrer votre clé API !"); return; }
+            if(!key) { alert("Veuillez entrer votre clé API dans le Dashboard !"); return; }
 
             try {
                 const rep = await fetch('/api/calculer-distance', {
@@ -349,7 +417,7 @@ async def index():
                 });
                 const data = await rep.json();
                 if(rep.ok) {
-                    document.getElementById('distOutput').innerText = `✅ Distance : ${data.distance_km} km\n⏱️ Temps estimé (véhicule) : ${data.temps_estime_min} min`;
+                    document.getElementById('distOutput').innerText = `✅ Distance : ${data.distance_km} km\n⏱️ Temps estimé : ${data.temps_estime_min} min`;
                 } else {
                     document.getElementById('distOutput').innerText = "Erreur : " + data.detail;
                 }
@@ -358,29 +426,56 @@ async def index():
             }
         }
 
-        // Lancer l'optimisation de tournée
+        // Importation des points CSV
+        function importerPointsCSV() {
+            const texte = document.getElementById('csvInput').value;
+            const lignes = texte.split('\\n');
+            pointsImportesDynamiques = [];
+            let idCounter = 1;
+            
+            lignes.forEach(ligne => {
+                if(ligne.trim() !== '') {
+                    const parts = ligne.split(',');
+                    if(parts.length >= 3) {
+                        pointsImportesDynamiques.push({
+                            id: idCounter++,
+                            name: parts[0].trim(),
+                            lat: parseFloat(parts[1]),
+                            lng: parseFloat(parts[2]),
+                            demand: parts[3] ? parseInt(parts[3]) : 5
+                        });
+                    }
+                }
+            });
+            document.getElementById('importOutput').innerText = `✅ ${pointsImportesDynamiques.length} points importés avec succès !`;
+        }
+
+        // Lancer l'optimisation
         async function lancerOptimisation() {
             const key = document.getElementById('apiKey').value;
             const capacite = parseInt(document.getElementById('vehiculeCapacite').value) || 30;
             const depotLat = parseFloat(document.getElementById('depotLat').value);
             const depotLng = parseFloat(document.getElementById('depotLng').value);
-            const errSpan = document.getElementById('keyError');
             
-            if(!key) { errSpan.innerText = "⚠️ Clé API requise !"; return; }
-            errSpan.innerText = "";
+            if(!key) { alert("Veuillez entrer votre Clé API dans le Dashboard !"); return; }
+
+            let pointsFinal = pointsImportesDynamiques;
+            if(pointsFinal.length === 0) {
+                // Points par défaut si aucun import
+                pointsFinal = [
+                    { id: 1, lat: depotLat + 0.01, lng: depotLng + 0.01, name: "Client Test 1", demand: 5 },
+                    { id: 2, lat: depotLat - 0.01, lng: depotLng + 0.02, name: "Client Test 2", demand: 10 }
+                ];
+            }
 
             const payload = {
-                depot: { id: 0, lat: depotLat, lng: depotLng, name: "Dépôt (GPS/Actuel)", demand: 0 },
+                depot: { id: 0, lat: depotLat, lng: depotLng, name: "Dépôt (GPS)", demand: 0 },
                 vehicule_capacite: capacite,
-                points: [
-                    { id: 1, lat: depotLat + 0.02, lng: depotLng + 0.02, name: "Arrêt Client 1", demand: 8 },
-                    { id: 2, lat: depotLat - 0.02, lng: depotLng + 0.03, name: "Arrêt Client 2", demand: 12 },
-                    { id: 3, lat: depotLat + 0.03, lng: depotLng - 0.02, name: "Arrêt Client 3", demand: 7 }
-                ]
+                points: pointsFinal
             };
 
             try {
-                document.getElementById('output').innerText = "Calcul en cours...";
+                document.getElementById('output').innerText = "Calcul de la tournée en cours...";
                 const rep = await fetch('/api/optimiser', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-API-KEY': key },
@@ -389,7 +484,7 @@ async def index():
                 const data = await rep.json();
                 
                 if(rep.ok) {
-                    document.getElementById('output').innerText = `✅ Distance : ${data.distance_totale_km} km\nCharge : ${data.charge_totale}/${data.capacite_max}`;
+                    document.getElementById('output').innerText = `✅ Dist. Totale : ${data.distance_totale_km} km\\nCharge : ${data.charge_totale}/${data.capacite_max} étapes: ${data.nombre_etapes}`;
                     
                     layerGroup.clearLayers();
                     let latLngs = [];
@@ -402,8 +497,9 @@ async def index():
 
                     if(latLngs.length > 0) {
                         let polyline = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(layerGroup);
-                        map.fitBounds(polyline.getBounds(), {padding: [50, 50]});
+                        map.fitBounds(polyline.getBounds(), {padding: [30, 30]});
                     }
+                    alert("Optimisation terminée ! Consultez l'onglet Carte pour voir le tracé.");
                 } else {
                     document.getElementById('output').innerText = "Erreur : " + data.detail;
                 }
@@ -416,11 +512,9 @@ async def index():
 </html>
     """
 
-# --- API DISTANCE & TEMPS ENTRE DEUX POINTS ---
 @app.post("/api/calculer-distance")
 async def calculer_distance(data: DistanceRequest, auth = Depends(verifier_cle_api)):
     dist = haversine_distance(data.lat1, data.lng1, data.lat2, data.lng2)
-    # Estimation de vitesse moyenne en ville/route : ~40 km/h -> temps en minutes = (distance / 40) * 60
     temps_min = round((dist / 40.0) * 60, 1)
     return {
         "statut": "succes",
@@ -428,7 +522,6 @@ async def calculer_distance(data: DistanceRequest, auth = Depends(verifier_cle_a
         "temps_estime_min": temps_min
     }
 
-# --- API OPTIMISATION ---
 @app.post("/api/optimiser")
 async def optimiser_tournee(data: RouteRequest, auth = Depends(verifier_cle_api)):
     try:
@@ -445,7 +538,6 @@ async def optimiser_tournee(data: RouteRequest, auth = Depends(verifier_cle_api)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- CONSOLE ADMIN (/admin) ---
 @app.get("/admin", response_class=HTMLResponse)
 async def afficher_admin_page():
     return f"""
@@ -457,33 +549,31 @@ async def afficher_admin_page():
     <title>GlobalRoute AI - Console Admin</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
-        body {{ font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; padding: 20px; margin: 0; }}
-        .container {{ max-width: 800px; margin: 40px auto; background: #1e293b; padding: 30px; border-radius: 12px; }}
-        h1 {{ color: #38bdf8; font-size: 20px; margin-top: 0; }}
-        .form-group {{ margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }}
-        .form-group label {{ font-size: 13px; color: #cbd5e1; }}
-        .form-group input, .form-group select {{ padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; }}
-        .btn {{ background: #10b981; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; }}
-        .back-link {{ display: inline-block; margin-bottom: 15px; color: #38bdf8; text-decoration: none; font-size: 13px; }}
-        #adminOutput {{ font-family: monospace; font-size: 11px; background: #0f172a; padding: 15px; border-radius: 6px; margin-top: 15px; color: #34d399; max-height: 250px; overflow-y: auto; }}
+        body {{ font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; padding: 15px; margin: 0; }}
+        .container {{ max-width: 600px; margin: 20px auto; background: #1e293b; padding: 20px; border-radius: 12px; }}
+        h1 {{ color: #38bdf8; font-size: 18px; margin-top: 0; }}
+        .form-group {{ margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }}
+        .form-group label {{ font-size: 12px; color: #cbd5e1; }}
+        .form-group input {{ padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 14px; }}
+        .btn {{ background: #10b981; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; font-size: 14px; }}
+        .back-link {{ display: inline-block; margin-bottom: 12px; color: #38bdf8; text-decoration: none; font-size: 13px; }}
+        #adminOutput {{ font-family: monospace; font-size: 11px; background: #0f172a; padding: 12px; border-radius: 6px; margin-top: 15px; color: #34d399; word-break: break-all; max-height: 200px; overflow-y: auto; }}
     </style>
 </head>
 <body>
     <div class="container">
         <a href="/" class="back-link">← Retourner à l'application</a>
         <h1>🔐 Console Admin ({ADMIN_USERNAME})</h1>
-        <div class="form-group" style="margin-top: 15px;">
+        <div class="form-group" style="margin-top: 10px;">
             <label>Clé API Admin :</label>
             <input type="password" id="adminKeyInput" placeholder="Entrez la clé admin...">
         </div>
         <hr style="border: 0; border-top: 1px solid #475569; margin: 15px 0;">
         <h3>Générer une clé client</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-            <div class="form-group"><label>Entreprise :</label><input type="text" id="nomEntite" placeholder="Nom client"></div>
-            <div class="form-group"><label>Email :</label><input type="email" id="emailClient" placeholder="client@mail.com"></div>
-        </div>
-        <button class="btn" onclick="genererCle()">Générer la Clé</button>
-        <button class="btn" onclick="listerCles()" style="background: #2563eb; margin-left: 10px;">Lister les abonnés</button>
+        <div class="form-group"><label>Entreprise :</label><input type="text" id="nomEntite" placeholder="Nom client"></div>
+        <div class="form-group"><label>Email :</label><input type="email" id="emailClient" placeholder="client@mail.com"></div>
+        <button class="btn" onclick="genererCle()">Générer la Clé API</button>
+        <button class="btn" onclick="listerCles()" style="background: #2563eb; margin-top: 10px;">Lister les abonnés</button>
         <div id="adminOutput">Logs admin...</div>
     </div>
     <script>
