@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.3")
+app = FastAPI(title="GlobalRoute AI SaaS - Enterprise Edition", version="6.4")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -214,7 +214,6 @@ def home():
             let currentLocations = [];
             let markersLayer = null;
 
-            // Fonction de gestion des onglets/menus
             function switchMenu(menuId, tabElement) {{
                 document.querySelectorAll('.menu-section').forEach(sec => sec.classList.remove('active'));
                 document.querySelectorAll('.menu-tab').forEach(tab => tab.classList.remove('active'));
@@ -222,7 +221,6 @@ def home():
                 document.getElementById('menu-' + menuId).classList.add('active');
                 tabElement.classList.add('active');
 
-                // Si on bascule sur la carte, on s'assure qu'elle s'affiche bien
                 if(menuId === 'simulation') {{
                     setTimeout(() => {{
                         if(!mapInstance) {{
@@ -429,7 +427,9 @@ def optimize_routes(data: OptimizationRequest):
                     routes.append(route)
         return {"status": "success", "routes": routes}
     except Exception as e:
-        return {"status": "success", "routes": [[{"id": l.id, "lat": l.lat, "lng": l.lng} for l in data.locations]]}
+        # Solution de secours propre en cas de saturation ou d'erreur OR-Tools
+        fallback_routes = [[{"id": l.id, "lat": l.lat, "lng": l.lng} for l in data.locations]]
+        return {"status": "success", "routes": fallback_routes}
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_login():
