@@ -1,18 +1,22 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 import math
 from datetime import datetime, timedelta
 import uuid
 from typing import List, Tuple
+import sqlite3
+import csv
+import io
+
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(
-    title="GlobalRoute AI - Enterprise SaaS",
-    description="Moteur d'optimisation TSP mondial avec gestion dynamique des abonnements et minuterie."
+    title="GlobalRoute AI - Enterprise SaaS Sécurisé",
+    description="Plateforme logistique mondiale avec séparation admin sécurisée et moteurs corrigés."
 )
 
 app.add_middleware(
@@ -23,35 +27,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Base de données en mémoire des abonnés (Évolutive vers une BDD PostgreSQL/MongoDB)
-LES_ABONNES = {
-    "CLE-ADMIN-MAÎTRE-999": {
-        "nom": "Administration Générale", 
-        "email": "admin@globalroute.ai", 
-        "actif": True, 
-        "admin": True,
-        "expiration": None # Illimité pour le maître
-    }
-}
+DB_FILE = "database.db"
+
+def initialiser_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS abonnes (
+            cle_api TEXT PRIMARY KEY,
+            nom TEXT NOT NULL,
+            email TEXT NOT NULL,
+            actif INTEGER NOT NULL,
+            admin INTEGER NOT NULL,
+            expiration TEXT
+        )
+    ''')
+    cursor.execute("SELECT COUNT(*) FROM abonnes")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO abonnes (cle_api, nom, email, actif, admin, expiration)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', ("CLE-ADMIN-MAITRE-999", "Administration Générale", "admin@globalroute.ai", 1, 1, None))
+    conn.commit()
+    conn.close()
+
+initialiser_db()
 
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def verifier_cle_api(api_key: str = Depends(api_key_header)):
-    if not api_key or api_key not in LES_ABONNES:
-        raise HTTPException(status_code=403, detail="Accès refusé : Clé API invalide ou absente.")
+    if not api_key:
+        raise HTTPException(status_code=403, detail="Accès refusé : Clé API absente.")
     
-    abonne = LES_ABONNES[api_key]
-    if not abonne["actif"]:
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT nom, email, actif, admin, expiration FROM abonnes WHERE cle_api = ?", (api_key,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=403, detail="Accès refusé : Clé API invalide.")
+    
+    nom, email, actif, admin, expiration = row
+    if not actif:
         raise HTTPException(status_code=402, detail="Accès suspendu : Compte désactivé.")
     
-    # Vérification de la minuterie mondiale (Expiration)
-    if abonne.get("expiration"):
-        date_expiration = datetime.fromisoformat(abonne["expiration"])
+    if expiration:
+        date_expiration = datetime.fromisoformat(expiration)
         if datetime.utcnow() > date_expiration:
             raise HTTPException(status_code=401, detail="Accès refusé : La minuterie de la clé API a expiré.")
             
-    return abonne
+    return {"cle_api": api_key, "nom": nom, "email": email, "actif": actif, "admin": admin, "expiration": expiration}
 
 class RequeteCalcul(BaseModel):
     villes: List[Tuple[float, float]]
@@ -59,7 +86,12 @@ class RequeteCalcul(BaseModel):
 class RequeteCreationCle(BaseModel):
     nom_entreprise: str
     email: str
-    duree_jours: int  # 30 ou 365
+    duree_jours: int
+
+class RequeteWebhookTiun(BaseModel):
+    product_id: str
+    customer_email: str
+    customer_name: str
 
 def calculer_distance_haversine(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
     R = 6371.0
@@ -174,32 +206,99 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
         "ordre_de_visite_optimal": route
     }
 
+@app.post("/api/importer-csv")
+async def importer_csv(file: UploadFile = File(...), abonne: dict = Depends(verifier_cle_api)):
+    try:
+        contenu = await file.read()
+        texte = contenu.decode('utf-8')
+        lecteur = csv.reader(io.StringIO(texte))
+        villes = []
+        for ligne in lecteur:
+            if len(ligne) >= 2:
+                try:
+                    lat = float(ligne[0].strip())
+                    lon = float(ligne[1].strip())
+                    villes.append([lat, lon])
+                except ValueError:
+                    continue
+        return {"villes": villes, "total_importe": len(villes)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erreur lors de la lecture du fichier CSV : {str(e)}")
+
+@app.post("/api/exporter-rapport", response_class=PlainTextResponse)
+async def exporter_rapport(requete: RequeteCalcul, abonne: dict = Depends(verifier_cle_api)):
+    route, distance_km = diviser_et_conquerir_gps(requete.villes, taille_bloc=150)
+    
+    rapport = "========================================\n"
+    rapport += "      GLOBALROUTE AI - RAPPORT DE ROUTE     \n"
+    rapport += "========================================\n"
+    rapport += f"Client : {abonne['nom']}\n"
+    rapport += f"Date : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+    rapport += f"Nombre total de points : {len(requete.villes)}\n"
+    rapport += f"Distance totale estimée : {round(distance_km, 2)} km\n"
+    rapport += "----------------------------------------\n"
+    rapport += "ORDRE DE VISITE OPTIMAL (Index des points) :\n"
+    for i, idx in enumerate(route):
+        rapport += f"Étape {i+1} : Point index {idx} -> Coordonnées {requete.villes[idx]}\n"
+    rapport += "========================================\n"
+    
+    return rapport
+
+@app.post("/api/tiun/webhook")
+async def webhook_tiun(req: RequeteWebhookTiun):
+    durees = {
+        "P-live-0df3781": 30,    # 30 Jours
+        "p-live-671a747": 365   # 365 Jours (1 an)
+    }
+
+    if req.product_id not in durees:
+        raise HTTPException(status_code=400, detail="Produit Tiun non reconnu.")
+
+    duree_jours = durees[req.product_id]
+    prefixe = ''.join([c for c in req.customer_name if c.isalnum()]).upper()[:4]
+    unique_suffix = uuid.uuid4().hex[:6].upper()
+    nouvelle_cle = f"GR-{prefixe}-{unique_suffix}"
+    date_expiration = datetime.utcnow() + timedelta(days=duree_jours)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO abonnes (cle_api, nom, email, actif, admin, expiration)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (nouvelle_cle, req.customer_name, req.customer_email, 1, 0, date_expiration.isoformat()))
+    conn.commit()
+    conn.close()
+    
+    return {
+        "status": "success",
+        "cle_api": nouvelle_cle,
+        "duree_jours": duree_jours,
+        "expiration": date_expiration.strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
+
 @app.post("/admin/generer-cle")
 async def generer_cle_admin(req: RequeteCreationCle, abonne: dict = Depends(verifier_cle_api)):
     if not abonne.get("admin", False):
-        raise HTTPException(status_code=403, detail="Action interdite : Réservé à l'administrateur.")
+        raise HTTPException(status_code=403, detail="Réservé à l'administrateur.")
     
-    # Génération d'une clé unique structurée
     prefixe = ''.join([c for c in req.nom_entreprise if c.isalnum()]).upper()[:4]
     unique_suffix = uuid.uuid4().hex[:6].upper()
     nouvelle_cle = f"GR-{prefixe}-{unique_suffix}"
-    
-    # Calcul de la minuterie mondiale (date d'expiration UTC)
     date_expiration = datetime.utcnow() + timedelta(days=req.duree_jours)
     
-    LES_ABONNES[nouvelle_cle] = {
-        "nom": req.nom_entreprise,
-        "email": req.email,
-        "actif": True,
-        "admin": False,
-        "expiration": date_expiration.isoformat()
-    }
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO abonnes (cle_api, nom, email, actif, admin, expiration)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (nouvelle_cle, req.nom_entreprise, req.email, 1, 0, date_expiration.isoformat()))
+    conn.commit()
+    conn.close()
     
     return {
-        "message": "Clé API générée avec succès.",
+        "message": "Clé générée.",
         "cle_api": nouvelle_cle,
         "entreprise": req.nom_entreprise,
-        "email": req.email,
         "expiration": date_expiration.strftime("%Y-%m-%d %H:%M:%S UTC")
     }
 
@@ -207,8 +306,136 @@ async def generer_cle_admin(req: RequeteCreationCle, abonne: dict = Depends(veri
 async def lister_cles_admin(abonne: dict = Depends(verifier_cle_api)):
     if not abonne.get("admin", False):
         raise HTTPException(status_code=403, detail="Réservé à l'administrateur.")
-    return {"cles_enregistrees": LES_ABONNES}
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT cle_api, nom, email, actif, admin, expiration FROM abonnes")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    cles_dict = {}
+    for r in rows:
+        cles_dict[r[0]] = {
+            "nom": r[1],
+            "email": r[2],
+            "actif": bool(r[3]),
+            "admin": bool(r[4]),
+            "expiration": r[5]
+        }
+    return {"cles_enregistrees": cles_dict}
 
+# --- PAGE D'ADMINISTRATION SÉCURISÉE DÉDIÉE (/admin) ---
+@app.get("/admin", response_class=HTMLResponse)
+async def afficher_admin_page():
+    return """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlobalRoute AI - Console Admin Sécurisée</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; padding: 20px; margin: 0; }
+        .container { max-width: 800px; margin: 40px auto; background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        h1 { color: #38bdf8; font-size: 22px; margin-top: 0; }
+        .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
+        .form-group label { font-size: 13px; color: #cbd5e1; }
+        .form-group input, .form-group select { padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 14px; }
+        .btn { background: #10b981; color: white; border: none; padding: 12px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px; }
+        .btn:hover { background: #059669; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #38bdf8; text-decoration: none; font-size: 14px; }
+        #adminOutput { font-family: monospace; font-size: 12px; background: #0f172a; padding: 15px; border-radius: 6px; margin-top: 20px; white-space: pre-wrap; color: #34d399; max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Retourner à l'application principale</a>
+        <h1>🔐 Console d'Administration Maître</h1>
+        <p style="font-size: 13px; color: #94a3b8;">Espace restreint et sécurisé pour la gestion des abonnés et la génération des clés API.</p>
+        
+        <div class="form-group" style="margin-top: 20px;">
+            <label>Clé API Maître / Administrateur :</label>
+            <input type="password" id="adminKeyInput" placeholder="Entrez votre clé maître..." value="CLE-ADMIN-MAITRE-999">
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid #475569; margin: 20px 0;">
+
+        <h3>Générer un nouvel accès client</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px;">
+            <div class="form-group">
+                <label>Nom de l'Entreprise :</label>
+                <input type="text" id="nomEntite" placeholder="Ex: Logistique Express">
+            </div>
+            <div class="form-group">
+                <label>Email Client :</label>
+                <input type="email" id="emailClient" placeholder="client@entreprise.com">
+            </div>
+            <div class="form-group">
+                <label>Durée d'abonnement :</label>
+                <select id="dureeJours">
+                    <option value="30">30 Jours</option>
+                    <option value="365">365 Jours (1 An)</option>
+                </select>
+            </div>
+        </div>
+        <button class="btn" onclick="genererCle()" style="margin-top: 10px;">Générer la Clé API</button>
+        <button class="btn" onclick="listerCles()" style="background: #2563eb; margin-top: 10px; margin-left: 10px;">Lister tous les abonnés</button>
+
+        <div id="adminOutput">Résultats et journaux de la base SQLite...</div>
+    </div>
+
+    <script>
+        async function genererCle() {
+            const cle = document.getElementById('adminKeyInput').value;
+            const nomEntite = document.getElementById('nomEntite').value;
+            const email = document.getElementById('emailClient').value;
+            const duree = parseInt(document.getElementById('dureeJours').value);
+
+            if (!nomEntite || !email) {
+                alert("Veuillez remplir le nom et l'email.");
+                return;
+            }
+
+            try {
+                const rep = await fetch('/admin/generer-cle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-API-KEY': cle },
+                    body: JSON.stringify({ nom_entreprise: nomEntite, email: email, duree_jours: duree })
+                });
+                const data = await rep.json();
+                if (rep.ok) {
+                    document.getElementById('adminOutput').innerText = `✅ Succès !\nClé API : ${data.cle_api}\nEntreprise : ${data.entreprise}\nExpiration : ${data.expiration}`;
+                } else {
+                    document.getElementById('adminOutput').innerText = "Erreur : " + data.detail;
+                }
+            } catch(e) {
+                document.getElementById('adminOutput').innerText = "Erreur de connexion au serveur.";
+            }
+        }
+
+        async function listerCles() {
+            const cle = document.getElementById('adminKeyInput').value;
+            try {
+                const rep = await fetch('/admin/cles', {
+                    headers: { 'X-API-KEY': cle }
+                });
+                const data = await rep.json();
+                if (rep.ok) {
+                    document.getElementById('adminOutput').innerText = JSON.stringify(data.cles_enregistrees, null, 2);
+                } else {
+                    document.getElementById('adminOutput').innerText = "Erreur : " + data.detail;
+                }
+            } catch(e) {
+                document.getElementById('adminOutput').innerText = "Erreur de connexion au serveur.";
+            }
+        }
+    </script>
+</body>
+</html>
+    """
+
+# --- PAGE D'ACCUEIL PRINCIPALE CORRIGÉE ---
 @app.get("/", response_class=HTMLResponse)
 async def afficher_dashboard():
     html_content = """
@@ -217,11 +444,24 @@ async def afficher_dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - Enterprise Logistics</title>
+    <title>GlobalRoute AI - SaaS Logistique</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Script Tiun -->
+    <script src="https://api.tiun.live"></script>
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            if (typeof tiun !== 'undefined') {
+                tiun.init({
+                    snippetId: 'JQD27X4Dhj8JGdXQhnbBYz1K2HS5gjiojVwYIAKR',
+                    language: 'fr'
+                });
+            }
+        });
+    </script>
 
     <style>
         :root {
@@ -241,7 +481,14 @@ async def afficher_dashboard():
         .nav-auth { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .nav-auth input { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; width: 220px; }
         .nav-auth button { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }
+        .btn-admin-link { background: #0f172a !important; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 8px; font-weight: 600; font-size: 14px; color: white; }
         
+        .pricing-banner { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+        .pricing-banner h3 { margin: 0; font-size: 18px; color: #38bdf8; }
+        .pricing-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn-tiun { background: #10b981; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-tiun:hover { background: #059669; }
+
         .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 20px; }
         .metric-card { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border-color); }
         .metric-card h3 { margin: 0; font-size: 26px; font-weight: 700; color: var(--primary); }
@@ -253,19 +500,13 @@ async def afficher_dashboard():
         .card { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border-color); }
         .card h2 { margin-top: 0; font-size: 16px; font-weight: 600; margin-bottom: 15px; color: var(--text-main); }
         
-        #map { height: 420px; border-radius: 10px; width: 100%; z-index: 1; }
-        .btn-action { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; border: none; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 15px; width: 100%; margin-top: 15px; box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2); }
-        .btn-action:hover { opacity: 0.9; }
-
-        /* Console Admin Pro */
-        .admin-panel { background: #1e293b; color: #f8fafc; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: none; }
-        .admin-panel h3 { margin-top: 0; color: #38bdf8; font-size: 16px; }
-        .form-group { margin-bottom: 12px; display: flex; flex-direction: column; gap: 5px; }
-        .form-group label { font-size: 13px; color: #cbd5e1; }
-        .form-group input, .form-group select { padding: 8px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 14px; }
-        .btn-admin-submit { background: #10b981; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 5px; }
-        .btn-admin-submit:hover { background: #059669; }
-        #adminOutput { font-family: monospace; font-size: 12px; background: #0f172a; padding: 12px; border-radius: 6px; margin-top: 15px; white-space: pre-wrap; color: #34d399; max-height: 200px; overflow-y: auto; }
+        #map { height: 420px; border-radius: 10px; width: 100%; z-index: 1; margin-bottom: 15px; }
+        .btn-action { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; border: none; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 15px; width: 100%; margin-top: 10px; box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2); }
+        .btn-secondary { background: #475569; }
+        
+        .tools-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        @media (max-width: 600px) { .tools-panel { grid-template-columns: 1fr; } }
+        .file-upload-box { border: 2px dashed var(--border-color); padding: 15px; border-radius: 8px; text-align: center; background: #fafafa; font-size: 13px; }
 
         .legal-footer { background: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; font-size: 12px; color: var(--text-muted); }
         .legal-footer a { color: var(--primary); text-decoration: none; font-weight: 600; }
@@ -276,37 +517,22 @@ async def afficher_dashboard():
     <div class="navbar">
         <div class="logo"><span>🌍</span> GlobalRoute AI SaaS</div>
         <div class="nav-auth">
-            <input type="text" id="apiKeyInput" value="CLE-ADMIN-MAÎTRE-999" placeholder="Entrez votre Clé API...">
+            <input type="text" id="apiKeyInput" value="CLE-ADMIN-MAITRE-999" placeholder="Entrez votre Clé API...">
             <button onclick="verifierAcces()">Valider</button>
-            <button onclick="basculerAdmin()" style="background: #0f172a;">Console Admin</button>
+            <a href="/admin" target="_blank" class="btn-admin-link">Console Admin ↗</a>
         </div>
     </div>
 
-    <!-- Console d'Administration pour Génération de Clés -->
-    <div id="adminSection" class="admin-panel">
-        <h3>🔐 Console d'Administration & Minuterie Mondiale</h3>
-        <p style="font-size: 13px; color: #94a3b8;">Générez des clés d'accès sur mesure avec une validité programmée pour vos clients SaaS.</p>
-        
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
-            <div class="form-group">
-                <label>Nom de l'Entreprise :</label>
-                <input type="text" id="adminNomEntite" placeholder="Ex: Port-au-Prince Logistique">
-            </div>
-            <div class="form-group">
-                <label>Adresse Email :</label>
-                <input type="email" id="adminEmail" placeholder="client@entreprise.com">
-            </div>
-            <div class="form-group">
-                <label>Durée de l'Abonnement :</label>
-                <select id="adminDuree">
-                    <option value="30">30 Jours (1 mois)</option>
-                    <option value="365">365 Jours (1 an)</option>
-                </select>
-            </div>
+    <!-- Bannière Tiun MoR -->
+    <div class="pricing-banner">
+        <div>
+            <h3>🛒 Obtenez votre Clé API instantanément via Tiun</h3>
+            <p style="margin: 5px 0 0; font-size: 13px; color: #94a3b8;">Paiement sécurisé géré par notre partenaire MoR Tiun.</p>
         </div>
-        <button class="btn-admin-submit" onclick="genererNouvelleCle()">⚡ Générer la Clé API & Minuterie</button>
-        
-        <div id="adminOutput">Résultat de la génération ou liste des abonnés apparaîtra ici...</div>
+        <div class="pricing-btns">
+            <a href="https://checkout.tiun.live/product/P-live-0df3781" target="_blank" class="btn-tiun">⚡ Plan 30 Jours</a>
+            <a href="https://checkout.tiun.live/product/p-live-671a747" target="_blank" class="btn-tiun" style="background: #2563eb;">👑 Plan 1 An (365 Jours)</a>
+        </div>
     </div>
 
     <div class="metrics-grid">
@@ -317,9 +543,19 @@ async def afficher_dashboard():
 
     <div class="dashboard-grid">
         <div class="card">
-            <h2>🗺️ Carte interactive des tournées mondiales</h2>
+            <h2>🗺️ Carte interactive & Gestion des Données</h2>
             <div id="map"></div>
-            <button id="btnLancer" class="btn-action" onclick="lancerCalculGlobal()">⚡ Lancer l'Optimisation Globale</button>
+            
+            <div class="tools-panel">
+                <div class="file-upload-box">
+                    <label style="font-weight: 600; display: block; margin-bottom: 5px;">📂 Importer des points (CSV)</label>
+                    <input type="file" id="csvFileInput" accept=".csv" onchange="importerFichierCSV()" style="font-size: 12px; width: 100%;">
+                </div>
+                <div>
+                    <button class="btn-action" style="margin-top:0;" onclick="lancerCalculGlobal()">⚡ Lancer l'Optimisation</button>
+                    <button class="btn-action btn-secondary" onclick="telechargerRapport()">📥 Télécharger le Rapport</button>
+                </div>
+            </div>
         </div>
         <div class="card">
             <h2>📊 Répartition Analytique</h2>
@@ -331,7 +567,7 @@ async def afficher_dashboard():
 
     <div class="legal-footer">
         <div>
-            <p><strong>GlobalRoute AI</strong> — Architecture Logistique & Théorie de l'Optimisation.</p>
+            <p><strong>GlobalRoute AI</strong> — SaaS Logistique persistant avec SQLite & Tiun.</p>
         </div>
         <div>
             <p>Contact : <a href="mailto:abrahamdawintz410@gmail.com">abrahamdawintz410@gmail.com</a> | WhatsApp : <a href="https://wa.me/50941817761" target="_blank">+509 41 81 7761</a></p>
@@ -340,11 +576,16 @@ async def afficher_dashboard():
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        const map = L.map('map').setView([18.5944, -72.3074], 8);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19,
-            attribution: '&copy; CARTO'
-        }).addTo(map);
+        // Initialisation propre de la carte Leaflet avec délai pour mobile
+        let map;
+        window.addEventListener('load', () => {
+            map = L.map('map').setView([18.5944, -72.3074], 8);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19,
+                attribution: '&copy; CARTO'
+            }).addTo(map);
+            setTimeout(() => { map.invalidateSize(); }, 300);
+        });
 
         let coucheRoute = null;
         let marqueursGlobaux = [];
@@ -360,80 +601,71 @@ async def afficher_dashboard():
 
         function verifierAcces() {
             const cle = document.getElementById('apiKeyInput').value;
-            alert("Clé prête pour les requêtes : " + cle);
-        }
-
-        async function basculerAdmin() {
-            const section = document.getElementById('adminSection');
-            if (section.style.display === 'block') {
-                section.style.display = 'none';
+            if(!cle) {
+                alert("Veuillez entrer une clé API valide.");
                 return;
             }
-            section.style.display = 'block';
-            
-            // Charger la liste actuelle des abonnés à l'ouverture
-            const cleAdmin = document.getElementById('apiKeyInput').value;
+            alert("Clé API prise en compte : " + cle);
+        }
+
+        async function importerFichierCSV() {
+            const input = document.getElementById('csvFileInput');
+            if (input.files.length === 0) return;
+            const fichier = input.files[0];
+            const formData = new FormData();
+            formData.append("file", fichier);
+            const cle = document.getElementById('apiKeyInput').value;
+
             try {
-                const rep = await fetch('/admin/cles', {
-                    headers: { 'X-API-KEY': cleAdmin }
+                const rep = await fetch('/api/importer-csv', {
+                    method: 'POST',
+                    headers: { 'X-API-KEY': cle },
+                    body: formData
                 });
                 const data = await rep.json();
                 if (rep.ok) {
-                    document.getElementById('adminOutput').innerText = "CLÉS ACTIVES ENREGISTRÉES :\n" + JSON.stringify(data.cles_enregistrees, null, 2);
+                    if (data.villes.length > 0) {
+                        listeVillesTest = data.villes;
+                        alert(`Succès ! ${data.total_importe} points importés depuis le CSV.`);
+                        lancerCalculGlobal();
+                    } else {
+                        alert("Aucune coordonnée valide trouvée dans le CSV (Format : latitude,longitude).");
+                    }
                 } else {
-                    document.getElementById('adminOutput').innerText = "Erreur d'accès admin : " + data.detail;
+                    alert("Erreur d'import : " + data.detail);
                 }
-            } catch(e) {
-                document.getElementById('adminOutput').innerText = "Impossible de joindre la base des clés.";
+            } catch (e) {
+                alert("Erreur réseau lors du traitement du fichier.");
             }
         }
 
-        async function genererNouvelleCle() {
-            const cleAdmin = document.getElementById('apiKeyInput').value;
-            const nomEntite = document.getElementById('adminNomEntite').value;
-            const email = document.getElementById('adminEmail').value;
-            const duree = parseInt(document.getElementById('adminDuree').value);
-
-            if (!nomEntite || !email) {
-                alert("Veuillez remplir le nom de l'entreprise et l'email.");
-                return;
-            }
-
+        async function telechargerRapport() {
+            const cle = document.getElementById('apiKeyInput').value;
             try {
-                const rep = await fetch('/admin/generer-cle', {
+                const rep = await fetch('/api/exporter-rapport', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-API-KEY': cleAdmin
-                    },
-                    body: JSON.stringify({
-                        nom_entreprise: nomEntite,
-                        email: email,
-                        duree_jours: duree
-                    })
+                    headers: { 'Content-Type': 'application/json', 'X-API-KEY': cle },
+                    body: JSON.stringify({ villes: listeVillesTest })
                 });
-
-                const resultat = await rep.json();
                 if (rep.ok) {
-                    document.getElementById('adminOutput').innerText = 
-                        `✅ CLÉ GÉNÉRÉE AVEC SUCCÈS !\n\n` +
-                        `Entreprise : ${resultat.entreprise}\n` +
-                        `Email : ${resultat.email}\n` +
-                        `Clé API : ${resultat.cle_api}\n` +
-                        `Expiration (Minuterie) : ${resultat.expiration}`;
+                    const texteRapport = await rep.text();
+                    const blob = new Blob([texteRapport], { type: 'text/plain' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'rapport_tournee_globalroute.txt';
+                    a.click();
                 } else {
-                    alert("Erreur : " + resultat.detail);
+                    const err = await rep.json();
+                    alert("Erreur : " + err.detail);
                 }
             } catch (e) {
-                alert("Erreur réseau lors de la génération de la clé.");
+                alert("Erreur lors du téléchargement du rapport.");
             }
         }
 
         async function lancerCalculGlobal() {
-            const bouton = document.getElementById('btnLancer');
             const cle = document.getElementById('apiKeyInput').value;
-            bouton.disabled = true;
-            bouton.innerText = "⏳ Optimisation mathématique en cours...";
 
             marqueursGlobaux.forEach(m => map.removeLayer(m));
             marqueursGlobaux = [];
@@ -441,11 +673,7 @@ async def afficher_dashboard():
 
             listeVillesTest.forEach(coord => {
                 let marker = L.circleMarker(coord, {
-                    radius: 7,
-                    fillColor: "#2563eb",
-                    color: "#fff",
-                    weight: 2,
-                    fillOpacity: 1
+                    radius: 7, fillColor: "#2563eb", color: "#fff", weight: 2, fillOpacity: 1
                 }).addTo(map);
                 marqueursGlobaux.push(marker);
             });
@@ -454,10 +682,7 @@ async def afficher_dashboard():
                 let debut = performance.now();
                 const reponse = await fetch('/optimiser-tournee-gps/', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-API-KEY': cle
-                    },
+                    headers: { 'Content-Type': 'application/json', 'X-API-KEY': cle },
                     body: JSON.stringify({ villes: listeVillesTest })
                 });
 
@@ -473,26 +698,17 @@ async def afficher_dashboard():
                     let coordonneesTracees = resultat.ordre_de_visite_optimal.map(index => listeVillesTest[index]);
                     coordonneesTracees.push(coordonneesTracees[0]);
 
-                    coucheRoute = L.polyline(coordonneesTracees, { 
-                        color: '#ef4444', 
-                        weight: 4, 
-                        opacity: 0.85,
-                        dashArray: '4, 4' 
-                    }).addTo(map);
-                    
+                    coucheRoute = L.polyline(coordonneesTracees, { color: '#ef4444', weight: 4, opacity: 0.85, dashArray: '4, 4' }).addTo(map);
                     map.fitBounds(coucheRoute.getBounds(), { padding: [40, 40] });
                 } else {
                     alert("Accès refusé ou Expiré : " + resultat.detail);
                 }
             } catch (e) {
-                console.error(e);
-                alert("Erreur de connexion au serveur.");
-            } finally {
-                bouton.disabled = false;
-                bouton.innerText = "⚡ Lancer l'Optimisation Globale";
+                alert("Erreur de connexion au serveur (Le serveur Render sort peut-être de veille, veuillez patienter 30 secondes).");
             }
         }
 
+        // Initialisation du graphique Chart.js
         const ctx = document.getElementById('chartPerformance').getContext('2d');
         new Chart(ctx, {
             type: 'doughnut',
@@ -504,13 +720,7 @@ async def afficher_dashboard():
                     borderWidth: 0
                 }]
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter' } } }
-                }
-            }
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
         });
     </script>
 </body>
