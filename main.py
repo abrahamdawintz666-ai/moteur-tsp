@@ -1,18 +1,20 @@
 import os
 import secrets
 import sqlite3
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash
+from flask import Flask, render_template_string, request, redirect, url_for, session
 import requests
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
+# Configuration de la base de données
 DB_NAME = "database.db"
-ADMIN_PASSWORD = "admin"  
+
+# Mot de passe Admin récupéré depuis Render (Variable d'environnement ADMIN_PASSWORD)
+# Si non défini sur Render, utilise 'admin' par défaut
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")  
 MERCHANT_SOL_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"  
 
-PRICE_30_DAYS_USD = 1500
-PRICE_365_DAYS_USD = 17500
 PRICE_30_DAYS_SOL = 10.0   
 PRICE_365_DAYS_SOL = 116.66
 
@@ -120,6 +122,7 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
         @media(min-width: 480px) { .cta-box { flex-direction: row; } }
         .btn-main { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0f172a; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(56, 189, 248, 0.3); display: inline-block; flex: 1; }
         .btn-sec { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); display: inline-block; flex: 1; }
+        .btn-trial { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 12px 20px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; margin-top: 15px; display: inline-block; }
     </style>
 </head>
 <body>
@@ -131,6 +134,9 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
             <div class="cta-box">
                 <a href="/checkout?plan=Pass_30_Jours&price={{ price_30 }}" class="btn-main">Prendre Pass 30 Jours (1 500 $)</a>
                 <a href="/checkout?plan=Pass_365_Jours&price={{ price_365 }}" class="btn-sec">Prendre Pass 365 Jours (17 500 $)</a>
+            </div>
+            <div>
+                <a href="/request-trial" class="btn-trial">🎁 Activer un essai gratuit de 7 jours</a>
             </div>
         </div>
 
@@ -150,6 +156,16 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
 def index():
     return render_template_string(INDEX_TEMPLATE, price_30=PRICE_30_DAYS_SOL, price_365=PRICE_365_DAYS_SOL)
 
+@app.route('/request-trial')
+def request_trial():
+    trial_key = f"TRIAL-7DAYS-{secrets.token_hex(4).upper()}"
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, 'Essai_7_Jours', 'UNUSED', 'GRATUIT_TRIAL')", (trial_key,))
+    conn.commit()
+    conn.close()
+    return render_template_string(SUCCESS_TEMPLATE, key=trial_key, title="🎁 Essai Gratuit de 7 Jours Activé")
+
 @app.route('/client-login', methods=['POST'])
 def client_login():
     key = request.form.get('existing_key', '').strip()
@@ -159,7 +175,7 @@ def client_login():
     row = cursor.fetchone()
     conn.close()
     if row:
-        return render_template_string(SUCCESS_TEMPLATE, key=key)
+        return render_template_string(SUCCESS_TEMPLATE, key=key, title="🛡️ Clé Validée avec Succès")
     else:
         return render_template_string(ERROR_TEMPLATE, message="Clé introuvable ou invalide.")
 
@@ -286,7 +302,7 @@ SUCCESS_TEMPLATE = NAVBAR_HTML + """
 </head>
 <body>
     <div style="max-width: 500px; margin: 30px auto; background: #162032; padding: 25px; border-radius: 20px; border: 1px solid #10b981;">
-        <h1 style="color: #10b981; font-size: 22px;">🛡️ Clé Validée avec Succès</h1>
+        <h1 style="color: #10b981; font-size: 22px;">{{ title }}</h1>
         <div style="background: #090d16; padding: 12px; border-radius: 10px; font-family: monospace; color: #10b981; margin: 15px 0; font-weight: bold;">{{ key }}</div>
         <a href="/" style="color: #38bdf8; text-decoration: none; font-weight: bold;">← Accueil</a>
     </div>
@@ -321,7 +337,7 @@ def verify_payment():
         cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, ?, 'UNUSED', ?)", (new_key, plan, tx_signature))
         conn.commit()
         conn.close()
-        return render_template_string(SUCCESS_TEMPLATE, key=new_key)
+        return render_template_string(SUCCESS_TEMPLATE, key=new_key, title="🛡️ Clé Validée avec Succès")
     else:
         return render_template_string(ERROR_TEMPLATE, message=message)
 
@@ -336,10 +352,24 @@ ADMIN_TEMPLATE = NAVBAR_HTML + """
 </head>
 <body>
     <div style="max-width: 1000px; margin: 20px auto; background: #162032; padding: 25px; border-radius: 20px; border: 1px solid rgba(56,189,248,0.2);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-            <h1 style="font-size: 20px; margin:0; color:#38bdf8;">Panel Admin - Liste des Clés</h1>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap: wrap; gap: 10px;">
+            <h1 style="font-size: 20px; margin:0; color:#38bdf8;">Panel Admin - Gestion des Clés</h1>
             <a href="/logout" style="color:#ef4444; text-decoration:none; font-weight:bold; font-size:13px; border: 1px solid #ef4444; padding: 6px 12px; border-radius: 6px;">Déconnexion</a>
         </div>
+
+        <!-- Section de génération manuelle de clé par l'Admin -->
+        <div style="background:#0f172a; padding:15px; border-radius:12px; margin-bottom:20px; border: 1px solid rgba(56,189,248,0.2);">
+            <h3 style="margin-top:0; font-size:15px; color:#38bdf8;">🛠️️ Générer une clé de test pour une entreprise</h3>
+            <form action="/admin/generate-key" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
+                <select name="plan_type" style="padding:10px; border-radius:8px; background:#162032; color:#fff; border:1px solid rgba(148,163,184,0.3); outline:none;">
+                    <option value="Test_Entreprise_7J">Test Entreprise (7 Jours)</option>
+                    <option value="Pass_30_Jours">Pass 30 Jours</option>
+                    <option value="Pass_365_Jours">Pass 365 Jours</option>
+                </select>
+                <button type="submit" style="background:#38bdf8; color:#0f172a; padding:10px 15px; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">Générer Clé Manuelle</button>
+            </form>
+        </div>
+
         <div style="overflow-x: auto;">
             <table style="width:100%; border-collapse:collapse; font-size: 13px; text-align:left;">
                 <tr style="background:#0f172a; color:#38bdf8;"><th style="padding:10px;">ID</th><th style="padding:10px;">Clé</th><th style="padding:10px;">Formule</th><th style="padding:10px;">Statut</th><th style="padding:10px;">Date</th></tr>
@@ -368,7 +398,8 @@ LOGIN_TEMPLATE = NAVBAR_HTML + """
             <p style="color:#ef4444; font-size:13px; margin-bottom:15px;">{{ error }}</p>
             {% endif %}
             <form action="/admin" method="POST">
-                <input type="password" name="password" placeholder="Mot de passe (admin)" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:10px; border:1px solid rgba(148,163,184,0.3); background:#090d16; color:#fff; outline:none; font-size:14px;"><br>
+                <!-- type="password" garantit que les caractères sont masqués par des points -->
+                <input type="password" name="password" placeholder="Mot de passe" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:10px; border:1px solid rgba(148,163,184,0.3); background:#090d16; color:#fff; outline:none; font-size:14px;"><br>
                 <button type="submit" style="background:linear-gradient(135deg, #38bdf8, #0ea5e9); color:#0f172a; padding:12px; border:none; border-radius:10px; font-weight:bold; width:100%; cursor:pointer; font-size:14px;">Entrer</button>
             </form>
         </div>
@@ -400,6 +431,22 @@ def admin():
         return render_template_string(ADMIN_TEMPLATE, rows_html=rows_html)
     
     return render_template_string(LOGIN_TEMPLATE, error=error_msg)
+
+@app.route('/admin/generate-key', methods=['POST'])
+def generate_key_admin():
+    if not session.get('admin_logged'):
+        return redirect(url_for('admin'))
+    
+    plan_type = request.form.get('plan_type', 'Test_Entreprise_7J')
+    manual_key = f"MANUAL-{secrets.token_hex(4).upper()}"
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, ?, 'UNUSED', 'MANUAL_GENERATION')", (manual_key, plan_type))
+    conn.commit()
+    conn.close()
+    
+    return redirect(url_for('admin'))
 
 @app.route('/logout')
 def logout():
