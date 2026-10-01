@@ -1,7 +1,4 @@
 fastapi
 uvicorn
-pyjwt
-httpx
-PyJWT
 ortools
 pydantic
