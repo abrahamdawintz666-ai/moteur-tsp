@@ -1,3 +1,5 @@
+
+import os
 from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +31,9 @@ app.add_middleware(
 
 DB_FILE = "database.db"
 
+# Récupération sécurisée depuis les variables d'environnement de Render
+ADMIN_CLE_SECRETE = os.getenv("ADMIN_PASSWORD", "CLE-ADMIN-MAITRE-999")
+
 def initialiser_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -47,7 +52,12 @@ def initialiser_db():
         cursor.execute('''
             INSERT INTO abonnes (cle_api, nom, email, actif, admin, expiration)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', ("CLE-ADMIN-MAITRE-999", "Administration Générale", "admin@globalroute.ai", 1, 1, None))
+        ''', (ADMIN_CLE_SECRETE, "Administration Générale", "admin@globalroute.ai", 1, 1, None))
+    else:
+        # Met à jour la clé admin si elle a changé dans les variables d'environnement Render
+        cursor.execute('''
+            UPDATE abonnes SET cle_api = ? WHERE admin = 1
+        ''', (ADMIN_CLE_SECRETE,))
     conn.commit()
     conn.close()
 
