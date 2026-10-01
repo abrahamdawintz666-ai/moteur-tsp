@@ -3,7 +3,5 @@ uvicorn
 pyjwt
 httpx
 PyJWT
-fastapi
-uvicorn
 ortools
 pydantic
