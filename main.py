@@ -151,7 +151,6 @@ async def optimiser_tournee_gps(requete: RequeteCalcul, abonne: dict = Depends(v
         "ordre_de_visite_optimal": route
     }
 
-# --- ROUTE PRINCIPALE : LE DASHBOARD PRO ET MONDIAL INTÉGRÉ ---
 @app.get("/", response_class=HTMLResponse)
 async def afficher_dashboard():
     return """
