@@ -7,11 +7,9 @@ import requests
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# Configuration de la base de données
 DB_NAME = "database.db"
 
 # Mot de passe Admin récupéré depuis Render (Variable d'environnement ADMIN_PASSWORD)
-# Si non défini sur Render, utilise 'admin' par défaut
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")  
 MERCHANT_SOL_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"  
 
@@ -118,33 +116,58 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
         .client-login-input { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.3); background: #090d16; color: #fff; font-size: 14px; outline: none; }
         .client-login-btn { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0f172a; padding: 12px 20px; border: none; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 14px; }
 
+        /* Section cachée par défaut pour les abonnements */
+        .sub-toggle-btn { background: transparent; color: #38bdf8; border: 2px dashed #38bdf8; padding: 14px 25px; border-radius: 12px; font-weight: 700; cursor: pointer; font-size: 15px; transition: all 0.3s ease; margin-top: 10px; display: inline-block; width: 100%; max-width: 400px; }
+        .sub-toggle-btn:hover { background: rgba(56, 189, 248, 0.1); }
+        .cta-box-container { display: none; margin-top: 20px; animation: fadeIn 0.4s ease-in-out; }
         .cta-box { display: flex; gap: 15px; justify-content: center; flex-direction: column; }
         @media(min-width: 480px) { .cta-box { flex-direction: row; } }
         .btn-main { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0f172a; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(56, 189, 248, 0.3); display: inline-block; flex: 1; }
         .btn-sec { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 15px 25px; border-radius: 12px; text-decoration: none; font-weight: 800; font-size: 15px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); display: inline-block; flex: 1; }
-        .btn-trial { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 12px 20px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; margin-top: 15px; display: inline-block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
+    <script>
+        function toggleSubscriptionOptions() {
+            var container = document.getElementById('subscription-options');
+            var btn = document.getElementById('sub-btn-text');
+            if (container.style.display === 'none' || container.style.display === '') {
+                container.style.display = 'block';
+                btn.innerText = 'Masquer les options d’abonnement 🔼';
+            } else {
+                container.style.display = 'none';
+                btn.innerText = 'Veux-tu prendre un abonnement ? 🔽';
+            }
+        }
+    </script>
 </head>
 <body>
     <div class="main-container">
+        <!-- Présentation épurée du site -->
         <div class="hero">
             <h1>Intelligence Artificielle & <span>Réseaux Avancés</span></h1>
-            <p class="subtitle">Propulsez vos infrastructures avec une passerelle de paiement décentralisée ultra-rapide, sécurisée et certifiée sur la blockchain Solana.</p>
+            <p class="subtitle">Propulsez vos infrastructures avec une passerelle de routage et de paiement décentralisée ultra-rapide, sécurisée et certifiée sur la blockchain Solana.</p>
             
-            <div class="cta-box">
-                <a href="/checkout?plan=Pass_30_Jours&price={{ price_30 }}" class="btn-main">Prendre Pass 30 Jours (1 500 $)</a>
-                <a href="/checkout?plan=Pass_365_Jours&price={{ price_365 }}" class="btn-sec">Prendre Pass 365 Jours (17 500 $)</a>
-            </div>
-            <div>
-                <a href="/request-trial" class="btn-trial">🎁 Activer un essai gratuit de 7 jours</a>
+            <!-- Bouton demandé pour afficher les options d'abonnement -->
+            <button class="sub-toggle-btn" onclick="toggleSubscriptionOptions()">
+                <span id="sub-btn-text">Veux-tu prendre un abonnement ? 🔽</span>
+            </button>
+
+            <!-- Les deux options d'abonnement cachées par défaut -->
+            <div id="subscription-options" class="cta-box-container">
+                <p style="color: #94a3b8; font-size: 13px; margin-bottom: 15px;">Sélectionnez votre formule ci-dessous :</p>
+                <div class="cta-box">
+                    <a href="/checkout?plan=Pass_30_Jours&price={{ price_30 }}" class="btn-main">Option 1 : Pass 30 Jours (10 SOL)</a>
+                    <a href="/checkout?plan=Pass_365_Jours&price={{ price_365 }}" class="btn-sec">Option 2 : Pass 365 Jours (116.66 SOL)</a>
+                </div>
             </div>
         </div>
 
+        <!-- Espace de connexion au moteur avec la clé -->
         <div class="client-login-box">
-            <h3>🔑 Déjà une clé d'accès ? Connectez-vous</h3>
+            <h3>🔑 Déjà une clé d'accès ? Connectez-vous au moteur</h3>
             <form action="/client-login" method="POST" class="client-login-form">
-                <input type="text" name="existing_key" class="client-login-input" placeholder="Entrez votre clé (ex: KEY-...)" required>
-                <button type="submit" class="client-login-btn">Se connecter</button>
+                <input type="text" name="existing_key" class="client-login-input" placeholder="Entrez votre clé (ex: KEY-... ou TRIAL-...)" required>
+                <button type="submit" class="client-login-btn">Accéder au moteur</button>
             </form>
         </div>
     </div>
@@ -156,16 +179,6 @@ INDEX_TEMPLATE = NAVBAR_HTML + """
 def index():
     return render_template_string(INDEX_TEMPLATE, price_30=PRICE_30_DAYS_SOL, price_365=PRICE_365_DAYS_SOL)
 
-@app.route('/request-trial')
-def request_trial():
-    trial_key = f"TRIAL-7DAYS-{secrets.token_hex(4).upper()}"
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, 'Essai_7_Jours', 'UNUSED', 'GRATUIT_TRIAL')", (trial_key,))
-    conn.commit()
-    conn.close()
-    return render_template_string(SUCCESS_TEMPLATE, key=trial_key, title="🎁 Essai Gratuit de 7 Jours Activé")
-
 @app.route('/client-login', methods=['POST'])
 def client_login():
     key = request.form.get('existing_key', '').strip()
@@ -175,9 +188,74 @@ def client_login():
     row = cursor.fetchone()
     conn.close()
     if row:
-        return render_template_string(SUCCESS_TEMPLATE, key=key, title="🛡️ Clé Validée avec Succès")
+        session['client_key'] = key
+        return redirect(url_for('engine_core'))
     else:
-        return render_template_string(ERROR_TEMPLATE, message="Clé introuvable ou invalide.")
+        return render_template_string(ERROR_TEMPLATE, message="Clé introuvable ou invalide. Demandez une clé d'essai à l'administrateur.")
+
+# --- LE MOTEUR (CARTE, COORDONNÉES, FLUX EN DIRECT) ---
+ENGINE_TEMPLATE = NAVBAR_HTML + """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moteur GlobalRoute AI - Live</title>
+    <style>
+        body { font-family: 'Inter', system-ui, sans-serif; background: #090d16; color: #f8fafc; margin: 0; padding: 0; }
+        .main-container { max-width: 1000px; margin: 20px auto; padding: 15px; }
+        .engine-card { background: linear-gradient(145deg, #162032 0%, #0f172a 100%); padding: 30px; border-radius: 20px; border: 1px solid rgba(56, 189, 248, 0.3); box-shadow: 0 15px 35px rgba(0,0,0,0.5); }
+        .engine-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(148,163,184,0.15); padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+        .badge-active { background: rgba(16, 185, 129, 0.15); color: #10b981; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 13px; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .coords-box { background: #090d16; padding: 15px; border-radius: 12px; font-family: monospace; color: #38bdf8; margin: 15px 0; border: 1px solid rgba(56,189,248,0.2); }
+        .map-simulator { background: #060911; height: 300px; border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 1px dashed rgba(56,189,248,0.3); color: #94a3b8; font-weight: 600; position: relative; overflow: hidden; }
+        .pulse-dot { width: 12px; height: 12px; background: #38bdf8; border-radius: 50%; box-shadow: 0 0 15px #38bdf8; animation: pulse 2s infinite; position: absolute; }
+        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 15px rgba(56, 189, 248, 0); } 100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); } }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <div class="engine-card">
+            <div class="engine-header">
+                <div>
+                    <h1 style="margin:0; font-size:22px; color:#38bdf8;">⚡ Moteur Central & Interface Live</h1>
+                    <p style="margin:5px 0 0 0; color:#94a3b8; font-size:13px;">Clé active connectée : <strong style="color:#fff;">{{ client_key }}</strong></p>
+                </div>
+                <div>
+                    <span class="badge-active">🟢 Moteur Opérationnel</span>
+                </div>
+            </div>
+
+            <p style="font-size:14px; color:#cbd5e1; line-height:1.6;">Bienvenue dans l'espace de traitement en direct. Vos flux de données et requêtes d'infrastructure transitent par les nœuds optimisés.</p>
+
+            <h3>📍 Coordonnées et Flux Actifs</h3>
+            <div class="coords-box">
+                Latitude : 19.7527° N | Longitude : 72.2042° W<br>
+                Statut du réseau : Synced (Solana Mainnet)<br>
+                Latence globale : 14ms (Ultra-rapide)
+            </div>
+
+            <h3>🗺️ Visualisation de la Carte & Routage</h3>
+            <div class="map-simulator">
+                <div class="pulse-dot" style="top: 45%; left: 50%;"></div>
+                <span>[ Simulation de la carte interactive & routage en direct ]</span>
+            </div>
+
+            <div style="margin-top: 25px; text-align: right;">
+                <a href="/logout" style="color: #ef4444; text-decoration: none; font-weight: bold; font-size: 13px;">Déconnexion du moteur</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/engine')
+def engine_core():
+    client_key = session.get('client_key')
+    if not client_key:
+        return redirect(url_for('index'))
+    return render_template_string(ENGINE_TEMPLATE, client_key=client_key)
 
 DASHBOARD_TEMPLATE = NAVBAR_HTML + """
 <!DOCTYPE html>
@@ -274,7 +352,7 @@ CHECKOUT_TEMPLATE = NAVBAR_HTML + """
                 <input type="hidden" name="plan" value="{{ plan }}">
                 <input type="hidden" name="price" value="{{ price }}">
                 <input type="text" name="tx_signature" placeholder="Collez la signature de la transaction..." required>
-                <button type="submit" class="btn">Vérifier et obtenir la clé</button>
+                <button type="submit" class="btn">Vérifier et accéder au moteur</button>
             </form>
             <br><a href="/" style="color: #94a3b8; font-size: 13px; text-decoration: none;">← Retour</a>
         </div>
@@ -291,32 +369,13 @@ def checkout():
         return redirect(url_for('index'))
     return render_template_string(CHECKOUT_TEMPLATE, plan=plan, plan_formatted=plan.replace('_', ' '), price=price, merchant_wallet=MERCHANT_SOL_WALLET)
 
-SUCCESS_TEMPLATE = NAVBAR_HTML + """
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Succès</title>
-    <style>body { font-family: 'Inter', sans-serif; background: #090d16; color: #f8fafc; padding: 20px; text-align: center; }</style>
-</head>
-<body>
-    <div style="max-width: 500px; margin: 30px auto; background: #162032; padding: 25px; border-radius: 20px; border: 1px solid #10b981;">
-        <h1 style="color: #10b981; font-size: 22px;">{{ title }}</h1>
-        <div style="background: #090d16; padding: 12px; border-radius: 10px; font-family: monospace; color: #10b981; margin: 15px 0; font-weight: bold;">{{ key }}</div>
-        <a href="/" style="color: #38bdf8; text-decoration: none; font-weight: bold;">← Accueil</a>
-    </div>
-</body>
-</html>
-"""
-
 ERROR_TEMPLATE = NAVBAR_HTML + """
 <!DOCTYPE html>
 <html lang="fr">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Erreur</title><style>body{background:#090d16;color:#fff;font-family:sans-serif;text-align:center;padding:20px;}</style></head>
 <body>
     <div style="max-width:500px; margin:30px auto; background:#162032; padding:25px; border-radius:20px; border:1px solid #ef4444;">
-        <h2 style="color:#ef4444;">Échec</h2>
+        <h2 style="color:#ef4444;">Échec de la validation</h2>
         <p style="color:#94a3b8;">{{ message }}</p>
         <a href="/" style="color:#38bdf8; text-decoration:none;">Réessayer</a>
     </div>
@@ -337,7 +396,8 @@ def verify_payment():
         cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, ?, 'UNUSED', ?)", (new_key, plan, tx_signature))
         conn.commit()
         conn.close()
-        return render_template_string(SUCCESS_TEMPLATE, key=new_key, title="🛡️ Clé Validée avec Succès")
+        session['client_key'] = new_key
+        return redirect(url_for('engine_core'))
     else:
         return render_template_string(ERROR_TEMPLATE, message=message)
 
@@ -353,20 +413,20 @@ ADMIN_TEMPLATE = NAVBAR_HTML + """
 <body>
     <div style="max-width: 1000px; margin: 20px auto; background: #162032; padding: 25px; border-radius: 20px; border: 1px solid rgba(56,189,248,0.2);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap: wrap; gap: 10px;">
-            <h1 style="font-size: 20px; margin:0; color:#38bdf8;">Panel Admin - Gestion des Clés</h1>
+            <h1 style="font-size: 20px; margin:0; color:#38bdf8;">Panel Admin - Génération des Clés (Essai 7J / Autre)</h1>
             <a href="/logout" style="color:#ef4444; text-decoration:none; font-weight:bold; font-size:13px; border: 1px solid #ef4444; padding: 6px 12px; border-radius: 6px;">Déconnexion</a>
         </div>
 
         <!-- Section de génération manuelle de clé par l'Admin -->
         <div style="background:#0f172a; padding:15px; border-radius:12px; margin-bottom:20px; border: 1px solid rgba(56,189,248,0.2);">
-            <h3 style="margin-top:0; font-size:15px; color:#38bdf8;">🛠️️ Générer une clé de test pour une entreprise</h3>
+            <h3 style="margin-top:0; font-size:15px; color:#38bdf8;">🛠 Générer une clé pour une entreprise</h3>
             <form action="/admin/generate-key" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
                 <select name="plan_type" style="padding:10px; border-radius:8px; background:#162032; color:#fff; border:1px solid rgba(148,163,184,0.3); outline:none;">
-                    <option value="Test_Entreprise_7J">Test Entreprise (7 Jours)</option>
+                    <option value="Essai_7_Jours">Essai Entreprise (7 Jours)</option>
                     <option value="Pass_30_Jours">Pass 30 Jours</option>
                     <option value="Pass_365_Jours">Pass 365 Jours</option>
                 </select>
-                <button type="submit" style="background:#38bdf8; color:#0f172a; padding:10px 15px; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">Générer Clé Manuelle</button>
+                <button type="submit" style="background:#38bdf8; color:#0f172a; padding:10px 15px; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">Générer Clé</button>
             </form>
         </div>
 
@@ -398,9 +458,9 @@ LOGIN_TEMPLATE = NAVBAR_HTML + """
             <p style="color:#ef4444; font-size:13px; margin-bottom:15px;">{{ error }}</p>
             {% endif %}
             <form action="/admin" method="POST">
-                <!-- type="password" garantit que les caractères sont masqués par des points -->
+                <!-- type="password" masque correctement les caractères -->
                 <input type="password" name="password" placeholder="Mot de passe" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:10px; border:1px solid rgba(148,163,184,0.3); background:#090d16; color:#fff; outline:none; font-size:14px;"><br>
-                <button type="submit" style="background:linear-gradient(135deg, #38bdf8, #0ea5e9); color:#0f172a; padding:12px; border:none; border-radius:10px; font-weight:bold; width:100%; cursor:pointer; font-size:14px;">Entrer</button>
+                <button type="submit" style="background:linear-gradient(135deg, #38bdf8, #0ea5e9); color:#0f172a; padding:12px; border:none; border-radius:10px; font-weight:bold; width:100%; cursor:pointer; font-size:14px;">Entrer dans l'Admin</button>
             </form>
         </div>
     </div>
@@ -437,12 +497,13 @@ def generate_key_admin():
     if not session.get('admin_logged'):
         return redirect(url_for('admin'))
     
-    plan_type = request.form.get('plan_type', 'Test_Entreprise_7J')
-    manual_key = f"MANUAL-{secrets.token_hex(4).upper()}"
+    plan_type = request.form.get('plan_type', 'Essai_7_Jours')
+    prefix = "TRIAL-7D" if "7" in plan_type else "MANUAL"
+    manual_key = f"{prefix}-{secrets.token_hex(4).upper()}"
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, ?, 'UNUSED', 'MANUAL_GENERATION')", (manual_key, plan_type))
+    cursor.execute("INSERT INTO keys (key_code, plan, status, tx_signature) VALUES (?, ?, 'UNUSED', 'ADMIN_GENERATION')", (manual_key, plan_type))
     conn.commit()
     conn.close()
     
@@ -451,6 +512,7 @@ def generate_key_admin():
 @app.route('/logout')
 def logout():
     session.pop('admin_logged', None)
+    session.pop('client_key', None)
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
