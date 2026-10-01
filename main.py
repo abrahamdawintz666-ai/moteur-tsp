@@ -8,7 +8,7 @@ import math
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-app = FastAPI(title="GlobalRoute AI SaaS", version="4.0")
+app = FastAPI(title="GlobalRoute AI SaaS", version="4.2")
 
 DB_FILE = "database.db"
 
@@ -28,7 +28,7 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute(
             "INSERT INTO subscriptions (api_key, client_name, plan_type, status) VALUES (?, ?, ?, ?)",
-            ("demo-key-12345", "Client Test Global", "mensuel", "active")
+            ("demo-key-12345", "Client Test Global", "30 jours", "active")
         )
     conn.commit()
     conn.close()
@@ -71,25 +71,27 @@ def home():
             .admin-btn {{ background: #0f172a; color: white; padding: 10px 16px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 14px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.2); transition: background 0.2s; }}
             .admin-btn:hover {{ background: #1e293b; }}
 
+            /* Écran de verrouillage Clé API */
+            .auth-card {{ background: white; border-radius: 16px; padding: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); text-align: center; }}
+            .auth-card input {{ width: 100%; padding: 12px; margin: 15px 0; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; box-sizing: border-box; text-align: center; }}
+            .auth-btn {{ background: #2563eb; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; }}
+            .auth-btn:hover {{ background: #1d4ed8; }}
+
             /* Section Abonnement B2B */
             .sub-card {{ background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }}
-            .sub-title {{ font-size: 18px; font-weight: 700; margin: 0 0 6px 0; display: flex; align-items: center; gap: 8px; }}
+            .sub-title {{ font-size: 18px; font-weight: 700; margin: 0 0 6px 0; }}
             .sub-desc {{ font-size: 13px; color: #94a3b8; margin: 0 0 15px 0; }}
             
-            .plan-btn-green {{ background: #10b981; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 15px; margin-bottom: 10px; display: block; text-decoration: none; box-sizing: border-box; }}
-            .plan-btn-green:hover {{ background: #059669; }}
-            
-            .plan-btn-blue {{ background: #2563eb; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 15px; display: block; text-decoration: none; box-sizing: border-box; }}
-            .plan-btn-blue:hover {{ background: #1d4ed8; }}
+            .plan-btn-green {{ background: #10b981; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 15px; margin-bottom: 10px; display: block; box-sizing: border-box; }}
+            .plan-btn-blue {{ background: #2563eb; color: white; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; border: none; width: 100%; cursor: pointer; font-size: 15px; display: block; box-sizing: border-box; }}
 
             .crypto-box {{ background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15); padding: 10px; border-radius: 8px; font-size: 12px; font-family: monospace; word-break: break-all; margin-top: 12px; color: #38bdf8; }}
 
-            /* Cartes Statistiques */
+            /* Cartes Statistiques & Console */
             .stat-card {{ background: white; border-radius: 16px; padding: 18px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }}
             .stat-number {{ font-size: 28px; font-weight: 800; color: #2563eb; margin: 0; }}
             .stat-label {{ font-size: 13px; color: #64748b; margin-top: 4px; }}
 
-            /* Console de Simulation & Carte */
             .console-card {{ background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }}
             input, select {{ width: 100%; padding: 10px 12px; margin: 6px 0 14px 0; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; box-sizing: border-box; }}
             label {{ font-size: 13px; font-weight: 600; color: #475569; }}
@@ -98,6 +100,7 @@ def home():
             .calc-btn:hover {{ background: #059669; }}
 
             #map {{ height: 350px; width: 100%; margin-top: 15px; border-radius: 10px; border: 1px solid #e2e8f0; }}
+            .hidden {{ display: none !important; }}
         </style>
     </head>
     <body>
@@ -108,80 +111,127 @@ def home():
                 <a class="admin-btn" href="/admin">🔒 Console Admin Sécurisée ↗</a>
             </div>
 
-            <!-- Abonnements & Entreprises -->
-            <div class="sub-card">
-                <div class="sub-title">🛒 Solutions Logistiques & Abonnements Entreprises</div>
-                <div class="sub-desc">Moteur d'optimisation de tournées mondiales haute performance (CVRP & OR-Tools).</div>
+            <!-- ÉCRAN D'AUTHENTIFICATION PAR CLÉ API -->
+            <div id="authSection" class="auth-card">
+                <h3 style="margin-top:0; color:#1e3a8a;">Accès Restreint B2B</h3>
+                <p style="font-size:13px; color:#64748b;">Veuillez entrer votre clé API d'entreprise pour déverrouiller la plateforme.</p>
+                <input type="text" id="apiLoginInput" placeholder="Entrez votre clé API (ex: demo-key-12345)">
+                <button class="auth-btn" onclick="verifyApiKey()">Valider la Clé & Accéder</button>
+            </div>
+
+            <!-- CONTENU DU SAAS (MASQUÉ TANT QUE LA CLÉ N'EST PAS VALIDÉE) -->
+            <div id="saasContent" class="hidden" style="display: flex; flex-direction: column; gap: 15px;">
                 
-                <button class="plan-btn-green" onclick="alert('Pour activer le Plan 30 Jours (49$), effectuez un virement à l’adresse Solana ci-dessous puis envoyez votre TXID à l’administrateur.')">
-                    ⚡ Plan 30 Jours (49 SOL / USD)
-                </button>
-                <button class="plan-btn-blue" onclick="alert('Pour activer le Plan 1 An (490$), effectuez un virement à l’adresse Solana ci-dessous puis envoyez votre TXID à l’administrateur.')">
-                    👑 Plan 1 An (365 Jours - 490 USD)
-                </button>
+                <!-- Abonnements & Entreprises -->
+                <div class="sub-card">
+                    <div class="sub-title">🛒 Solutions Logistiques & Abonnements B2B</div>
+                    <div class="sub-desc">Moteur d'optimisation de tournées mondiales haute performance (CVRP & OR-Tools).</div>
+                    
+                    <button class="plan-btn-green" onclick="alert('Pour activer le Plan 30 Jours (1 500 $), effectuez le transfert à l’adresse Solana ci-dessous puis transmettez votre TXID à l’administrateur.')">
+                        ⚡ Plan 30 Jours — 1 500 $
+                    </button>
+                    <button class="plan-btn-blue" onclick="alert('Pour activer le Plan 365 Jours (17 500 $), effectuez le transfert à l’adresse Solana ci-dessous puis transmettez votre TXID à l’administrateur.')">
+                        👑 Plan 1 An (365 Jours) — 17 500 $
+                    </button>
 
-                <div class="crypto-box">
-                    <strong>Paiement Solana (SOL) :</strong><br>
-                    {SOLANA_WALLET}
-                </div>
-            </div>
-
-            <!-- Indicateurs Statistiques -->
-            <div class="stat-card">
-                <div class="stat-number" id="pointsProcessed">4</div>
-                <div class="stat-label">Points Traités</div>
-            </div>
-
-            <div class="stat-card">
-                <div class="stat-number" id="optimizedDistance">12.4 km</div>
-                <div class="stat-label">Distance Optimisée (Haversine & OR-Tools)</div>
-            </div>
-
-            <div class="stat-card">
-                <div class="stat-number" id="executionTime">0.14 s</div>
-                <div class="stat-label">Temps de Calcul du Moteur Algorithmique</div>
-            </div>
-
-            <!-- Console de Simulation -->
-            <div class="console-card">
-                <h3 style="margin-top:0; color:#1e3a8a;">Console de Simulation & Routage</h3>
-                <label>Clé API Active :</label>
-                <input type="text" id="apiKeyInput" value="demo-key-12345">
-                
-                <div style="display: flex; gap: 10px;">
-                    <div style="flex:1;">
-                        <label>Capacité Véhicule :</label>
-                        <input type="number" id="vehicleCapacity" value="15">
-                    </div>
-                    <div style="flex:1;">
-                        <label>Nbr Véhicules :</label>
-                        <input type="number" id="numVehicles" value="3">
+                    <div class="crypto-box">
+                        <strong>Paiement Solana (SOL) :</strong><br>
+                        {SOLANA_WALLET}
                     </div>
                 </div>
 
-                <button class="calc-btn" onclick="runOptimization()">Calculer les Tournées Optimales</button>
-                
-                <div id="map"></div>
+                <!-- Indicateurs Statistiques -->
+                <div class="stat-card">
+                    <div class="stat-number" id="pointsProcessed">4</div>
+                    <div class="stat-label">Points Traités</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-number" id="optimizedDistance">14.2 km</div>
+                    <div class="stat-label">Distance Optimisée (Haversine & OR-Tools)</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-number" id="executionTime">0.12 s</div>
+                    <div class="stat-label">Temps de Calcul du Moteur Algorithmique</div>
+                </div>
+
+                <!-- Console de Simulation -->
+                <div class="console-card">
+                    <h3 style="margin-top:0; color:#1e3a8a;">Console de Simulation & Routage</h3>
+                    <div style="display: flex; gap: 10px;">
+                        <div style="flex:1;">
+                            <label>Capacité Véhicule :</label>
+                            <input type="number" id="vehicleCapacity" value="15">
+                        </div>
+                        <div style="flex:1;">
+                            <label>Nbr Véhicules :</label>
+                            <input type="number" id="numVehicles" value="3">
+                        </div>
+                    </div>
+
+                    <button class="calc-btn" onclick="runOptimization()">Calculer les Tournées Optimales</button>
+                    
+                    <div id="map"></div>
+                </div>
             </div>
         </div>
 
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-            var map = L.map('map').setView([19.7578, -72.2042], 13);
-            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-                maxZoom: 19,
-                attribution: '© OpenStreetMap'
-            }}).addTo(map);
+            let currentApiKey = "";
+            let mapInstance = null;
 
-            var depotMarker = L.marker([19.7578, -72.2042]).addTo(map).bindPopup("<b>Dépôt Central (Cap-Haïtien)</b>");
+            function verifyApiKey() {{
+                const keyInput = document.getElementById('apiLoginInput').value.trim();
+                if(!keyInput) {{
+                    alert("Veuillez entrer une clé API valide.");
+                    return;
+                }}
+
+                fetch('/api/optimize', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        api_key: keyInput,
+                        depot: {{"id": "Depot", "lat": 19.7578, "lng": -72.2042, "demand": 0}},
+                        locations: [],
+                        vehicle_capacity: 15,
+                        num_vehicles: 1
+                    }})
+                }})
+                .then(response => {{
+                    if(response.status === 401) {{
+                        alert("Clé API invalide ou abonnement inactif.");
+                    }} else {{
+                        currentApiKey = keyInput;
+                        document.getElementById('authSection').classList.add('hidden');
+                        document.getElementById('saasContent').classList.remove('hidden');
+                        
+                        setTimeout(() => {{
+                            if(!mapInstance) {{
+                                mapInstance = L.map('map').setView([19.7578, -72.2042], 13);
+                                L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                                    maxZoom: 19,
+                                    attribution: '© OpenStreetMap'
+                                }}).addTo(mapInstance);
+                                L.marker([19.7578, -72.2042]).addTo(mapInstance).bindPopup("<b>Dépôt Central (Cap-Haïtien)</b>");
+                            }}
+                            mapInstance.invalidateSize();
+                        }}, 200);
+                    }}
+                }})
+                .catch(err => {{
+                    alert("Erreur de connexion au serveur.");
+                }});
+            }}
 
             function runOptimization() {{
-                const apiKey = document.getElementById('apiKeyInput').value;
                 const capacity = parseInt(document.getElementById('vehicleCapacity').value);
                 const numVehicles = parseInt(document.getElementById('numVehicles').value);
 
                 const payload = {{
-                    api_key: apiKey,
+                    api_key: currentApiKey,
                     depot: {{"id": "Depot", "lat": 19.7578, "lng": -72.2042, "demand": 0}},
                     locations: [
                         {{"id": "Client A", "lat": 19.7620, "lng": -72.2100, "demand": 4}},
@@ -201,16 +251,13 @@ def home():
                 .then(response => response.json())
                 .then(data => {{
                     if(data.status === "success") {{
-                        document.getElementById('pointsProcessed').innerText = "4";
-                        document.getElementById('optimizedDistance').innerText = "14.2 km";
-                        document.getElementById('executionTime').innerText = "0.12 s";
                         alert("Optimisation CVRP réussie avec Google OR-Tools ! Tournées générées : " + data.routes.length);
                     }} else {{
-                        alert("Erreur : " + (data.detail || "Clé API invalide."));
+                        alert("Erreur d'optimisation.");
                     }}
                 }})
                 .catch(err => {{
-                    alert("Erreur de communication avec le serveur SaaS.");
+                    alert("Erreur de communication avec le serveur.");
                 }});
             }}
         </script>
@@ -228,6 +275,9 @@ def optimize_routes(data: OptimizationRequest):
 
     if not sub:
         raise HTTPException(status_code=401, detail="Clé API invalide ou abonnement inactif.")
+
+    if not data.locations:
+        return {"status": "success", "routes": []}
 
     try:
         locations = [data.depot] + data.locations
@@ -376,8 +426,8 @@ def admin_dashboard(admin_key: str = Form(...)):
                     <input type="text" name="client_name" placeholder="Nom de l'entreprise cliente" required>
                     <input type="text" name="api_key" placeholder="Clé API unique (ex: key-entreprise-xyz)" required>
                     <select name="plan_type">
-                        <option value="mensuel">Plan 30 Jours (Solana)</option>
-                        <option value="annuel">Plan 1 An (Solana)</option>
+                        <option value="30 jours">Plan 30 Jours (1 500 $)</option>
+                        <option value="365 jours">Plan 365 Jours (17 500 $)</option>
                     </select>
                     <button type="submit">Enregistrer l'abonné</button>
                 </form>
