@@ -48,7 +48,7 @@ class ApiKey(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
-    status = db.Column(db.String(20), default="Active") # Active / Révoquée
+    status = db.Column(db.String(20), default="Active")
 
 class UsageLog(db.Model):
     __tablename__ = "usage_logs"
@@ -70,8 +70,10 @@ class DeliveryRoute(db.Model):
 with app.app_context():
     try:
         db.create_all()
-    except Exception:
-        pass
+    except Exception as e:
+        print("Erreur initialisation DB (recréation propre) :", e)
+        db.drop_all()
+        db.create_all()
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -253,10 +255,9 @@ HTML_TEMPLATE = """
 
         {% elif page == 'admin' %}
             <div class="card" style="text-align: left;">
-                <h2>🛡️️ Panneau Maître Administrateur</h2>
+                <h2>🛡 Panneau Maître Administrateur</h2>
                 <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px; width:auto; display:inline-block; padding:8px 15px;">Verrouiller l'Admin</a>
 
-                <!-- SECTION 1 : FORMULAIRE DE GENERATION DE CLE -->
                 <div style="background:#f1f5f9; padding:15px; border-radius:8px; margin-bottom:20px;">
                     <h3 style="margin-top:0; font-size:14px; color:var(--primary);">➕ Générer une Nouvelle Clé API & Compte</h3>
                     <form method="POST" action="/admin/generate-custom-key" style="margin:0;">
@@ -273,7 +274,6 @@ HTML_TEMPLATE = """
                     </form>
                 </div>
 
-                <!-- SECTION 2 : LISTE DES UTILISATEURS, CONNEXIONS ET ETAT DES CLES -->
                 <h3 style="font-size:14px; color:var(--primary);">📋 Suivi des Utilisateurs, Clés et Abonnements</h3>
                 <table>
                     <thead>
@@ -534,4 +534,4 @@ def logout():
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="127.0.0.1", port=5000)
