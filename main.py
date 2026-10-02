@@ -28,7 +28,6 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# Modèles
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
@@ -69,14 +68,12 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# AUTO-MIGRATION ROBUSTE : Empêche toute erreur de colonne manquante sur Render
+# AUTO-MIGRATION ROBUSTE ANTI-ERREUR 500
 with app.app_context():
     db.create_all()
     try:
         inspector = inspect(db.engine)
         tables = inspector.get_table_names()
-        
-        # Vérification et ajout automatique des colonnes manquantes sur la table users
         if "users" in tables:
             columns = [c['name'] for c in inspector.get_columns('users')]
             with db.engine.begin() as conn:
@@ -84,8 +81,6 @@ with app.app_context():
                     conn.execute(text("ALTER TABLE users ADD COLUMN payment_method VARCHAR(50) DEFAULT 'Crypto USDC'"))
                 if 'subscription_status' not in columns:
                     conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) DEFAULT 'Actif'"))
-        
-        # Vérification table api_keys
         if "api_keys" in tables:
             cols = [c['name'] for c in inspector.get_columns('api_keys')]
             with db.engine.begin() as conn:
@@ -304,21 +299,21 @@ HTML_TEMPLATE = """
                             <th>Entreprise / Email</th>
                             <th>Détails Clé & Validité</th>
                             <th>Abonnement</th>
-                            <th>Dernière Connexion / Logs</th>
+                            <th>Dernière Activité / Logs</th>
                             <th>Actions (Révocation)</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {% if users %}
-                            {% for u in users %}
+                        {% if admin_data %}
+                            {% for item in admin_data %}
                             <tr>
                                 <td>
-                                    <strong>{{ u.company_name }}</strong><br>
-                                    <span style="color:#64748b;">{{ u.email }}</span>
+                                    <strong>{{ item.user.company_name }}</strong><br>
+                                    <span style="color:#64748b;">{{ item.user.email }}</span>
                                 </td>
                                 <td>
-                                    {% if u.api_keys %}
-                                        {% for k in u.api_keys %}
+                                    {% if item.user.api_keys %}
+                                        {% for k in item.user.api_keys %}
                                             <div style="margin-bottom:4px;">
                                                 <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
                                                 <span style="font-size:9px; color:#475569;">Créé le: {{ k.created_at.strftime('%Y-%m-%d') if k.created_at else 'N/A' }} | Expire: {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }}</span><br>
@@ -330,21 +325,20 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <span class="badge badge-active">{{ u.subscription_status }}</span><br>
-                                    <span style="font-size:9px; color:#64748b;">{{ u.payment_method }}</span>
+                                    <span class="badge badge-active">{{ item.user.subscription_status }}</span><br>
+                                    <span style="font-size:9px; color:#64748b;">{{ item.user.payment_method }}</span>
                                 </td>
                                 <td>
-                                    {% if u.logs and u.logs | length > 0 %}
-                                        {% set last_log = u.logs[-1] %}
-                                        {{ last_log.action }}<br>
-                                        <span style="font-size:9px; color:#64748b;">IP: {{ last_log.ip_address or 'N/A' }}<br>{{ last_log.timestamp.strftime('%Y-%m-%d %H:%M') if last_log.timestamp else '' }}</span>
+                                    {% if item.last_log %}
+                                        {{ item.last_log.action }}<br>
+                                        <span style="font-size:9px; color:#64748b;">IP: {{ item.last_log.ip_address or 'N/A' }}<br>{{ item.last_log.timestamp.strftime('%Y-%m-%d %H:%M') if item.last_log.timestamp else '' }}</span>
                                     {% else %}
                                         <span style="color:#94a3b8;">Aucune activité</span>
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if u.api_keys %}
-                                        {% for k in u.api_keys %}
+                                    {% if item.user.api_keys %}
+                                        {% for k in item.user.api_keys %}
                                             {% if k.status == 'Active' %}
                                                 <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
                                                     <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
@@ -464,11 +458,15 @@ def admin_panel():
     
     try:
         users_list = User.query.all()
+        admin_data = []
+        for u in users_list:
+            last_log = u.logs[-1] if u.logs else None
+            admin_data.append({"user": u, "last_log": last_log})
     except Exception as e:
         flash(f"Erreur base de données admin : {str(e)}", "danger")
-        users_list = []
+        admin_data = []
         
-    return render_template_string(HTML_TEMPLATE, page="admin", users=users_list)
+    return render_template_string(HTML_TEMPLATE, page="admin", admin_data=admin_data)
 
 @app.route("/admin/generate-custom-key", methods=["POST"])
 def admin_generate_custom_key():
