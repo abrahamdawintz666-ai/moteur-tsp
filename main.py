@@ -1,5 +1,7 @@
 import os
 import secrets
+import csv
+import io
 from datetime import datetime
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
@@ -8,7 +10,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-ADMIN_SECRET_PASSWORD = "admin123"  # Mot de passe simplifié pour ton test admin
+ADMIN_SECRET_PASSWORD = "admin123"
 
 database_url = os.getenv("DATABASE_URL")
 if database_url:
@@ -46,8 +48,7 @@ class DeliveryRoute(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(50), unique=True, nullable=False)
-    # Stockage propre des coordonnées GPS (Format: "Nom|Lat|Lng, Nom|Lat|Lng")
-    stops_data = db.Column(db.Text, nullable=False)
+    stops_data = db.Column(db.Text, nullable=False) # Stocke les étapes au format texte ou CSV converti
     status = db.Column(db.String(20), default="En cours")
 
 with app.app_context():
@@ -62,7 +63,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GlobalRoute AI - GPS Coordinates Logistics</title>
+    <title>GlobalRoute AI - Import CSV & GPS</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
@@ -90,7 +91,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI (GPS Mode)</h1>
+        <h1>GlobalRoute AI (CSV Logistics)</h1>
         <div style="display: flex; gap: 12px; align-items:center;">
             <a href="/" style="color: #cbd5e1; font-size: 12px; text-decoration: none;">Accueil</a>
             <a href="/driver-login" style="color: #6ee7b7; font-size: 12px; text-decoration: none;">🚚 Livreurs</a>
@@ -109,8 +110,8 @@ HTML_TEMPLATE = """
 
         {% if page == 'home' %}
             <div class="hero">
-                <h2>Routage Logistique par Coordonnées Géographiques</h2>
-                <p>Zéro erreur de lieu grâce à l'utilisation directe des latitudes et longitudes (GPS).</p>
+                <h2>Importation massive par fichier CSV</h2>
+                <p>Importez des milliers de villes ou points GPS en un seul clic pour vos tournées de livraison.</p>
                 <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
                 <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
                 <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
@@ -148,18 +149,20 @@ HTML_TEMPLATE = """
             <div class="card" style="text-align: left;">
                 <h2>Tableau de Bord : {{ user.company_name }}</h2>
                 
-                <h3 style="font-size: 14px; margin-top: 20px; color:var(--primary);">🎯 Assigner une Tournée via Coordonnées GPS</h3>
-                <form method="POST" action="/create-driver-route">
+                <h3 style="font-size: 14px; margin-top: 20px; color:var(--primary);">📁 Importer une Tournée via Fichier CSV</h3>
+                <p style="font-size: 12px; color: #64748b;">Le fichier CSV doit contenir les colonnes : <code>Nom, Latitude, Longitude</code> (sans accents de préférence dans l'en-tête, séparé par des virgules).</p>
+                
+                <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
                     <label>Nom du Livreur :</label>
                     <input type="text" name="driver_name" placeholder="Ex: Jean Dupont" required>
 
                     <label>Code d'accès secret du livreur :</label>
                     <input type="text" name="access_code" placeholder="Ex: LIVREUR01" required>
 
-                    <label>Points GPS de la tournée (Format par ligne : <code>Nom du lieu | Latitude | Longitude</code>) :</label>
-                    <textarea name="stops_data" rows="5" placeholder="Entrepôt Central | 19.7558 | -72.2042&#10;Église Évangélique (Rue 9) | 19.7610 | -72.2080&#10;Client Final (Quartier X) | 19.7490 | -72.1950" required></textarea>
+                    <label>Fichier CSV des étapes (.csv) :</label>
+                    <input type="file" name="csv_file" accept=".csv" required style="padding: 8px; background: #f8fafc;">
 
-                    <button type="submit" class="btn btn-primary" style="background:#059669;">Générer la Feuille de Route GPS</button>
+                    <button type="submit" class="btn btn-primary" style="background:#059669;">Importer et Valider la Tournée</button>
                 </form>
 
                 <div style="margin-top: 20px;">
@@ -173,25 +176,24 @@ HTML_TEMPLATE = """
                 <form method="POST" action="/driver-space">
                     <label>Code d'accès :</label>
                     <input type="text" name="access_code" placeholder="Ex: LIVREUR01" required style="text-transform: uppercase;">
-                    <button type="submit" class="btn btn-primary" style="background:#059669;">Afficher la Carte & Coordonnées</button>
+                    <button type="submit" class="btn btn-primary" style="background:#059669;">Afficher la Carte & Itinéraire</button>
                 </form>
             </div>
 
         {% elif page == 'driver_space' and route %}
             <div class="card" style="text-align: left;">
-                <h2>🚚 Feuille de Route GPS de {{ route.driver_name }}</h2>
+                <h2>🚚 Feuille de Route CSV de {{ route.driver_name }}</h2>
                 <div id="map"></div>
                 <div style="background: #ecfdf5; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 4px solid #059669;">
-                    <h4 style="margin:0 0 10px 0; color:#065f46;">Étapes Précises (Coordonnées exactes) :</h4>
+                    <h4 style="margin:0 0 10px 0; color:#065f46;">Étapes Importées :</h4>
                     <ul id="stops-list" style="margin:0; padding-left: 20px; font-size: 13px; line-height: 1.6;">
-                        <!-- Rempli dynamiquement par JS -->
+                        <!-- Rempli par JS -->
                     </ul>
                 </div>
                 <a href="/driver-login" class="btn btn-secondary" style="margin-top: 20px;">Quitter l'espace livreur</a>
             </div>
 
             <script>
-                // Données brutes sécurisées transmises depuis Python
                 var rawData = {{ route.stops_data | tojson }};
                 var lines = rawData.split("\\n");
                 var points = [];
@@ -209,7 +211,6 @@ HTML_TEMPLATE = """
                     }
                 });
 
-                // Initialisation de la carte Leaflet centrée sur le premier point ou Cap-Haïtien par défaut
                 var defaultCenter = points.length > 0 ? [points[0].lat, points[0].lng] : [19.7558, -72.2042];
                 var map = L.map('map').setView(defaultCenter, 14);
 
@@ -223,16 +224,10 @@ HTML_TEMPLATE = """
 
                 points.forEach(function(pt, index) {
                     latLngs.push([pt.lat, pt.lng]);
-                    
-                    // Ajout du marqueur sur la carte avec lien de navigation direct Google Maps
                     var gmapsUrl = "https://www.google.com/maps/search/?api=1&query=" + pt.lat + "," + pt.lng;
-                    var popupContent = "<b>Étape " + index + ": " + pt.name + "</b><br>" +
-                                       "Lat: " + pt.lat + ", Lng: " + pt.lng + "<br>" +
-                                       "<a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 Ouvrir dans GPS</a>";
+                    var popupContent = "<b>Étape " + index + ": " + pt.name + "</b><br>Lat: " + pt.lat + ", Lng: " + pt.lng + "<br><a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 GPS</a>";
                     
                     L.marker([pt.lat, pt.lng]).addTo(map).bindPopup(popupContent);
-
-                    // Ajout dans la liste textuelle
                     listHtml += "<li><b>" + pt.name + "</b> (GPS: " + pt.lat + ", " + pt.lng + ")<br><a href='" + gmapsUrl + "' target='_blank' style='font-size:11px; color:#2563eb;'>Lancer l'itinéraire GPS</a></li><br>";
                 });
 
@@ -306,14 +301,58 @@ def create_driver_route():
     user_id = session.get("user_id")
     if not user_id:
         return redirect(url_for("login_form"))
+    
     driver_name = request.form.get("driver_name")
     access_code = request.form.get("access_code").strip().upper()
-    stops_data = request.form.get("stops_data")
     
-    new_route = DeliveryRoute(user_id=user_id, driver_name=driver_name, access_code=access_code, stops_data=stops_data)
-    db.session.add(new_route)
-    db.session.commit()
-    flash("Tournée GPS créée avec succès !", "success")
+    # Récupération et vérification du fichier CSV
+    file = request.files.get("csv_file")
+    if not file or not file.filename.endswith(".csv"):
+        flash("Format de fichier invalide. Veuillez importer un fichier .csv valide.", "danger")
+        return redirect(url_for("dashboard"))
+
+    try:
+        # Lecture sécurisée du contenu CSV
+        stream = io.TextIOWrapper(file.stream, encoding="utf-8")
+        csv_reader = csv.reader(stream)
+        
+        stops_list = []
+        for row in csv_reader:
+            # Ignore les lignes vides ou les en-têtes potentiels s'ils contiennent du texte non numérique
+            if len(row) >= 3:
+                name = row[0].strip()
+                lat_str = row[1].strip()
+                lng_str = row[2].strip()
+                
+                # Validation stricte : vérifie si lat et lng sont des nombres valides
+                try:
+                    lat = float(lat_str)
+                    lng = float(lng_str)
+                    stops_list.append(f"{name}|{lat}|{lng}")
+                except ValueError:
+                    # Ignore l'en-tête (ex: "Nom, Latitude, Longitude")
+                    continue
+
+        if not stops_list:
+            flash("Erreur : Le fichier CSV est vide ou le format des colonnes est incorrect.", "danger")
+            return redirect(url_for("dashboard"))
+
+        # Jointure propre pour stockage dans la base
+        formatted_stops_data = "\n".join(stops_list)
+
+        new_route = DeliveryRoute(
+            user_id=user_id, 
+            driver_name=driver_name, 
+            access_code=access_code, 
+            stops_data=formatted_stops_data
+        )
+        db.session.add(new_route)
+        db.session.commit()
+        
+        flash(f"Tournée importée avec succès ! {len(stops_list)} étapes chargées.", "success")
+    except Exception as e:
+        flash(f"Erreur lors du traitement du fichier CSV : {str(e)}", "danger")
+
     return redirect(url_for("dashboard"))
 
 @app.route("/admin-panel", methods=["GET", "POST"])
@@ -323,7 +362,7 @@ def admin_panel():
             if request.form.get("admin_password") == ADMIN_SECRET_PASSWORD:
                 session["is_admin"] = True
             else:
-                flash("Mot de passe incorrect (Utilise 'admin123').", "danger")
+                flash("Mot de passe incorrect.", "danger")
                 return render_template_string(HTML_TEMPLATE, page="admin_login")
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
