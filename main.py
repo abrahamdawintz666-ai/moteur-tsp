@@ -12,7 +12,7 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
-# Connexion base de données
+# Configuration propre de la base de données
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -57,9 +57,11 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# Création propre des tables
 with app.app_context():
-    db.create_all()
+    try:
+        db.create_all()
+    except Exception as e:
+        print("Erreur create_all:", e)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -67,7 +69,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - Master Admin Dashboard</title>
+    <title>GlobalRoute AI</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
@@ -86,19 +88,16 @@ HTML_TEMPLATE = """
         .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; font-weight: 500; }
         .alert-success { background: #dcfce7; color: #166534; }
         .alert-danger { background: #fee2e2; color: #991b1b; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
-        th, td { padding: 10px 6px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
         th { background: #f1f5f9; color: #475569; }
-        .badge { padding: 3px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; }
-        .badge-active { background: #dcfce7; color: #166534; }
-        .badge-revoked { background: #fee2e2; color: #991b1b; }
         #map { width: 100%; height: 350px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; z-index: 1; }
         footer { text-align: center; font-size: 11px; color: #94a3b8; margin: 30px 0; }
     </style>
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI (Admin Master)</h1>
+        <h1>GlobalRoute AI</h1>
         <div style="display: flex; gap: 12px; align-items:center;">
             <a href="/" style="color: #cbd5e1; font-size: 12px; text-decoration: none;">Accueil</a>
             <a href="/driver-login" style="color: #6ee7b7; font-size: 12px; text-decoration: none;">🚚 Livreurs</a>
@@ -117,8 +116,8 @@ HTML_TEMPLATE = """
 
         {% if page == 'home' %}
             <div class="hero">
-                <h2>Plateforme Logistique SaaS & Gestion Avancée</h2>
-                <p>Outil de gestion centralisée pour administrateur.</p>
+                <h2>Plateforme Logistique SaaS</h2>
+                <p>Gestion simplifiée des tournées et clés API.</p>
                 <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
                 <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
                 <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
@@ -157,7 +156,7 @@ HTML_TEMPLATE = """
                 {% if user.api_keys %}
                     {% for k in user.api_keys %}
                         {% if k.status == 'Active' %}
-                            <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }} (Expire le : {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }})</div>
+                            <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }}</div>
                         {% endif %}
                     {% endfor %}
                 {% else %}
@@ -249,28 +248,24 @@ HTML_TEMPLATE = """
                 <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px; width:auto; display:inline-block; padding:8px 15px;">Verrouiller l'Admin</a>
 
                 <div style="background:#f1f5f9; padding:15px; border-radius:8px; margin-bottom:20px;">
-                    <h3 style="margin-top:0; font-size:14px; color:var(--primary);">➕ Générer une Nouvelle Clé API & Compte</h3>
+                    <h3 style="margin-top:0; font-size:14px; color:var(--primary);">➕ Générer une Clé API pour un Client</h3>
                     <form method="POST" action="/admin/generate-custom-key" style="margin:0;">
                         <label>Nom de l'entreprise :</label>
-                        <input type="text" name="company_name" placeholder="Ex: Transports Haïti SA" required>
-                        
+                        <input type="text" name="company_name" placeholder="Ex: Transport Express" required>
                         <label>Adresse E-mail :</label>
-                        <input type="email" name="email" placeholder="contact@entreprise.com" required>
-                        
-                        <label>Durée de validité (en Jours) :</label>
+                        <input type="email" name="email" placeholder="contact@client.com" required>
+                        <label>Validité (Jours) :</label>
                         <input type="number" name="duration_days" value="30" min="1" required>
-                        
-                        <button type="submit" class="btn btn-primary" style="background:#2563eb;">Générer et Enregistrer la Clé</button>
+                        <button type="submit" class="btn btn-primary" style="background:#2563eb;">Générer la Clé</button>
                     </form>
                 </div>
 
-                <h3 style="font-size:14px; color:var(--primary);">📋 Suivi des Utilisateurs et Clés</h3>
+                <h3 style="font-size:14px; color:var(--primary);">📋 Liste des Entreprises Enregistrées</h3>
                 <table>
                     <thead>
                         <tr>
-                            <th>Entreprise / Email</th>
-                            <th>Détails Clé & Validité</th>
-                            <th>Actions (Révocation)</th>
+                            <th>Entreprise / E-mail</th>
+                            <th>Statut</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -279,44 +274,21 @@ HTML_TEMPLATE = """
                             <tr>
                                 <td>
                                     <strong>{{ u.company_name }}</strong><br>
-                                    <span style="color:#64748b;">{{ u.email }}</span>
+                                    <span style="color:#64748b; font-size:11px;">{{ u.email }}</span>
                                 </td>
-                                <td>
-                                    {% if u.api_keys %}
-                                        {% for k in u.api_keys %}
-                                            <div style="margin-bottom:4px;">
-                                                <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
-                                                <span style="font-size:9px; color:#475569;">Expire: {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }}</span><br>
-                                                <span class="badge {% if k.status == 'Active' %}badge-active{% else %}badge-revoked{% endif %}">{{ k.status }}</span>
-                                            </div>
-                                        {% endfor %}
-                                    {% else %}
-                                        <span style="color:#94a3b8;">Aucune clé</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if u.api_keys %}
-                                        {% for k in u.api_keys %}
-                                            {% if k.status == 'Active' %}
-                                                <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
-                                                    <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
-                                                </form>
-                                            {% endif %}
-                                        {% endfor %}
-                                    {% endif %}
-                                </td>
+                                <td><span style="background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px; font-size:10px; font-weight:bold;">Actif</span></td>
                             </tr>
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="3" style="text-align: center; color: #94a3b8;">Aucun utilisateur enregistré.</td>
+                                <td colspan="2" style="text-align: center; color: #94a3b8;">Aucun utilisateur.</td>
                             </tr>
                         {% endif %}
                     </tbody>
                 </table>
             </div>
         {% endif %}
-        <footer><p>&copy; 2026 GlobalRoute AI. Tous droits réservés.</p></footer>
+        <footer><p>&copy; 2026 GlobalRoute AI</p></footer>
     </div>
 </body>
 </html>
@@ -361,7 +333,7 @@ def create_driver_route():
     file = request.files.get("csv_file")
     
     if not file or not file.filename.endswith(".csv"):
-        flash("Format de fichier invalide. Veuillez importer un fichier .csv valide.", "danger")
+        flash("Format de fichier invalide.", "danger")
         return redirect(url_for("dashboard"))
 
     try:
@@ -379,7 +351,7 @@ def create_driver_route():
                     continue
 
         if not stops_list:
-            flash("Erreur : Le fichier CSV est vide ou le format est incorrect.", "danger")
+            flash("Fichier CSV vide ou incorrect.", "danger")
             return redirect(url_for("dashboard"))
 
         new_route = DeliveryRoute(
@@ -390,10 +362,9 @@ def create_driver_route():
         )
         db.session.add(new_route)
         db.session.commit()
-
-        flash(f"Tournée importée avec succès ! {len(stops_list)} étapes chargées.", "success")
+        flash(f"Tournée importée avec succès ! ({len(stops_list)} étapes)", "success")
     except Exception as e:
-        flash(f"Erreur lors du traitement du fichier CSV : {str(e)}", "danger")
+        flash(f"Erreur : {str(e)}", "danger")
 
     return redirect(url_for("dashboard"))
 
@@ -404,7 +375,7 @@ def admin_panel():
             if request.form.get("admin_password") == ADMIN_SECRET_PASSWORD:
                 session["is_admin"] = True
             else:
-                flash("Mot de passe incorrect (Utilise 'admin123').", "danger")
+                flash("Mot de passe incorrect.", "danger")
                 return render_template_string(HTML_TEMPLATE, page="admin_login")
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
@@ -436,7 +407,7 @@ def admin_generate_custom_key():
         db.session.commit()
 
     expires_at = datetime.utcnow() + timedelta(days=duration_days)
-    key_string = f"gra_live_{secrets.token_hex(16)}"
+    key_string = f"gra_{secrets.token_hex(16)}"
     
     new_key = ApiKey(
         key_string=key_string,
@@ -447,20 +418,7 @@ def admin_generate_custom_key():
     db.session.add(new_key)
     db.session.commit()
     
-    flash(f"Clé générée avec succès pour {company_name}. Clé : {key_string}", "success")
-    return redirect(url_for("admin_panel"))
-
-@app.route("/admin/revoke-key/<int:key_id>", methods=["POST"])
-def admin_revoke_key(key_id):
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_panel"))
-    
-    key_obj = db.session.get(ApiKey, key_id)
-    if key_obj:
-        key_obj.status = "Révoquée"
-        db.session.commit()
-        flash("La clé API a été révoquée avec succès.", "success")
-    
+    flash(f"Clé générée avec succès pour {company_name} ! Clé : {key_string}", "success")
     return redirect(url_for("admin_panel"))
 
 @app.route("/admin-logout")
@@ -478,12 +436,12 @@ def register():
         flash("Cet e-mail existe déjà.", "danger")
         return redirect(url_for("register_form"))
     
-    new_user = User(company_name=company_name, email=email, password_hash=generate_password_hash(password), subscription_status="Actif")
+    new_user = User(company_name=company_name, email=email, password_hash=generate_password_hash(password))
     db.session.add(new_user)
     db.session.commit()
     
     expires_at = datetime.utcnow() + timedelta(days=30)
-    new_api_key = ApiKey(key_string=f"gra_live_{secrets.token_hex(16)}", user_id=new_user.id, expires_at=expires_at, status="Active")
+    new_api_key = ApiKey(key_string=f"gra_{secrets.token_hex(12)}", user_id=new_user.id, expires_at=expires_at, status="Active")
     db.session.add(new_api_key)
     db.session.commit()
     
