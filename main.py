@@ -471,7 +471,8 @@ def admin_revoke_key(key_id):
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
     
-    key_obj = ApiKey.query.get(key_id)
+    # CORRECTION : Utilisation de db.session.get au lieu de .query.get (compatible SQLAlchemy 2.0+)
+    key_obj = db.session.get(ApiKey, key_id)
     if key_obj:
         key_obj.status = "Révoquée"
         db.session.commit()
@@ -526,7 +527,10 @@ def dashboard():
     user_id = session.get("user_id")
     if not user_id:
         return redirect(url_for("login_form"))
-    return render_template_string(HTML_TEMPLATE, page="dashboard", user=User.query.get(user_id))
+    
+    # CORRECTION : Utilisation de db.session.get au lieu de User.query.get
+    current_user = db.session.get(User, user_id)
+    return render_template_string(HTML_TEMPLATE, page="dashboard", user=current_user)
 
 @app.route("/logout")
 def logout():
