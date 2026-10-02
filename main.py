@@ -12,7 +12,7 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
-# Configuration robuste de la base de données (SQLite par défaut en local)
+# Configuration de la base de données locale
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -21,6 +21,17 @@ if database_url:
         database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 else:
     database_url = "sqlite:///database.db"
+    # SOLUTION ULTIME DE DEV : Si on est en local sur SQLite, on nettoie le vieux fichier corrompu au démarrage
+    if os.path.exists("instance/database.db"):
+        try:
+            os.remove("instance/database.db")
+        except:
+            pass
+    if os.path.exists("database.db"):
+        try:
+            os.remove("database.db")
+        except:
+            pass
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -68,12 +79,7 @@ class DeliveryRoute(db.Model):
     status = db.Column(db.String(20), default="En cours")
 
 with app.app_context():
-    try:
-        db.create_all()
-    except Exception as e:
-        print("Erreur initialisation DB (recréation propre) :", e)
-        db.drop_all()
-        db.create_all()
+    db.create_all()
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -442,7 +448,15 @@ def admin_panel():
                 return render_template_string(HTML_TEMPLATE, page="admin_login")
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
-    return render_template_string(HTML_TEMPLATE, page="admin", users=User.query.all())
+    
+    # SÉCURITÉ ANTI-PLANTAGE ADMIN : Enveloppé dans un try/except pour capturer l'erreur exacte si elle survient
+    try:
+        users_list = User.query.all()
+    except Exception as e:
+        flash(f"Erreur base de données admin : {str(e)}", "danger")
+        users_list = []
+        
+    return render_template_string(HTML_TEMPLATE, page="admin", users=users_list)
 
 @app.route("/admin/generate-custom-key", methods=["POST"])
 def admin_generate_custom_key():
