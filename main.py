@@ -12,12 +12,15 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
+# Configuration robuste de la base de données (SQLite par défaut en local)
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
     elif database_url.startswith("postgresql://"):
         database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+else:
+    database_url = "sqlite:///database.db"
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -250,7 +253,7 @@ HTML_TEMPLATE = """
 
         {% elif page == 'admin' %}
             <div class="card" style="text-align: left;">
-                <h2>🛡️ Panneau Maître Administrateur</h2>
+                <h2>🛡️️ Panneau Maître Administrateur</h2>
                 <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px; width:auto; display:inline-block; padding:8px 15px;">Verrouiller l'Admin</a>
 
                 <!-- SECTION 1 : FORMULAIRE DE GENERATION DE CLE -->
@@ -401,7 +404,6 @@ def create_driver_route():
         db.session.add(new_route)
         db.session.commit()
         
-        # Enregistrement du log d'activité
         ip = request.remote_addr
         log = UsageLog(user_id=user_id, action="Importation de tournée CSV", ip_address=ip)
         db.session.add(log)
@@ -438,19 +440,17 @@ def admin_generate_custom_key():
     except ValueError:
         duration_days = 30
 
-    # Vérifie si l'utilisateur existe déjà, sinon on le crée
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(
             company_name=company_name,
             email=email,
-            password_hash=generate_password_hash("password123"), # Mot de passe par défaut modifiable
+            password_hash=generate_password_hash("password123"),
             subscription_status="Actif"
         )
         db.session.add(user)
         db.session.commit()
 
-    # Calcul de la date d'expiration
     expires_at = datetime.utcnow() + timedelta(days=duration_days)
     key_string = f"gra_live_{secrets.token_hex(16)}"
     
@@ -512,7 +512,6 @@ def login():
     if user and check_password_hash(user.password_hash, request.form.get("password")):
         session["user_id"] = user.id
         
-        # Log de connexion
         ip = request.remote_addr
         log = UsageLog(user_id=user.id, action="Connexion Entreprise", ip_address=ip)
         db.session.add(log)
