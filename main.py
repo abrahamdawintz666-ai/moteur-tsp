@@ -56,12 +56,14 @@ class DeliveryRoute(db.Model):
     access_code = db.Column(db.String(50), unique=True, nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
-
 with app.app_context():
     try:
-        db.create_all()
+        db.drop_all()  # Supprime toutes les anciennes tables corrompues
+        db.create_all() # Recrée tout proprement
+        print("Base de données réinitialisée avec succès !")
     except Exception as e:
-        print("Erreur create_all:", e)
+        print("Erreur réinitialisation DB:", e)
+
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
