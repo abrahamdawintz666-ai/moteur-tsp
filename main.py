@@ -48,7 +48,7 @@ class DeliveryRoute(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(50), unique=True, nullable=False)
-    stops_data = db.Column(db.Text, nullable=False) # Stocke les étapes au format texte ou CSV converti
+    stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
 with app.app_context():
@@ -63,7 +63,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GlobalRoute AI - Import CSV & GPS</title>
+    <title>GlobalRoute AI - Admin Key Generator</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
@@ -71,7 +71,7 @@ HTML_TEMPLATE = """
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
         header { background: var(--primary); color: white; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
         header h1 { margin: 0; font-size: 17px; font-weight: 700; }
-        .container { padding: 20px; box-sizing: border-box; max-width: 850px; margin: 0 auto; }
+        .container { padding: 20px; box-sizing: border-box; max-width: 900px; margin: 0 auto; }
         .hero { background: white; padding: 30px 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); text-align: center; margin-bottom: 20px; }
         .btn { display: block; width: 100%; padding: 14px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; text-decoration: none; cursor: pointer; border: none; margin-bottom: 10px; }
         .btn-primary { background: var(--accent); color: white; }
@@ -91,7 +91,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI (CSV Logistics)</h1>
+        <h1>GlobalRoute AI (Admin Control)</h1>
         <div style="display: flex; gap: 12px; align-items:center;">
             <a href="/" style="color: #cbd5e1; font-size: 12px; text-decoration: none;">Accueil</a>
             <a href="/driver-login" style="color: #6ee7b7; font-size: 12px; text-decoration: none;">🚚 Livreurs</a>
@@ -110,8 +110,8 @@ HTML_TEMPLATE = """
 
         {% if page == 'home' %}
             <div class="hero">
-                <h2>Importation massive par fichier CSV</h2>
-                <p>Importez des milliers de villes ou points GPS en un seul clic pour vos tournées de livraison.</p>
+                <h2>Gestion Logistique & Administration des Clés</h2>
+                <p>Contrôlez vos accès entreprises et générez des clés API en toute sécurité.</p>
                 <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
                 <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
                 <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
@@ -148,10 +148,12 @@ HTML_TEMPLATE = """
         {% elif page == 'dashboard' and user %}
             <div class="card" style="text-align: left;">
                 <h2>Tableau de Bord : {{ user.company_name }}</h2>
+                <label>Vos Clés API :</label>
+                {% for k in user.api_keys %}
+                    <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }}</div>
+                {% endfor %}
                 
-                <h3 style="font-size: 14px; margin-top: 20px; color:var(--primary);">📁 Importer une Tournée via Fichier CSV</h3>
-                <p style="font-size: 12px; color: #64748b;">Le fichier CSV doit contenir les colonnes : <code>Nom, Latitude, Longitude</code> (sans accents de préférence dans l'en-tête, séparé par des virgules).</p>
-                
+                <h3 style="font-size: 14px; margin-top: 25px; color:var(--primary);">📁 Importer une Tournée via Fichier CSV</h3>
                 <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
                     <label>Nom du Livreur :</label>
                     <input type="text" name="driver_name" placeholder="Ex: Jean Dupont" required>
@@ -182,13 +184,11 @@ HTML_TEMPLATE = """
 
         {% elif page == 'driver_space' and route %}
             <div class="card" style="text-align: left;">
-                <h2>🚚 Feuille de Route CSV de {{ route.driver_name }}</h2>
+                <h2>🚚 Feuille de Route de {{ route.driver_name }}</h2>
                 <div id="map"></div>
                 <div style="background: #ecfdf5; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 4px solid #059669;">
                     <h4 style="margin:0 0 10px 0; color:#065f46;">Étapes Importées :</h4>
-                    <ul id="stops-list" style="margin:0; padding-left: 20px; font-size: 13px; line-height: 1.6;">
-                        <!-- Rempli par JS -->
-                    </ul>
+                    <ul id="stops-list" style="margin:0; padding-left: 20px; font-size: 13px; line-height: 1.6;"></ul>
                 </div>
                 <a href="/driver-login" class="btn btn-secondary" style="margin-top: 20px;">Quitter l'espace livreur</a>
             </div>
@@ -197,42 +197,28 @@ HTML_TEMPLATE = """
                 var rawData = {{ route.stops_data | tojson }};
                 var lines = rawData.split("\\n");
                 var points = [];
-
                 lines.forEach(function(line) {
                     if(line.trim() !== "") {
                         var parts = line.split("|");
                         if(parts.length >= 3) {
-                            points.push({
-                                name: parts[0].trim(),
-                                lat: parseFloat(parts[1].trim()),
-                                lng: parseFloat(parts[2].trim())
-                            });
+                            points.push({ name: parts[0].trim(), lat: parseFloat(parts[1].trim()), lng: parseFloat(parts[2].trim()) });
                         }
                     }
                 });
-
                 var defaultCenter = points.length > 0 ? [points[0].lat, points[0].lng] : [19.7558, -72.2042];
                 var map = L.map('map').setView(defaultCenter, 14);
-
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    maxZoom: 19,
-                    attribution: '© OpenStreetMap'
-                }).addTo(map);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 
                 var latLngs = [];
                 var listHtml = "";
-
                 points.forEach(function(pt, index) {
                     latLngs.push([pt.lat, pt.lng]);
                     var gmapsUrl = "https://www.google.com/maps/search/?api=1&query=" + pt.lat + "," + pt.lng;
                     var popupContent = "<b>Étape " + index + ": " + pt.name + "</b><br>Lat: " + pt.lat + ", Lng: " + pt.lng + "<br><a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 GPS</a>";
-                    
                     L.marker([pt.lat, pt.lng]).addTo(map).bindPopup(popupContent);
                     listHtml += "<li><b>" + pt.name + "</b> (GPS: " + pt.lat + ", " + pt.lng + ")<br><a href='" + gmapsUrl + "' target='_blank' style='font-size:11px; color:#2563eb;'>Lancer l'itinéraire GPS</a></li><br>";
                 });
-
                 document.getElementById("stops-list").innerHTML = listHtml;
-
                 if(latLngs.length > 0) {
                     var polyline = L.polyline(latLngs, {color: '#2563eb', weight: 4, dashArray: '5, 8'}).addTo(map);
                     map.fitBounds(polyline.getBounds(), {padding: [40, 40]});
@@ -251,12 +237,27 @@ HTML_TEMPLATE = """
 
         {% elif page == 'admin' %}
             <div class="card" style="text-align: left;">
-                <h2>🛡️ Panneau Administrateur</h2>
+                <h2>🛡️ Panneau Administrateur (Gestion des Clés)</h2>
+                <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px; width:auto; display:inline-block; padding:8px 15px;">Verrouiller l'Admin</a>
                 <table>
-                    <thead><tr><th>Entreprise</th><th>Clé API</th></tr></thead>
+                    <thead>
+                        <tr><th>Entreprise</th><th>Clés API Actives</th><th>Action</th></tr>
+                    </thead>
                     <tbody>
                         {% for u in users %}
-                        <tr><td><strong>{{ u.company_name }}</strong></td><td><code>{{ u.api_keys[0].key_string if u.api_keys else 'N/A' }}</code></td></tr>
+                        <tr>
+                            <td><strong>{{ u.company_name }}</strong><br><span style="font-size:10px; color:#64748b;">{{ u.email }}</span></td>
+                            <td>
+                                {% for k in u.api_keys %}
+                                    <code style="display:block; margin-bottom:3px; background:#f1f5f9; padding:2px 4px; border-radius:4px;">{{ k.key_string }}</code>
+                                {% endfor %}
+                            </td>
+                            <td>
+                                <form method="POST" action="/admin/generate-key/{{ u.id }}" style="margin:0;">
+                                    <button type="submit" class="btn btn-primary" style="padding: 6px 10px; font-size: 11px; width:auto; background:#2563eb;">Générer une clé</button>
+                                </form>
+                            </td>
+                        </tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -304,51 +305,38 @@ def create_driver_route():
     
     driver_name = request.form.get("driver_name")
     access_code = request.form.get("access_code").strip().upper()
-    
-    # Récupération et vérification du fichier CSV
     file = request.files.get("csv_file")
+    
     if not file or not file.filename.endswith(".csv"):
         flash("Format de fichier invalide. Veuillez importer un fichier .csv valide.", "danger")
         return redirect(url_for("dashboard"))
 
     try:
-        # Lecture sécurisée du contenu CSV
         stream = io.TextIOWrapper(file.stream, encoding="utf-8")
         csv_reader = csv.reader(stream)
-        
         stops_list = []
         for row in csv_reader:
-            # Ignore les lignes vides ou les en-têtes potentiels s'ils contiennent du texte non numérique
             if len(row) >= 3:
                 name = row[0].strip()
-                lat_str = row[1].strip()
-                lng_str = row[2].strip()
-                
-                # Validation stricte : vérifie si lat et lng sont des nombres valides
                 try:
-                    lat = float(lat_str)
-                    lng = float(lng_str)
+                    lat = float(row[1].strip())
+                    lng = float(row[2].strip())
                     stops_list.append(f"{name}|{lat}|{lng}")
                 except ValueError:
-                    # Ignore l'en-tête (ex: "Nom, Latitude, Longitude")
                     continue
 
         if not stops_list:
-            flash("Erreur : Le fichier CSV est vide ou le format des colonnes est incorrect.", "danger")
+            flash("Erreur : Le fichier CSV est vide ou le format est incorrect.", "danger")
             return redirect(url_for("dashboard"))
-
-        # Jointure propre pour stockage dans la base
-        formatted_stops_data = "\n".join(stops_list)
 
         new_route = DeliveryRoute(
             user_id=user_id, 
             driver_name=driver_name, 
             access_code=access_code, 
-            stops_data=formatted_stops_data
+            stops_data="\n".join(stops_list)
         )
         db.session.add(new_route)
         db.session.commit()
-        
         flash(f"Tournée importée avec succès ! {len(stops_list)} étapes chargées.", "success")
     except Exception as e:
         flash(f"Erreur lors du traitement du fichier CSV : {str(e)}", "danger")
@@ -362,11 +350,29 @@ def admin_panel():
             if request.form.get("admin_password") == ADMIN_SECRET_PASSWORD:
                 session["is_admin"] = True
             else:
-                flash("Mot de passe incorrect.", "danger")
+                flash("Mot de passe incorrect (Utilise 'admin123').", "danger")
                 return render_template_string(HTML_TEMPLATE, page="admin_login")
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
     return render_template_string(HTML_TEMPLATE, page="admin", users=User.query.all())
+
+@app.route("/admin/generate-key/<int:user_id>", methods=["POST"])
+def admin_generate_key(user_id):
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_panel"))
+    
+    # Création d'une nouvelle clé API unique pour l'utilisateur choisi
+    new_key = ApiKey(key_string=f"gra_live_{secrets.token_hex(16)}", user_id=user_id)
+    db.session.add(new_key)
+    db.session.commit()
+    
+    flash("Nouvelle clé API générée avec succès pour l'entreprise !", "success")
+    return redirect(url_for("admin_panel"))
+
+@app.route("/admin-logout")
+def admin_logout():
+    session.pop("is_admin", None)
+    return redirect(url_for("index"))
 
 @app.route("/register", methods=["POST"])
 def register():
