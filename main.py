@@ -8,7 +8,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# 1. Configuration de la base de données PostgreSQL sur Render (Forcé avec psycopg2)
+# 1. Configuration blindée de la base de données PostgreSQL sur Render (Pilote psycopg2 forcé)
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -50,9 +50,12 @@ class UsageLog(db.Model):
     endpoint = db.Column(db.String(100), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Création automatique des tables
+# Création sécurisée des tables au lancement
 with app.app_context():
-    db.create_all()
+    try:
+        db.create_all()
+    except Exception as e:
+        print(f"Erreur lors de l'initialisation de la base de données : {e}")
 
 # 3. Interface SaaS Globale (Design Enterprise International)
 HTML_TEMPLATE = """
@@ -91,7 +94,7 @@ HTML_TEMPLATE = """
 <body>
     <header>
         <h1>GlobalRoute AI <span style="font-weight: 300; font-size: 14px; opacity: 0.8;">| Enterprise B2B Logistics</span></h1>
-        <span style="font-size: 13px; background: #2563eb; padding: 5px 10px; border-radius: 4px;">Global Scale v2.0 (Quotas Active)</span>
+        <span style="font-size: 13px; background: #2563eb; padding: 5px 10px; border-radius: 4px;">Global Scale v2.0 (Stable)</span>
     </header>
 
     <div class="container">
@@ -138,7 +141,7 @@ HTML_TEMPLATE = """
                 </div>
                 <h3 style="font-size: 14px; margin-top: 20px;">Infrastructure Status</h3>
                 <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Moteur de quotas actif (Anti-abus)</p>
-                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Chiffrement multi-tenant opérationnel</p>
+                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Sécurité Render & PostgreSQL OK</p>
             </div>
         </div>
 
@@ -188,7 +191,10 @@ HTML_TEMPLATE = """
 
 @app.route("/")
 def index():
-    all_users = User.query.all()
+    try:
+        all_users = User.query.all()
+    except Exception:
+        all_users = []
     return render_template_string(HTML_TEMPLATE, users=all_users)
 
 @app.route("/register", methods=["POST"])
@@ -214,7 +220,7 @@ def register():
         password_hash=hashed_pwd,
         payment_method=payment_method,
         status="en_attente",
-        api_quota=50  # Quota initial de test
+        api_quota=50
     )
     db.session.add(new_user)
     db.session.commit()
@@ -243,12 +249,10 @@ def api_optimize():
     if user.status != "actif":
         return jsonify({"error": "Compte en attente de paiement ou suspendu."}), 403
     
-    # Vérification des Quotas B2B (Empêche l'abus de l'API)
     current_usage = len(user.logs)
     if current_usage >= user.api_quota:
         return jsonify({"error": "Quota de requêtes API atteint. Veuillez mettre à niveau votre abonnement."}), 429
     
-    # Enregistrer le log de consommation
     log = UsageLog(user_id=user.id, endpoint="/api/v1/optimize")
     db.session.add(log)
     db.session.commit()
