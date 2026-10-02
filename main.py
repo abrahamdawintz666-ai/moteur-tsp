@@ -1,14 +1,14 @@
 import os
 import secrets
 from datetime import datetime
-from flask import Flask, render_template_string, request, redirect, url_for, flash, session, jsonify
+from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_PASSWORD", "MonSuperMotDePasseAdmin2026!")
+ADMIN_SECRET_PASSWORD = "admin123"  # Mot de passe simplifié pour ton test admin
 
 database_url = os.getenv("DATABASE_URL")
 if database_url:
@@ -29,12 +29,9 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     payment_method = db.Column(db.String(50), nullable=False)
-    status = db.Column(db.String(20), default="actif")
-    api_quota = db.Column(db.Integer, default=150)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
-    logs = db.relationship("UsageLog", backref="user", lazy=True, cascade="all, delete-orphan")
     deliveries = db.relationship("DeliveryRoute", backref="company", lazy=True, cascade="all, delete-orphan")
 
 class ApiKey(db.Model):
@@ -43,20 +40,14 @@ class ApiKey(db.Model):
     key_string = db.Column(db.String(255), unique=True, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
 
-class UsageLog(db.Model):
-    __tablename__ = "usage_logs"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    endpoint = db.Column(db.String(100), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
 class DeliveryRoute(db.Model):
     __tablename__ = "delivery_routes"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(50), unique=True, nullable=False)
-    stops_summary = db.Column(db.Text, nullable=False)
+    # Stockage propre des coordonnées GPS (Format: "Nom|Lat|Lng, Nom|Lat|Lng")
+    stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
 with app.app_context():
@@ -71,20 +62,17 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GlobalRoute AI - Enterprise Logistics SaaS & Map</title>
+    <title>GlobalRoute AI - GPS Coordinates Logistics</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card: #ffffff; --text: #334155; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
         header { background: var(--primary); color: white; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
-        header h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.5px; }
+        header h1 { margin: 0; font-size: 17px; font-weight: 700; }
         .container { padding: 20px; box-sizing: border-box; max-width: 850px; margin: 0 auto; }
         .hero { background: white; padding: 30px 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); text-align: center; margin-bottom: 20px; }
-        .hero h2 { color: var(--primary); font-size: 22px; margin-top: 0; }
-        .hero p { font-size: 13px; color: #64748b; line-height: 1.5; margin-bottom: 20px; }
-        .btn-group { display: flex; flex-direction: column; gap: 10px; }
-        .btn { display: block; width: 100%; padding: 14px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; text-decoration: none; box-sizing: border-box; cursor: pointer; border: none; }
+        .btn { display: block; width: 100%; padding: 14px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; text-decoration: none; cursor: pointer; border: none; margin-bottom: 10px; }
         .btn-primary { background: var(--accent); color: white; }
         .btn-secondary { background: #f1f5f9; color: var(--primary); border: 1px solid #cbd5e1; }
         .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); margin-bottom: 20px; }
@@ -93,19 +81,16 @@ HTML_TEMPLATE = """
         .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; font-weight: 500; }
         .alert-success { background: #dcfce7; color: #166534; }
         .alert-danger { background: #fee2e2; color: #991b1b; }
-        .api-box { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 11px; overflow-x: auto; text-align: left; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
         th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
         th { background: #f1f5f9; color: #475569; }
-        .badge { padding: 3px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; background: #dcfce7; color: #166534; }
-        #map { width: 100%; height: 300px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; z-index: 1; }
-        footer { text-align: center; font-size: 11px; color: #94a3b8; margin: 30px 0 20px 0; }
-        footer a { color: #64748b; text-decoration: none; margin: 0 10px; }
+        #map { width: 100%; height: 350px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; z-index: 1; }
+        footer { text-align: center; font-size: 11px; color: #94a3b8; margin: 30px 0; }
     </style>
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI</h1>
+        <h1>GlobalRoute AI (GPS Mode)</h1>
         <div style="display: flex; gap: 12px; align-items:center;">
             <a href="/" style="color: #cbd5e1; font-size: 12px; text-decoration: none;">Accueil</a>
             <a href="/driver-login" style="color: #6ee7b7; font-size: 12px; text-decoration: none;">🚚 Livreurs</a>
@@ -124,37 +109,32 @@ HTML_TEMPLATE = """
 
         {% if page == 'home' %}
             <div class="hero">
-                <h2>Optimisation Logistique & Géolocalisation Précise</h2>
-                <p>Gérez vos tournées avec des adresses exactes et des coordonnées GPS pour éliminer toute confusion sur le terrain.</p>
-                <div class="btn-group">
-                    <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
-                    <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
-                    <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
-                </div>
+                <h2>Routage Logistique par Coordonnées Géographiques</h2>
+                <p>Zéro erreur de lieu grâce à l'utilisation directe des latitudes et longitudes (GPS).</p>
+                <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
+                <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
+                <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
             </div>
 
         {% elif page == 'register' %}
             <div class="card">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">Inscription Entreprise</h2>
+                <h2>Inscription Entreprise</h2>
                 <form method="POST" action="/register">
                     <label>Nom de l'entreprise :</label>
-                    <input type="text" name="company_name" placeholder="Ex: Transit Global SA" required>
-                    <label>E-mail professionnel :</label>
-                    <input type="email" name="email" placeholder="admin@entreprise.com" required>
+                    <input type="text" name="company_name" required>
+                    <label>E-mail :</label>
+                    <input type="email" name="email" required>
                     <label>Mot de passe :</label>
-                    <input type="password" name="password" placeholder="••••••••" required>
-                    <label>Mode de Règlement :</label>
-                    <select name="payment_method" required>
-                        <option value="crypto_usdc">Crypto USDC / USDT</option>
-                        <option value="bank_transfer">Virement Bancaire International</option>
-                    </select>
+                    <input type="password" name="password" required>
+                    <label>Paiement :</label>
+                    <select name="payment_method"><option value="crypto_usdc">Crypto USDC</option></select>
                     <button type="submit" class="btn btn-primary">Valider</button>
                 </form>
             </div>
 
         {% elif page == 'login' %}
             <div class="card">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">Connexion Entreprise</h2>
+                <h2>Connexion Entreprise</h2>
                 <form method="POST" action="/login">
                     <label>E-mail :</label>
                     <input type="email" name="email" required>
@@ -166,86 +146,107 @@ HTML_TEMPLATE = """
 
         {% elif page == 'dashboard' and user %}
             <div class="card" style="text-align: left;">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">Tableau de Bord : {{ user.company_name }}</h2>
-                <label>Clé API :</label>
-                <div class="api-box">{{ user.api_keys[0].key_string if user.api_keys else 'N/A' }}</div>
-
-                <h3 style="font-size: 14px; margin-top: 25px; color:var(--primary);">🚚 Assigner une tournée avec Adresses Précises</h3>
+                <h2>Tableau de Bord : {{ user.company_name }}</h2>
+                
+                <h3 style="font-size: 14px; margin-top: 20px; color:var(--primary);">🎯 Assigner une Tournée via Coordonnées GPS</h3>
                 <form method="POST" action="/create-driver-route">
                     <label>Nom du Livreur :</label>
                     <input type="text" name="driver_name" placeholder="Ex: Jean Dupont" required>
 
-                    <label>Code d'accès secret :</label>
+                    <label>Code d'accès secret du livreur :</label>
                     <input type="text" name="access_code" placeholder="Ex: LIVREUR01" required>
 
-                    <label>Feuille de route (Inclure Nom précis + Ville/Quartier) :</label>
-                    <textarea name="stops_summary" rows="4" placeholder="Étape 0: Entrepôt Central, Boulevard J. Danton&#10;Étape 1: Église Évangélique d'Haïti, Rue 9, Cap-Haïtien&#10;Étape 2: Pharmacie Centrale, Avenue 4" required></textarea>
+                    <label>Points GPS de la tournée (Format par ligne : <code>Nom du lieu | Latitude | Longitude</code>) :</label>
+                    <textarea name="stops_data" rows="5" placeholder="Entrepôt Central | 19.7558 | -72.2042&#10;Église Évangélique (Rue 9) | 19.7610 | -72.2080&#10;Client Final (Quartier X) | 19.7490 | -72.1950" required></textarea>
 
-                    <button type="submit" class="btn btn-primary" style="background:#059669;">Créer la Tournée Sécurisée</button>
+                    <button type="submit" class="btn btn-primary" style="background:#059669;">Générer la Feuille de Route GPS</button>
                 </form>
 
-                <div style="margin-top: 25px;">
+                <div style="margin-top: 20px;">
                     <a href="/logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none;">Se Déconnecter</a>
                 </div>
             </div>
 
         {% elif page == 'driver_login' %}
             <div class="card" style="text-align: left; border: 2px solid #059669;">
-                <h2 style="font-size: 16px; margin-top:0; color:#059669;">🚚 Espace Livreur Terrain</h2>
+                <h2 style="color:#059669;">🚚 Espace Livreur Terrain</h2>
                 <form method="POST" action="/driver-space">
-                    <label>Code d'accès Livreur :</label>
+                    <label>Code d'accès :</label>
                     <input type="text" name="access_code" placeholder="Ex: LIVREUR01" required style="text-transform: uppercase;">
-                    <button type="submit" class="btn btn-primary" style="background:#059669;">Afficher ma Feuille de Route & Carte</button>
+                    <button type="submit" class="btn btn-primary" style="background:#059669;">Afficher la Carte & Coordonnées</button>
                 </form>
             </div>
 
         {% elif page == 'driver_space' and route %}
             <div class="card" style="text-align: left;">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">🚚 Feuille de Route & Guidage GPS</h2>
-                <p style="font-size: 12px; color: #64748b;">Chauffeur : <strong>{{ route.driver_name }}</strong></p>
-                <hr style="border:0; border-top:1px solid #e2e8f0; margin: 15px 0;">
-
-                <label>🗺️ Carte interactive avec repères géolocalisés précis :</label>
+                <h2>🚚 Feuille de Route GPS de {{ route.driver_name }}</h2>
                 <div id="map"></div>
-
                 <div style="background: #ecfdf5; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 4px solid #059669;">
-                    <span class="badge" style="background: #059669; color: white;">Instructions Détaillées (anti-confusion)</span>
-                    <p style="font-size: 13px; color: #1e293b; white-space: pre-line; line-height: 1.6; margin-top: 10px;">{{ route.stops_summary }}</p>
-                    
-                    <a href="https://maps.google.com/?q=destination" target="_blank" class="btn btn-primary" style="margin-top: 15px; font-size: 13px; padding: 12px; background:#2563eb;">🧭 Lancer la Navigation GPS Directe</a>
+                    <h4 style="margin:0 0 10px 0; color:#065f46;">Étapes Précises (Coordonnées exactes) :</h4>
+                    <ul id="stops-list" style="margin:0; padding-left: 20px; font-size: 13px; line-height: 1.6;">
+                        <!-- Rempli dynamiquement par JS -->
+                    </ul>
                 </div>
-
-                <div style="margin-top: 20px;">
-                    <a href="/driver-login" class="btn btn-secondary">Quitter l'espace livreur</a>
-                </div>
+                <a href="/driver-login" class="btn btn-secondary" style="margin-top: 20px;">Quitter l'espace livreur</a>
             </div>
 
             <script>
-                // Coordonnées précises par défaut (ex: Cap-Haïtien / repères cibles)
-                var map = L.map('map').setView([19.7558, -72.2042], 14);
+                // Données brutes sécurisées transmises depuis Python
+                var rawData = {{ route.stops_data | tojson }};
+                var lines = rawData.split("\\n");
+                var points = [];
+
+                lines.forEach(function(line) {
+                    if(line.trim() !== "") {
+                        var parts = line.split("|");
+                        if(parts.length >= 3) {
+                            points.push({
+                                name: parts[0].trim(),
+                                lat: parseFloat(parts[1].trim()),
+                                lng: parseFloat(parts[2].trim())
+                            });
+                        }
+                    }
+                });
+
+                // Initialisation de la carte Leaflet centrée sur le premier point ou Cap-Haïtien par défaut
+                var defaultCenter = points.length > 0 ? [points[0].lat, points[0].lng] : [19.7558, -72.2042];
+                var map = L.map('map').setView(defaultCenter, 14);
 
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     maxZoom: 19,
                     attribution: '© OpenStreetMap'
                 }).addTo(map);
 
-                // Points précis avec libellés uniques pour éviter les confusions de noms similaires
-                var hub = [19.7558, -72.2042];
-                var eglisePrecise = [19.7610, -72.2080]; // Emplacement exact de l'église ciblée avec rue/quartier
-                var stopClient = [19.7490, -72.1950];
+                var latLngs = [];
+                var listHtml = "";
 
-                L.marker(hub).addTo(map).bindPopup("<b>Hub / Départ</b>").openPopup();
-                L.marker(eglisePrecise).addTo(map).bindPopup("<b>Étape : Église Évangélique (Rue 9 / Précis)</b>");
-                L.marker(stopClient).addTo(map).bindPopup("<b>Étape Finale : Livraison Client</b>");
+                points.forEach(function(pt, index) {
+                    latLngs.push([pt.lat, pt.lng]);
+                    
+                    // Ajout du marqueur sur la carte avec lien de navigation direct Google Maps
+                    var gmapsUrl = "https://www.google.com/maps/search/?api=1&query=" + pt.lat + "," + pt.lng;
+                    var popupContent = "<b>Étape " + index + ": " + pt.name + "</b><br>" +
+                                       "Lat: " + pt.lat + ", Lng: " + pt.lng + "<br>" +
+                                       "<a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 Ouvrir dans GPS</a>";
+                    
+                    L.marker([pt.lat, pt.lng]).addTo(map).bindPopup(popupContent);
 
-                var routeCoords = [hub, eglisePrecise, stopClient];
-                var polyline = L.polyline(routeCoords, {color: '#2563eb', weight: 4, dashArray: '5, 8'}).addTo(map);
-                map.fitBounds(polyline.getBounds(), {padding: [40, 40]});
+                    // Ajout dans la liste textuelle
+                    listHtml += "<li><b>" + pt.name + "</b> (GPS: " + pt.lat + ", " + pt.lng + ")<br><a href='" + gmapsUrl + "' target='_blank' style='font-size:11px; color:#2563eb;'>Lancer l'itinéraire GPS</a></li><br>";
+                });
+
+                document.getElementById("stops-list").innerHTML = listHtml;
+
+                if(latLngs.length > 0) {
+                    var polyline = L.polyline(latLngs, {color: '#2563eb', weight: 4, dashArray: '5, 8'}).addTo(map);
+                    map.fitBounds(polyline.getBounds(), {padding: [40, 40]});
+                }
             </script>
 
         {% elif page == 'admin_login' %}
             <div class="card" style="text-align: left; border: 2px solid var(--primary);">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">🔐 Connexion Administrateur</h2>
+                <h2>🔐 Connexion Administrateur</h2>
                 <form method="POST" action="/admin-panel">
                     <label>Mot de passe Admin :</label>
                     <input type="password" name="admin_password" required>
@@ -255,27 +256,18 @@ HTML_TEMPLATE = """
 
         {% elif page == 'admin' %}
             <div class="card" style="text-align: left;">
-                <h2 style="font-size: 16px; margin-top:0; color:var(--primary);">🛡️ Panneau Administrateur</h2>
-                <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px;">Verrouiller</a>
+                <h2>🛡️ Panneau Administrateur</h2>
                 <table>
-                    <thead>
-                        <tr><th>Entreprise</th><th>Clé API</th><th>Requêtes</th></tr>
-                    </thead>
+                    <thead><tr><th>Entreprise</th><th>Clé API</th></tr></thead>
                     <tbody>
                         {% for u in users %}
-                        <tr>
-                            <td><strong>{{ u.company_name }}</strong></td>
-                            <td><code>{{ u.api_keys[0].key_string if u.api_keys else 'N/A' }}</code></td>
-                            <td>{{ u.logs|length }}/{{ u.api_quota }}</td>
-                        </tr>
+                        <tr><td><strong>{{ u.company_name }}</strong></td><td><code>{{ u.api_keys[0].key_string if u.api_keys else 'N/A' }}</code></td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         {% endif %}
-        <footer>
-            <p>&copy; 2026 GlobalRoute AI. Tous droits réservés.</p>
-        </footer>
+        <footer><p>&copy; 2026 GlobalRoute AI. Tous droits réservés.</p></footer>
     </div>
 </body>
 </html>
@@ -316,12 +308,12 @@ def create_driver_route():
         return redirect(url_for("login_form"))
     driver_name = request.form.get("driver_name")
     access_code = request.form.get("access_code").strip().upper()
-    stops_summary = request.form.get("stops_summary")
+    stops_data = request.form.get("stops_data")
     
-    new_route = DeliveryRoute(user_id=user_id, driver_name=driver_name, access_code=access_code, stops_summary=stops_summary)
+    new_route = DeliveryRoute(user_id=user_id, driver_name=driver_name, access_code=access_code, stops_data=stops_data)
     db.session.add(new_route)
     db.session.commit()
-    flash("Tournée créée avec succès avec les adresses détaillées !", "success")
+    flash("Tournée GPS créée avec succès !", "success")
     return redirect(url_for("dashboard"))
 
 @app.route("/admin-panel", methods=["GET", "POST"])
@@ -331,16 +323,11 @@ def admin_panel():
             if request.form.get("admin_password") == ADMIN_SECRET_PASSWORD:
                 session["is_admin"] = True
             else:
-                flash("Mot de passe incorrect.", "danger")
+                flash("Mot de passe incorrect (Utilise 'admin123').", "danger")
                 return render_template_string(HTML_TEMPLATE, page="admin_login")
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
     return render_template_string(HTML_TEMPLATE, page="admin", users=User.query.all())
-
-@app.route("/admin-logout")
-def admin_logout():
-    session.pop("is_admin", None)
-    return redirect(url_for("index"))
 
 @app.route("/register", methods=["POST"])
 def register():
