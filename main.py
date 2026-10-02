@@ -5,7 +5,6 @@ import io
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import inspect, text
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -13,7 +12,7 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
-# Connexion robuste Render/PostgreSQL ou SQLite local
+# Connexion base de données
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -34,12 +33,10 @@ class User(db.Model):
     company_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    payment_method = db.Column(db.String(50), default="Crypto USDC")
     subscription_status = db.Column(db.String(50), default="Actif")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
-    logs = db.relationship("UsageLog", backref="user", lazy=True, cascade="all, delete-orphan")
     deliveries = db.relationship("DeliveryRoute", backref="company", lazy=True, cascade="all, delete-orphan")
 
 class ApiKey(db.Model):
@@ -51,14 +48,6 @@ class ApiKey(db.Model):
     expires_at = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), default="Active")
 
-class UsageLog(db.Model):
-    __tablename__ = "usage_logs"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    action = db.Column(db.String(150), nullable=False)
-    ip_address = db.Column(db.String(50), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
 class DeliveryRoute(db.Model):
     __tablename__ = "delivery_routes"
     id = db.Column(db.Integer, primary_key=True)
@@ -68,45 +57,16 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# AUTO-MIGRATION TOTALE ANTI-ERREUR 500
+# Création propre des tables
 with app.app_context():
     db.create_all()
-    try:
-        inspector = inspect(db.engine)
-        tables = inspector.get_table_names()
-        with db.engine.begin() as conn:
-            if "users" in tables:
-                cols = [c['name'] for c in inspector.get_columns('users')]
-                if 'payment_method' not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN payment_method VARCHAR(50) DEFAULT 'Crypto USDC'"))
-                if 'subscription_status' not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) DEFAULT 'Actif'"))
-            
-            if "api_keys" in tables:
-                cols = [c['name'] for c in inspector.get_columns('api_keys')]
-                if 'status' not in cols:
-                    conn.execute(text("ALTER TABLE api_keys ADD COLUMN status VARCHAR(20) DEFAULT 'Active'"))
-
-            if "usage_logs" in tables:
-                cols = [c['name'] for c in inspector.get_columns('usage_logs')]
-                if 'ip_address' not in cols:
-                    conn.execute(text("ALTER TABLE usage_logs ADD COLUMN ip_address VARCHAR(50)"))
-                if 'timestamp' not in cols:
-                    conn.execute(text("ALTER TABLE usage_logs ADD COLUMN timestamp TIMESTAMP"))
-
-            if "delivery_routes" in tables:
-                cols = [c['name'] for c in inspector.get_columns('delivery_routes')]
-                if 'status' not in cols:
-                    conn.execute(text("ALTER TABLE delivery_routes ADD COLUMN status VARCHAR(20) DEFAULT 'En cours'"))
-    except Exception as e:
-        print("Avertissement migration automatique :", e)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GlobalRoute AI - Master Admin Dashboard</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -304,31 +264,29 @@ HTML_TEMPLATE = """
                     </form>
                 </div>
 
-                <h3 style="font-size:14px; color:var(--primary);">📋 Suivi des Utilisateurs, Clés et Abonnements</h3>
+                <h3 style="font-size:14px; color:var(--primary);">📋 Suivi des Utilisateurs et Clés</h3>
                 <table>
                     <thead>
                         <tr>
                             <th>Entreprise / Email</th>
                             <th>Détails Clé & Validité</th>
-                            <th>Abonnement</th>
-                            <th>Dernière Activité / Logs</th>
                             <th>Actions (Révocation)</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {% if admin_data %}
-                            {% for item in admin_data %}
+                        {% if users_list %}
+                            {% for u in users_list %}
                             <tr>
                                 <td>
-                                    <strong>{{ item.user.company_name }}</strong><br>
-                                    <span style="color:#64748b;">{{ item.user.email }}</span>
+                                    <strong>{{ u.company_name }}</strong><br>
+                                    <span style="color:#64748b;">{{ u.email }}</span>
                                 </td>
                                 <td>
-                                    {% if item.user.api_keys %}
-                                        {% for k in item.user.api_keys %}
+                                    {% if u.api_keys %}
+                                        {% for k in u.api_keys %}
                                             <div style="margin-bottom:4px;">
                                                 <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
-                                                <span style="font-size:9px; color:#475569;">Créé le: {{ k.created_at.strftime('%Y-%m-%d') if k.created_at else 'N/A' }} | Expire: {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }}</span><br>
+                                                <span style="font-size:9px; color:#475569;">Expire: {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }}</span><br>
                                                 <span class="badge {% if k.status == 'Active' %}badge-active{% else %}badge-revoked{% endif %}">{{ k.status }}</span>
                                             </div>
                                         {% endfor %}
@@ -337,20 +295,8 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <span class="badge badge-active">{{ item.user.subscription_status }}</span><br>
-                                    <span style="font-size:9px; color:#64748b;">{{ item.user.payment_method }}</span>
-                                </td>
-                                <td>
-                                    {% if item.last_log %}
-                                        {{ item.last_log.action }}<br>
-                                        <span style="font-size:9px; color:#64748b;">IP: {{ item.last_log.ip_address or 'N/A' }}<br>{{ item.last_log.timestamp.strftime('%Y-%m-%d %H:%M') if item.last_log.timestamp else '' }}</span>
-                                    {% else %}
-                                        <span style="color:#94a3b8;">Aucune activité</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if item.user.api_keys %}
-                                        {% for k in item.user.api_keys %}
+                                    {% if u.api_keys %}
+                                        {% for k in u.api_keys %}
                                             {% if k.status == 'Active' %}
                                                 <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
                                                     <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
@@ -363,7 +309,7 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="5" style="text-align: center; color: #94a3b8;">Aucun utilisateur enregistré.</td>
+                                <td colspan="3" style="text-align: center; color: #94a3b8;">Aucun utilisateur enregistré.</td>
                             </tr>
                         {% endif %}
                     </tbody>
@@ -444,11 +390,6 @@ def create_driver_route():
         )
         db.session.add(new_route)
         db.session.commit()
-        
-        ip = request.remote_addr
-        log = UsageLog(user_id=user_id, action="Importation de tournée CSV", ip_address=ip)
-        db.session.add(log)
-        db.session.commit()
 
         flash(f"Tournée importée avec succès ! {len(stops_list)} étapes chargées.", "success")
     except Exception as e:
@@ -468,17 +409,8 @@ def admin_panel():
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
     
-    try:
-        users_list = User.query.all()
-        admin_data = []
-        for u in users_list:
-            last_log = u.logs[-1] if u.logs else None
-            admin_data.append({"user": u, "last_log": last_log})
-    except Exception as e:
-        flash(f"Erreur base de données admin : {str(e)}", "danger")
-        admin_data = []
-        
-    return render_template_string(HTML_TEMPLATE, page="admin", admin_data=admin_data)
+    users_list = User.query.all()
+    return render_template_string(HTML_TEMPLATE, page="admin", users_list=users_list)
 
 @app.route("/admin/generate-custom-key", methods=["POST"])
 def admin_generate_custom_key():
@@ -563,13 +495,8 @@ def login():
     user = User.query.filter_by(email=request.form.get("email")).first()
     if user and check_password_hash(user.password_hash, request.form.get("password")):
         session["user_id"] = user.id
-        
-        ip = request.remote_addr
-        log = UsageLog(user_id=user.id, action="Connexion Entreprise", ip_address=ip)
-        db.session.add(log)
-        db.session.commit()
-
         return redirect(url_for("dashboard"))
+    
     flash("Identifiants incorrects.", "danger")
     return redirect(url_for("login_form"))
 
