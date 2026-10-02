@@ -68,24 +68,36 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# AUTO-MIGRATION ROBUSTE ANTI-ERREUR 500
+# AUTO-MIGRATION TOTALE ANTI-ERREUR 500 (Vérifie et met à jour toutes les tables)
 with app.app_context():
     db.create_all()
     try:
         inspector = inspect(db.engine)
         tables = inspector.get_table_names()
-        if "users" in tables:
-            columns = [c['name'] for c in inspector.get_columns('users')]
-            with db.engine.begin() as conn:
-                if 'payment_method' not in columns:
+        with db.engine.begin() as conn:
+            if "users" in tables:
+                cols = [c['name'] for c in inspector.get_columns('users')]
+                if 'payment_method' not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN payment_method VARCHAR(50) DEFAULT 'Crypto USDC'"))
-                if 'subscription_status' not in columns:
+                if 'subscription_status' not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) DEFAULT 'Actif'"))
-        if "api_keys" in tables:
-            cols = [c['name'] for c in inspector.get_columns('api_keys')]
-            with db.engine.begin() as conn:
+            
+            if "api_keys" in tables:
+                cols = [c['name'] for c in inspector.get_columns('api_keys')]
                 if 'status' not in cols:
                     conn.execute(text("ALTER TABLE api_keys ADD COLUMN status VARCHAR(20) DEFAULT 'Active'"))
+
+            if "usage_logs" in tables:
+                cols = [c['name'] for c in inspector.get_columns('usage_logs')]
+                if 'ip_address' not in cols:
+                    conn.execute(text("ALTER TABLE usage_logs ADD COLUMN ip_address VARCHAR(50)"))
+                if 'timestamp' not in cols:
+                    conn.execute(text("ALTER TABLE usage_logs ADD COLUMN timestamp TIMESTAMP"))
+
+            if "delivery_routes" in tables:
+                cols = [c['name'] for c in inspector.get_columns('delivery_routes')]
+                if 'status' not in cols:
+                    conn.execute(text("ALTER TABLE delivery_routes ADD COLUMN status VARCHAR(20) DEFAULT 'En cours'"))
     except Exception as e:
         print("Avertissement migration automatique :", e)
 
@@ -570,6 +582,7 @@ def dashboard():
     current_user = db.session.get(User, user_id)
     return render_template_string(HTML_TEMPLATE, page="dashboard", user=current_user)
 
+@app.logout
 @app.route("/logout")
 def logout():
     session.pop("user_id", None)
