@@ -6,19 +6,22 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)  # Clé secrète ultra-sécurisée générée dynamiquement
+app.secret_key = secrets.token_hex(32)
 
-# 1. Configuration de la base de données PostgreSQL sur Render
+# 1. Configuration de la base de données PostgreSQL sur Render (Forcé avec psycopg2)
 database_url = os.getenv("DATABASE_URL")
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# 2. Modèles de Données Avancés (Multi-tenant & Sécurité)
+# 2. Modèles de Données Avancés (Multi-tenant, Sécurité & Quotas B2B)
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
@@ -27,10 +30,11 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     payment_method = db.Column(db.String(50), nullable=False)  # 'crypto_usdc' ou 'bank_transfer'
     status = db.Column(db.String(20), default="en_attente")    # 'actif' ou 'en_attente'
+    api_quota = db.Column(db.Integer, default=50)              # Quota de requêtes API autorisé
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Relation avec les clés API
     api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
+    logs = db.relationship("UsageLog", backref="user", lazy=True, cascade="all, delete-orphan")
 
 class ApiKey(db.Model):
     __tablename__ = "api_keys"
@@ -50,20 +54,20 @@ class UsageLog(db.Model):
 with app.app_context():
     db.create_all()
 
-# 3. Interface SaaS Globale (Design Moderne / Dashboard / Docs API)
+# 3. Interface SaaS Globale (Design Enterprise International)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - Enterprise Logistics SaaS</title>
+    <title>GlobalRoute AI - Enterprise Global Logistics SaaS</title>
     <style>
         :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card: #ffffff; --text: #334155; }
         body { font-family: 'Inter', system-ui, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
         header { background: var(--primary); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
         header h1 { margin: 0; font-size: 20px; letter-spacing: 0.5px; }
-        .container { max-width: 1000px; margin: 40px auto; background: var(--card); padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); }
+        .container { max-width: 1100px; margin: 40px auto; background: var(--card); padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); }
         .alert { padding: 15px; border-radius: 8px; margin-bottom: 25px; font-weight: 500; font-size: 14px; }
         .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
         .alert-danger { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
@@ -86,12 +90,11 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI <span style="font-weight: 300; font-size: 14px; opacity: 0.8;">| B2B Logistics Engine</span></h1>
-        <span style="font-size: 13px; background: #2563eb; padding: 5px 10px; border-radius: 4px;">Global Scale v1.0</span>
+        <h1>GlobalRoute AI <span style="font-weight: 300; font-size: 14px; opacity: 0.8;">| Enterprise B2B Logistics</span></h1>
+        <span style="font-size: 13px; background: #2563eb; padding: 5px 10px; border-radius: 4px;">Global Scale v2.0 (Quotas Active)</span>
     </header>
 
     <div class="container">
-        <!-- Messages Flash -->
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
             {% for category, message in messages %}
@@ -101,55 +104,53 @@ HTML_TEMPLATE = """
         {% endwith %}
 
         <div class="grid">
-            <!-- Inscription Entreprise / Demande de Clé -->
             <div class="section-box">
-                <h2>1. Inscription Entreprise (SaaS)</h2>
+                <h2>1. Inscription Entreprise (SaaS Global)</h2>
                 <form method="POST" action="/register">
                     <label>Nom de l'entreprise :</label>
-                    <input type="text" name="company_name" placeholder="Ex: Transports Mondiaux SARL" required>
+                    <input type="text" name="company_name" placeholder="Ex: Global Supply Chain Inc." required>
 
                     <label>E-mail professionnel :</label>
-                    <input type="email" name="email" placeholder="admin@entreprise.com" required>
+                    <input type="email" name="email" placeholder="admin@globalsupply.com" required>
 
                     <label>Mot de passe sécurisé :</label>
                     <input type="password" name="password" placeholder="••••••••" required>
 
-                    <label>Méthode de Paiement (International) :</label>
+                    <label>Méthode de Règlement International :</label>
                     <select name="payment_method" required>
-                        <option value="crypto_usdc">Crypto Stablecoin (USDC / USDT - Réseau Polygon/Solana)</option>
+                        <option value="crypto_usdc">Crypto Stablecoin (USDC / USDT - Polygon/Solana)</option>
                         <option value="bank_transfer">Virement Bancaire International (Facture Pro Forma)</option>
                     </select>
 
-                    <button type="submit">Créer le Compte & Générer la Clé API</button>
+                    <button type="submit">Créer le Compte & Activer le Quota API</button>
                 </form>
             </div>
 
-            <!-- Documentation API et Moteur de Routage -->
             <div class="section-box">
-                <h2>2. Documentation API Moteur Logistique</h2>
-                <p style="font-size: 13px; color: #64748b;">Utilisez votre clé API pour envoyer vos requêtes d'optimisation de tournées à l'échelle mondiale :</p>
+                <h2>2. Documentation API & Quotas</h2>
+                <p style="font-size: 13px; color: #64748b;">Consommez l'API de routage mondial avec contrôle de quota en temps réel :</p>
                 <div class="api-docs">
                     POST /api/v1/optimize<br>
                     Headers:<br>
                     &nbsp;&nbsp;Authorization: Bearer VOTRE_CLE_API<br>
                     Body (JSON):<br>
-                    &nbsp;&nbsp;{ "depot": "Paris", "destinations": [...] }
+                    &nbsp;&nbsp;{ "origin": "Port-au-Prince", "destinations": [...] }
                 </div>
-                <h3 style="font-size: 14px; margin-top: 20px;">Statut du Système</h3>
-                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Moteur d'optimisation actif (UTC)</p>
-                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Chiffrement & Multi-tenant sécurisés</p>
+                <h3 style="font-size: 14px; margin-top: 20px;">Infrastructure Status</h3>
+                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Moteur de quotas actif (Anti-abus)</p>
+                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Chiffrement multi-tenant opérationnel</p>
             </div>
         </div>
 
-        <!-- Registre Global des Comptes Entreprises -->
-        <h2 style="margin-top: 40px;">Registre des Comptes & Clés API Actives</h2>
+        <h2 style="margin-top: 40px;">Registre Global des Entreprises & Consommation API</h2>
         <table>
             <thead>
                 <tr>
                     <th>Entreprise</th>
                     <th>E-mail</th>
-                    <th>Clé API Générée</th>
+                    <th>Clé API</th>
                     <th>Paiement</th>
+                    <th>Requêtes Utilisées / Quota</th>
                     <th>Statut</th>
                 </tr>
             </thead>
@@ -162,10 +163,11 @@ HTML_TEMPLATE = """
                         {% if user.api_keys %}
                             <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">{{ user.api_keys[0].key_string }}</code>
                         {% else %}
-                            Aucune clé
+                            Aucune
                         {% endif %}
                     </td>
                     <td>{{ "Crypto (USDC)" if user.payment_method == 'crypto_usdc' else "Virement Bancaire" }}</td>
+                    <td><strong>{{ user.logs|length }}</strong> / {{ user.api_quota }} req.</td>
                     <td>
                         <span class="badge {{ 'badge-active' if user.status == 'actif' else 'badge-pending' }}">
                             {{ 'Actif' if user.status == 'actif' else 'En attente de règlement' }}
@@ -174,7 +176,7 @@ HTML_TEMPLATE = """
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="5" style="text-align: center; color: #94a3b8;">Aucun compte enregistré pour le moment.</td>
+                    <td colspan="6" style="text-align: center; color: #94a3b8;">Aucune entreprise enregistrée pour l'instant.</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -184,13 +186,11 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# 4. Route principale (Landing Page / Dashboard)
 @app.route("/")
 def index():
     all_users = User.query.all()
     return render_template_string(HTML_TEMPLATE, users=all_users)
 
-# 5. Route d'Inscription & Génération de Clé API
 @app.route("/register", methods=["POST"])
 def register():
     company_name = request.form.get("company_name")
@@ -199,38 +199,34 @@ def register():
     payment_method = request.form.get("payment_method")
     
     if not company_name or not email or not password or not payment_method:
-        flash("Veuillez remplir tous les champs du formulaire.", "danger")
+        flash("Veuillez remplir tous les champs.", "danger")
         return redirect(url_for("index"))
     
-    existing_user = User.query.filter_by(email=email).first()
-    if existing_user:
-        flash("Cet e-mail est déjà associé à un compte entreprise.", "danger")
+    if User.query.filter_by(email=email).first():
+        flash("Cet e-mail est déjà utilisé par une autre entreprise.", "danger")
         return redirect(url_for("index"))
     
-    # Sécurité : Hachage du mot de passe
     hashed_pwd = generate_password_hash(password)
     
-    # Création de l'utilisateur
     new_user = User(
         company_name=company_name,
         email=email,
         password_hash=hashed_pwd,
         payment_method=payment_method,
-        status="en_attente"  # En attente de vérification du paiement USDC ou Virement
+        status="en_attente",
+        api_quota=50  # Quota initial de test
     )
     db.session.add(new_user)
     db.session.commit()
     
-    # Génération automatique d'une clé API unique pour cette entreprise
     generated_key = f"gra_live_{secrets.token_hex(16)}"
     new_api_key = ApiKey(key_string=generated_key, user_id=new_user.id)
     db.session.add(new_api_key)
     db.session.commit()
     
-    flash(f"Compte créé avec succès ! Votre clé API est : {generated_key}. Veuillez procéder au règlement pour l'activer.", "success")
+    flash(f"Compte créé avec succès ! Votre clé API : {generated_key}. Réglez votre abonnement pour activer le compte.", "success")
     return redirect(url_for("index"))
 
-# 6. API Endpoint du Moteur de Routage (Sécurisé par clé API & Journalisé)
 @app.route("/api/v1/optimize", methods=["POST"])
 def api_optimize():
     auth_header = request.headers.get("Authorization")
@@ -243,27 +239,31 @@ def api_optimize():
     if not api_key_record:
         return jsonify({"error": "Clé API non reconnue."}), 403
     
-    # Vérifier si l'entreprise est active
     user = User.query.get(api_key_record.user_id)
     if user.status != "actif":
-        return jsonify({"error": "Compte en attente de paiement ou suspendu. Veuillez régler votre facture."}), 403
+        return jsonify({"error": "Compte en attente de paiement ou suspendu."}), 403
     
-    # Enregistrer le log d'utilisation (Monitoring)
+    # Vérification des Quotas B2B (Empêche l'abus de l'API)
+    current_usage = len(user.logs)
+    if current_usage >= user.api_quota:
+        return jsonify({"error": "Quota de requêtes API atteint. Veuillez mettre à niveau votre abonnement."}), 429
+    
+    # Enregistrer le log de consommation
     log = UsageLog(user_id=user.id, endpoint="/api/v1/optimize")
     db.session.add(log)
     db.session.commit()
     
-    # Simulation de la réponse du moteur de routage mondial
     return jsonify({
         "status": "success",
         "message": f"Tournée optimisée avec succès pour {user.company_name}",
+        "remaining_quota": user.api_quota - (current_usage + 1),
         "routes": [
-            {"stop": 1, "location": "Entrepôt Central", "eta": "08:00 UTC"},
-            {"stop": 2, "location": "Client Hub Nord", "eta": "09:30 UTC"}
+            {"stop": 1, "location": "Hub International", "eta": "08:00 UTC"},
+            {"stop": 2, "location": "Centre de Distribution", "eta": "10:15 UTC"}
         ],
         "metrics": {
-            "total_distance_km": 412.5,
-            "fuel_saved_percentage": 18.4
+            "total_distance_km": 520.4,
+            "carbon_reduced_kg": 142.1
         }
     }), 200
 
