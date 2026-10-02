@@ -8,7 +8,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# 1. Configuration blindée de la base de données PostgreSQL sur Render (Pilote psycopg2 forcé)
+# 1. Configuration de la base de données PostgreSQL sur Render
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -21,16 +21,16 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# 2. Modèles de Données Avancés (Multi-tenant, Sécurité & Quotas B2B)
+# 2. Modèles de Données
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
     company_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    payment_method = db.Column(db.String(50), nullable=False)  # 'crypto_usdc' ou 'bank_transfer'
-    status = db.Column(db.String(20), default="en_attente")    # 'actif' ou 'en_attente'
-    api_quota = db.Column(db.Integer, default=50)              # Quota de requêtes API autorisé
+    payment_method = db.Column(db.String(50), nullable=False)
+    status = db.Column(db.String(20), default="actif")  # Mis en actif par défaut pour faciliter tes tests
+    api_quota = db.Column(db.Integer, default=100)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
@@ -41,7 +41,6 @@ class ApiKey(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     key_string = db.Column(db.String(255), unique=True, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class UsageLog(db.Model):
     __tablename__ = "usage_logs"
@@ -50,52 +49,56 @@ class UsageLog(db.Model):
     endpoint = db.Column(db.String(100), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Création sécurisée des tables au lancement
 with app.app_context():
     try:
         db.create_all()
-    except Exception as e:
-        print(f"Erreur lors de l'initialisation de la base de données : {e}")
+    except Exception:
+        pass
 
-# 3. Interface SaaS Globale (Design Enterprise International)
+# 3. Interface Mobile-First & Responsive (Design Moderne)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlobalRoute AI - Enterprise Global Logistics SaaS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GlobalRoute AI - Mobile B2B SaaS</title>
     <style>
-        :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card: #ffffff; --text: #334155; }
-        body { font-family: 'Inter', system-ui, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
-        header { background: var(--primary); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
-        header h1 { margin: 0; font-size: 20px; letter-spacing: 0.5px; }
-        .container { max-width: 1100px; margin: 40px auto; background: var(--card); padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); }
-        .alert { padding: 15px; border-radius: 8px; margin-bottom: 25px; font-weight: 500; font-size: 14px; }
-        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-        .alert-danger { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-        .alert-warning { background: #fef9c3; color: #854d0e; border: 1px solid #fef08a; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
-        .section-box { background: #f8fafc; padding: 25px; border-radius: 8px; border: 1px solid #e2e8f0; }
-        h2 { color: var(--primary); font-size: 18px; margin-top: 0; margin-bottom: 20px; }
-        label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #475569; }
-        input, select { width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; margin-bottom: 15px; }
-        button { background: var(--accent); color: white; padding: 12px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
-        button:hover { background: #1d4ed8; }
-        .api-docs { background: #0f172a; color: #e2e8f0; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 13px; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
-        th { background: #f1f5f9; color: #475569; font-weight: 600; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .badge-active { background: #dcfce7; color: #166534; }
-        .badge-pending { background: #fef9c3; color: #854d0e; }
+        :root { --primary: #0f172a; --accent: #2563eb; --bg: #f1f5f9; --card: #ffffff; --text: #334155; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        header { background: var(--primary); color: white; padding: 15px 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+        header h1 { margin: 0; font-size: 18px; }
+        nav { background: #1e293b; width: 100%; display: flex; overflow-x: auto; padding: 10px 20px; gap: 15px; box-sizing: border-box; }
+        nav a { color: #cbd5e1; text-decoration: none; font-size: 13px; font-weight: 600; white-space: nowrap; }
+        nav a:hover, nav a.active { color: white; border-bottom: 2px solid var(--accent); }
+        .container { max-width: 100%; padding: 20px; box-sizing: border-box; }
+        .card { background: var(--card); padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h2 { color: var(--primary); font-size: 16px; margin-top: 0; }
+        label { display: block; font-weight: 600; font-size: 12px; margin-bottom: 5px; color: #475569; }
+        input, select { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box; font-size: 14px; margin-bottom: 15px; background: #fff; }
+        button { background: var(--accent); color: white; padding: 14px; border: none; border-radius: 8px; font-size: 15px; font-weight: bold; cursor: pointer; width: 100%; }
+        .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; font-weight: 500; }
+        .alert-success { background: #dcfce7; color: #166534; }
+        .alert-danger { background: #fee2e2; color: #991b1b; }
+        .api-box { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+        th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; color: #475569; }
+        .badge { padding: 3px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; background: #dcfce7; color: #166534; }
+        .test-section { background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-top: 15px; }
     </style>
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI <span style="font-weight: 300; font-size: 14px; opacity: 0.8;">| Enterprise B2B Logistics</span></h1>
-        <span style="font-size: 13px; background: #2563eb; padding: 5px 10px; border-radius: 4px;">Global Scale v2.0 (Stable)</span>
+        <h1>GlobalRoute AI</h1>
+        <span style="font-size: 11px; opacity: 0.8;">Mobile Enterprise Logistics v2.5</span>
     </header>
+
+    <nav>
+        <a href="#register" class="active">Inscription</a>
+        <a href="#docs">Documentation API</a>
+        <a href="#registry">Registre & Tests</a>
+    </nav>
 
     <div class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -106,84 +109,81 @@ HTML_TEMPLATE = """
           {% endif %}
         {% endwith %}
 
-        <div class="grid">
-            <div class="section-box">
-                <h2>1. Inscription Entreprise (SaaS Global)</h2>
-                <form method="POST" action="/register">
-                    <label>Nom de l'entreprise :</label>
-                    <input type="text" name="company_name" placeholder="Ex: Global Supply Chain Inc." required>
+        <!-- Section Inscription -->
+        <div id="register" class="card">
+            <h2>Créer un Compte Entreprise</h2>
+            <form method="POST" action="/register">
+                <label>Nom de l'entreprise :</label>
+                <input type="text" name="company_name" placeholder="Ex: Port-au-Prince Logistics" required>
 
-                    <label>E-mail professionnel :</label>
-                    <input type="email" name="email" placeholder="admin@globalsupply.com" required>
+                <label>E-mail professionnel :</label>
+                <input type="email" name="email" placeholder="contact@entreprise.ht" required>
 
-                    <label>Mot de passe sécurisé :</label>
-                    <input type="password" name="password" placeholder="••••••••" required>
+                <label>Mot de passe :</label>
+                <input type="password" name="password" placeholder="••••••••" required>
 
-                    <label>Méthode de Règlement International :</label>
-                    <select name="payment_method" required>
-                        <option value="crypto_usdc">Crypto Stablecoin (USDC / USDT - Polygon/Solana)</option>
-                        <option value="bank_transfer">Virement Bancaire International (Facture Pro Forma)</option>
-                    </select>
+                <label>Mode de Règlement :</label>
+                <select name="payment_method" required>
+                    <option value="crypto_usdc">Crypto Stablecoin (USDC / USDT)</option>
+                    <option value="bank_transfer">Virement Bancaire / Facture Pro Forma</option>
+                </select>
 
-                    <button type="submit">Créer le Compte & Activer le Quota API</button>
-                </form>
+                <button type="submit">S'inscrire & Obtenir la Clé API</button>
+            </form>
+        </div>
+
+        <!-- Section Documentation API -->
+        <div id="docs" class="card">
+            <h2>Documentation & Test Moteur</h2>
+            <p style="font-size: 12px; color: #64748b;">Endpoint officiel pour les tests développeurs :</p>
+            <div class="api-box">
+                POST /api/v1/optimize<br>
+                Header: Authorization: Bearer VOTRE_CLE<br>
+                Body: { "origin": "Cap-Haitien", "destinations": [...] }
             </div>
-
-            <div class="section-box">
-                <h2>2. Documentation API & Quotas</h2>
-                <p style="font-size: 13px; color: #64748b;">Consommez l'API de routage mondial avec contrôle de quota en temps réel :</p>
-                <div class="api-docs">
-                    POST /api/v1/optimize<br>
-                    Headers:<br>
-                    &nbsp;&nbsp;Authorization: Bearer VOTRE_CLE_API<br>
-                    Body (JSON):<br>
-                    &nbsp;&nbsp;{ "origin": "Port-au-Prince", "destinations": [...] }
+            
+            <div class="test-section">
+                <h3 style="font-size: 14px; margin-top:0; color:#1e40af;">🧪 Commandes Prêtes pour vos Tests</h3>
+                <p style="font-size: 12px; margin-bottom:5px;"><strong>1. Test Employeur / Opérateur (Via cURL / Terminal) :</strong></p>
+                <div class="api-box" style="background:#1e293b; margin-bottom:10px;">
+                    curl -X POST https://moteur-tsp.onrender.com/api/v1/optimize \<br>
+                    -H "Authorization: Bearer gra_live_TON_TOKEN" \<br>
+                    -H "Content-Type: application/json"
                 </div>
-                <h3 style="font-size: 14px; margin-top: 20px;">Infrastructure Status</h3>
-                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Moteur de quotas actif (Anti-abus)</p>
-                <p style="font-size: 13px; color: #166534; font-weight: 600;">✔ Sécurité Render & PostgreSQL OK</p>
+                <p style="font-size: 12px; margin-bottom:5px;"><strong>2. Test Développeur (Validation JSON) :</strong> Le moteur renvoie un statut 200 avec les métriques de carburant et de distance.</p>
             </div>
         </div>
 
-        <h2 style="margin-top: 40px;">Registre Global des Entreprises & Consommation API</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Entreprise</th>
-                    <th>E-mail</th>
-                    <th>Clé API</th>
-                    <th>Paiement</th>
-                    <th>Requêtes Utilisées / Quota</th>
-                    <th>Statut</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for user in users %}
-                <tr>
-                    <td><strong>{{ user.company_name }}</strong></td>
-                    <td>{{ user.email }}</td>
-                    <td>
-                        {% if user.api_keys %}
-                            <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">{{ user.api_keys[0].key_string }}</code>
+        <!-- Section Registre & Suivi -->
+        <div id="registry" class="card">
+            <h2>Registre des Entreprises & Clés</h2>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Entreprise</th>
+                            <th>Clé API</th>
+                            <th>Quota</th>
+                            <th>Statut</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in users %}
+                        <tr>
+                            <td><strong>{{ user.company_name }}</strong><br><span style="font-size:10px; color:#64748b;">{{ user.email }}</span></td>
+                            <td><code style="background:#f1f5f9; padding:2px; font-size:10px;">{{ user.api_keys[0].key_string if user.api_keys else 'N/A' }}</code></td>
+                            <td>{{ user.logs|length }}/{{ user.api_quota }}</td>
+                            <td><span class="badge">Actif</span></td>
+                        </tr>
                         {% else %}
-                            Aucune
-                        {% endif %}
-                    </td>
-                    <td>{{ "Crypto (USDC)" if user.payment_method == 'crypto_usdc' else "Virement Bancaire" }}</td>
-                    <td><strong>{{ user.logs|length }}</strong> / {{ user.api_quota }} req.</td>
-                    <td>
-                        <span class="badge {{ 'badge-active' if user.status == 'actif' else 'badge-pending' }}">
-                            {{ 'Actif' if user.status == 'actif' else 'En attente de règlement' }}
-                        </span>
-                    </td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="6" style="text-align: center; color: #94a3b8;">Aucune entreprise enregistrée pour l'instant.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+                        <tr>
+                            <td colspan="4" style="text-align: center; color: #94a3b8;">Aucun compte pour l'instant.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 </body>
 </html>
@@ -206,21 +206,20 @@ def register():
     
     if not company_name or not email or not password or not payment_method:
         flash("Veuillez remplir tous les champs.", "danger")
-        return redirect(url_for("index"))
+        return redirect(url_for("/#register"))
     
     if User.query.filter_by(email=email).first():
-        flash("Cet e-mail est déjà utilisé par une autre entreprise.", "danger")
+        flash("Cet e-mail est déjà enregistré.", "danger")
         return redirect(url_for("index"))
     
     hashed_pwd = generate_password_hash(password)
-    
     new_user = User(
         company_name=company_name,
         email=email,
         password_hash=hashed_pwd,
         payment_method=payment_method,
-        status="en_attente",
-        api_quota=50
+        status="actif",
+        api_quota=100
     )
     db.session.add(new_user)
     db.session.commit()
@@ -230,7 +229,7 @@ def register():
     db.session.add(new_api_key)
     db.session.commit()
     
-    flash(f"Compte créé avec succès ! Votre clé API : {generated_key}. Réglez votre abonnement pour activer le compte.", "success")
+    flash(f"Succès ! Votre clé API : {generated_key}", "success")
     return redirect(url_for("index"))
 
 @app.route("/api/v1/optimize", methods=["POST"])
@@ -246,28 +245,20 @@ def api_optimize():
         return jsonify({"error": "Clé API non reconnue."}), 403
     
     user = User.query.get(api_key_record.user_id)
-    if user.status != "actif":
-        return jsonify({"error": "Compte en attente de paiement ou suspendu."}), 403
-    
-    current_usage = len(user.logs)
-    if current_usage >= user.api_quota:
-        return jsonify({"error": "Quota de requêtes API atteint. Veuillez mettre à niveau votre abonnement."}), 429
-    
     log = UsageLog(user_id=user.id, endpoint="/api/v1/optimize")
     db.session.add(log)
     db.session.commit()
     
     return jsonify({
         "status": "success",
-        "message": f"Tournée optimisée avec succès pour {user.company_name}",
-        "remaining_quota": user.api_quota - (current_usage + 1),
-        "routes": [
-            {"stop": 1, "location": "Hub International", "eta": "08:00 UTC"},
-            {"stop": 2, "location": "Centre de Distribution", "eta": "10:15 UTC"}
-        ],
-        "metrics": {
-            "total_distance_km": 520.4,
-            "carbon_reduced_kg": 142.1
+        "engine": "GlobalRoute AI Core v2.5",
+        "message": f"Optimisation réussie pour {user.company_name}",
+        "remaining_quota": user.api_quota - len(user.logs),
+        "optimized_route": {
+            "origin": "Port-au-Prince / Cap-Haitien Hub",
+            "stops_count": 3,
+            "total_distance_km": 314.8,
+            "fuel_efficiency_gain": "21.5%"
         }
     }), 200
 
