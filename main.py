@@ -2,7 +2,7 @@ import os
 import secrets
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -30,10 +30,12 @@ class User(db.Model):
     company_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    payment_method = db.Column(db.String(50), nullable=False)
+    payment_method = db.Column(db.String(50), default="Crypto USDC")
+    subscription_status = db.Column(db.String(50), default="Actif")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
+    logs = db.relationship("UsageLog", backref="user", lazy=True, cascade="all, delete-orphan")
     deliveries = db.relationship("DeliveryRoute", backref="company", lazy=True, cascade="all, delete-orphan")
 
 class ApiKey(db.Model):
@@ -41,6 +43,17 @@ class ApiKey(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     key_string = db.Column(db.String(255), unique=True, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), default="Active") # Active / Révoquée
+
+class UsageLog(db.Model):
+    __tablename__ = "usage_logs"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    action = db.Column(db.String(150), nullable=False)
+    ip_address = db.Column(db.String(50), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 class DeliveryRoute(db.Model):
     __tablename__ = "delivery_routes"
@@ -63,7 +76,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GlobalRoute AI - Admin Key Generator</title>
+    <title>GlobalRoute AI - Master Admin Dashboard</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
@@ -71,9 +84,9 @@ HTML_TEMPLATE = """
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
         header { background: var(--primary); color: white; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
         header h1 { margin: 0; font-size: 17px; font-weight: 700; }
-        .container { padding: 20px; box-sizing: border-box; max-width: 900px; margin: 0 auto; }
+        .container { padding: 20px; box-sizing: border-box; max-width: 950px; margin: 0 auto; }
         .hero { background: white; padding: 30px 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); text-align: center; margin-bottom: 20px; }
-        .btn { display: block; width: 100%; padding: 14px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; text-decoration: none; cursor: pointer; border: none; margin-bottom: 10px; }
+        .btn { display: block; width: 100%; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; text-decoration: none; cursor: pointer; border: none; margin-bottom: 10px; }
         .btn-primary { background: var(--accent); color: white; }
         .btn-secondary { background: #f1f5f9; color: var(--primary); border: 1px solid #cbd5e1; }
         .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.03); margin-bottom: 20px; }
@@ -82,16 +95,19 @@ HTML_TEMPLATE = """
         .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; font-weight: 500; }
         .alert-success { background: #dcfce7; color: #166534; }
         .alert-danger { background: #fee2e2; color: #991b1b; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-        th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+        th, td { padding: 10px 6px; text-align: left; border-bottom: 1px solid #e2e8f0; }
         th { background: #f1f5f9; color: #475569; }
+        .badge { padding: 3px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; }
+        .badge-active { background: #dcfce7; color: #166534; }
+        .badge-revoked { background: #fee2e2; color: #991b1b; }
         #map { width: 100%; height: 350px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; z-index: 1; }
         footer { text-align: center; font-size: 11px; color: #94a3b8; margin: 30px 0; }
     </style>
 </head>
 <body>
     <header>
-        <h1>GlobalRoute AI (Admin Control)</h1>
+        <h1>GlobalRoute AI (Admin Master)</h1>
         <div style="display: flex; gap: 12px; align-items:center;">
             <a href="/" style="color: #cbd5e1; font-size: 12px; text-decoration: none;">Accueil</a>
             <a href="/driver-login" style="color: #6ee7b7; font-size: 12px; text-decoration: none;">🚚 Livreurs</a>
@@ -110,8 +126,8 @@ HTML_TEMPLATE = """
 
         {% if page == 'home' %}
             <div class="hero">
-                <h2>Gestion Logistique & Administration des Clés</h2>
-                <p>Contrôlez vos accès entreprises et générez des clés API en toute sécurité.</p>
+                <h2>Plateforme Logistique SaaS & Gestion Avancée</h2>
+                <p>Outil de gestion centralisée pour administrateur.</p>
                 <a href="/register-form" class="btn btn-primary">Créer un Compte Entreprise</a>
                 <a href="/login-form" class="btn btn-secondary">Connexion Entreprise</a>
                 <a href="/driver-login" class="btn btn-secondary" style="background:#ecfdf5; color:#065f46; border-color:#a7f3d0;">Accès Livreur Terrain</a>
@@ -127,8 +143,6 @@ HTML_TEMPLATE = """
                     <input type="email" name="email" required>
                     <label>Mot de passe :</label>
                     <input type="password" name="password" required>
-                    <label>Paiement :</label>
-                    <select name="payment_method"><option value="crypto_usdc">Crypto USDC</option></select>
                     <button type="submit" class="btn btn-primary">Valider</button>
                 </form>
             </div>
@@ -148,22 +162,21 @@ HTML_TEMPLATE = """
         {% elif page == 'dashboard' and user %}
             <div class="card" style="text-align: left;">
                 <h2>Tableau de Bord : {{ user.company_name }}</h2>
-                <label>Vos Clés API :</label>
+                <label>Vos Clés Actives :</label>
                 {% for k in user.api_keys %}
-                    <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }}</div>
+                    {% if k.status == 'Active' %}
+                        <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }} (Expire le : {{ k.expires_at.strftime('%Y-%m-%d') }})</div>
+                    {% endif %}
                 {% endfor %}
                 
                 <h3 style="font-size: 14px; margin-top: 25px; color:var(--primary);">📁 Importer une Tournée via Fichier CSV</h3>
                 <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
                     <label>Nom du Livreur :</label>
                     <input type="text" name="driver_name" placeholder="Ex: Jean Dupont" required>
-
                     <label>Code d'accès secret du livreur :</label>
                     <input type="text" name="access_code" placeholder="Ex: LIVREUR01" required>
-
                     <label>Fichier CSV des étapes (.csv) :</label>
                     <input type="file" name="csv_file" accept=".csv" required style="padding: 8px; background: #f8fafc;">
-
                     <button type="submit" class="btn btn-primary" style="background:#059669;">Importer et Valider la Tournée</button>
                 </form>
 
@@ -237,25 +250,75 @@ HTML_TEMPLATE = """
 
         {% elif page == 'admin' %}
             <div class="card" style="text-align: left;">
-                <h2>🛡️ Panneau Administrateur (Gestion des Clés)</h2>
+                <h2>🛡️ Panneau Maître Administrateur</h2>
                 <a href="/admin-logout" class="btn btn-secondary" style="background:#fee2e2; color:#991b1b; border:none; margin-bottom:15px; width:auto; display:inline-block; padding:8px 15px;">Verrouiller l'Admin</a>
+
+                <!-- SECTION 1 : FORMULAIRE DE GENERATION DE CLE -->
+                <div style="background:#f1f5f9; padding:15px; border-radius:8px; margin-bottom:20px;">
+                    <h3 style="margin-top:0; font-size:14px; color:var(--primary);">➕ Générer une Nouvelle Clé API & Compte</h3>
+                    <form method="POST" action="/admin/generate-custom-key" style="margin:0;">
+                        <label>Nom de l'entreprise :</label>
+                        <input type="text" name="company_name" placeholder="Ex: Transports Haïti SA" required>
+                        
+                        <label>Adresse E-mail :</label>
+                        <input type="email" name="email" placeholder="contact@entreprise.com" required>
+                        
+                        <label>Durée de validité (en Jours) :</label>
+                        <input type="number" name="duration_days" value="30" min="1" required>
+                        
+                        <button type="submit" class="btn btn-primary" style="background:#2563eb;">Générer et Enregistrer la Clé</button>
+                    </form>
+                </div>
+
+                <!-- SECTION 2 : LISTE DES UTILISATEURS, CONNEXIONS ET ETAT DES CLES -->
+                <h3 style="font-size:14px; color:var(--primary);">📋 Suivi des Utilisateurs, Clés et Abonnements</h3>
                 <table>
                     <thead>
-                        <tr><th>Entreprise</th><th>Clés API Actives</th><th>Action</th></tr>
+                        <tr>
+                            <th>Entreprise / Email</th>
+                            <th>Détails Clé & Validité</th>
+                            <th>Abonnement</th>
+                            <th>Dernière Connexion / Logs</th>
+                            <th>Actions (Révocation)</th>
+                        </tr>
                     </thead>
                     <tbody>
                         {% for u in users %}
                         <tr>
-                            <td><strong>{{ u.company_name }}</strong><br><span style="font-size:10px; color:#64748b;">{{ u.email }}</span></td>
+                            <td>
+                                <strong>{{ u.company_name }}</strong><br>
+                                <span style="color:#64748b;">{{ u.email }}</span>
+                            </td>
                             <td>
                                 {% for k in u.api_keys %}
-                                    <code style="display:block; margin-bottom:3px; background:#f1f5f9; padding:2px 4px; border-radius:4px;">{{ k.key_string }}</code>
+                                    <div style="margin-bottom:4px;">
+                                        <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
+                                        <span style="font-size:9px; color:#475569;">Pris le: {{ k.created_at.strftime('%Y-%m-%d') }} | Expire: {{ k.expires_at.strftime('%Y-%m-%d') }}</span><br>
+                                        <span class="badge {% if k.status == 'Active' %}badge-active{% else %}badge-revoked{% endif %}">{{ k.status }}</span>
+                                    </div>
                                 {% endfor %}
                             </td>
                             <td>
-                                <form method="POST" action="/admin/generate-key/{{ u.id }}" style="margin:0;">
-                                    <button type="submit" class="btn btn-primary" style="padding: 6px 10px; font-size: 11px; width:auto; background:#2563eb;">Générer une clé</button>
-                                </form>
+                                <span class="badge badge-active">{{ u.subscription_status }}</span><br>
+                                <span style="font-size:9px; color:#64748b;">{{ u.payment_method }}</span>
+                            </td>
+                            <td>
+                                {% if u.logs %}
+                                    {% set last_log = u.logs[-1] %}
+                                    {{ last_log.action }}<br>
+                                    <span style="font-size:9px; color:#64748b;">IP: {{ last_log.ip_address or 'N/A' }}<br>{{ last_log.timestamp.strftime('%Y-%m-%d %H:%M') }}</span>
+                                {% else %}
+                                    <span style="color:#94a3b8;">Aucune activité</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% for k in u.api_keys %}
+                                    {% if k.status == 'Active' %}
+                                        <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
+                                            <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
+                                        </form>
+                                    {% endif %}
+                                {% endfor %}
                             </td>
                         </tr>
                         {% endfor %}
@@ -337,6 +400,13 @@ def create_driver_route():
         )
         db.session.add(new_route)
         db.session.commit()
+        
+        # Enregistrement du log d'activité
+        ip = request.remote_addr
+        log = UsageLog(user_id=user_id, action="Importation de tournée CSV", ip_address=ip)
+        db.session.add(log)
+        db.session.commit()
+
         flash(f"Tournée importée avec succès ! {len(stops_list)} étapes chargées.", "success")
     except Exception as e:
         flash(f"Erreur lors du traitement du fichier CSV : {str(e)}", "danger")
@@ -356,17 +426,57 @@ def admin_panel():
             return render_template_string(HTML_TEMPLATE, page="admin_login")
     return render_template_string(HTML_TEMPLATE, page="admin", users=User.query.all())
 
-@app.route("/admin/generate-key/<int:user_id>", methods=["POST"])
-def admin_generate_key(user_id):
+@app.route("/admin/generate-custom-key", methods=["POST"])
+def admin_generate_custom_key():
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
     
-    # Création d'une nouvelle clé API unique pour l'utilisateur choisi
-    new_key = ApiKey(key_string=f"gra_live_{secrets.token_hex(16)}", user_id=user_id)
+    company_name = request.form.get("company_name")
+    email = request.form.get("email")
+    try:
+        duration_days = int(request.form.get("duration_days", 30))
+    except ValueError:
+        duration_days = 30
+
+    # Vérifie si l'utilisateur existe déjà, sinon on le crée
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        user = User(
+            company_name=company_name,
+            email=email,
+            password_hash=generate_password_hash("password123"), # Mot de passe par défaut modifiable
+            subscription_status="Actif"
+        )
+        db.session.add(user)
+        db.session.commit()
+
+    # Calcul de la date d'expiration
+    expires_at = datetime.utcnow() + timedelta(days=duration_days)
+    key_string = f"gra_live_{secrets.token_hex(16)}"
+    
+    new_key = ApiKey(
+        key_string=key_string,
+        user_id=user.id,
+        expires_at=expires_at,
+        status="Active"
+    )
     db.session.add(new_key)
     db.session.commit()
     
-    flash("Nouvelle clé API générée avec succès pour l'entreprise !", "success")
+    flash(f"Clé générée avec succès pour {company_name}. Clé : {key_string} (Expire dans {duration_days} jours)", "success")
+    return redirect(url_for("admin_panel"))
+
+@app.route("/admin/revoke-key/<int:key_id>", methods=["POST"])
+def admin_revoke_key(key_id):
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_panel"))
+    
+    key_obj = ApiKey.query.get(key_id)
+    if key_obj:
+        key_obj.status = "Révoquée"
+        db.session.commit()
+        flash("La clé API a été révoquée avec succès.", "success")
+    
     return redirect(url_for("admin_panel"))
 
 @app.route("/admin-logout")
@@ -379,17 +489,17 @@ def register():
     company_name = request.form.get("company_name")
     email = request.form.get("email")
     password = request.form.get("password")
-    payment_method = request.form.get("payment_method")
     
     if User.query.filter_by(email=email).first():
         flash("Cet e-mail existe déjà.", "danger")
         return redirect(url_for("register_form"))
     
-    new_user = User(company_name=company_name, email=email, password_hash=generate_password_hash(password), payment_method=payment_method)
+    new_user = User(company_name=company_name, email=email, password_hash=generate_password_hash(password), subscription_status="Actif")
     db.session.add(new_user)
     db.session.commit()
     
-    new_api_key = ApiKey(key_string=f"gra_live_{secrets.token_hex(16)}", user_id=new_user.id)
+    expires_at = datetime.utcnow() + timedelta(days=30)
+    new_api_key = ApiKey(key_string=f"gra_live_{secrets.token_hex(16)}", user_id=new_user.id, expires_at=expires_at, status="Active")
     db.session.add(new_api_key)
     db.session.commit()
     
@@ -401,6 +511,13 @@ def login():
     user = User.query.filter_by(email=request.form.get("email")).first()
     if user and check_password_hash(user.password_hash, request.form.get("password")):
         session["user_id"] = user.id
+        
+        # Log de connexion
+        ip = request.remote_addr
+        log = UsageLog(user_id=user.id, action="Connexion Entreprise", ip_address=ip)
+        db.session.add(log)
+        db.session.commit()
+
         return redirect(url_for("dashboard"))
     flash("Identifiants incorrects.", "danger")
     return redirect(url_for("login_form"))
