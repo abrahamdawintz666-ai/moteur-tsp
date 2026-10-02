@@ -13,7 +13,7 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
-# Configuration robuste de la base de données (Supporte Render / PostgreSQL et Local SQLite)
+# Connexion robuste Render/PostgreSQL ou SQLite local
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -28,6 +28,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
+# Modèles
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
@@ -68,20 +69,30 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# SOLUTION ULTIME : Création des tables et auto-correction des colonnes manquantes en production (Render)
+# AUTO-MIGRATION ROBUSTE : Empêche toute erreur de colonne manquante sur Render
 with app.app_context():
     db.create_all()
     try:
         inspector = inspect(db.engine)
-        if "users" in inspector.get_table_names():
+        tables = inspector.get_table_names()
+        
+        # Vérification et ajout automatique des colonnes manquantes sur la table users
+        if "users" in tables:
             columns = [c['name'] for c in inspector.get_columns('users')]
             with db.engine.begin() as conn:
                 if 'payment_method' not in columns:
                     conn.execute(text("ALTER TABLE users ADD COLUMN payment_method VARCHAR(50) DEFAULT 'Crypto USDC'"))
                 if 'subscription_status' not in columns:
                     conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) DEFAULT 'Actif'"))
+        
+        # Vérification table api_keys
+        if "api_keys" in tables:
+            cols = [c['name'] for c in inspector.get_columns('api_keys')]
+            with db.engine.begin() as conn:
+                if 'status' not in cols:
+                    conn.execute(text("ALTER TABLE api_keys ADD COLUMN status VARCHAR(20) DEFAULT 'Active'"))
     except Exception as e:
-        print("Note auto-migration :", e)
+        print("Avertissement migration automatique :", e)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -244,7 +255,7 @@ HTML_TEMPLATE = """
                 points.forEach(function(pt, index) {
                     latLngs.push([pt.lat, pt.lng]);
                     var gmapsUrl = "https://www.google.com/maps/search/?api=1&query=" + pt.lat + "," + pt.lng;
-                    var popupContent = "<b>Étape " + index + ": " + pt.name + "</b><br>Lat: " + pt.lat + ", Lng: " + pt.lng + "<br><a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 GPS</a>";
+                    var popupContent = "<b>Étape " + (index+1) + ": " + pt.name + "</b><br>Lat: " + pt.lat + ", Lng: " + pt.lng + "<br><a href='" + gmapsUrl + "' target='_blank' style='color:#2563eb; font-weight:bold;'>🧭 GPS</a>";
                     L.marker([pt.lat, pt.lng]).addTo(map).bindPopup(popupContent);
                     listHtml += "<li><b>" + pt.name + "</b> (GPS: " + pt.lat + ", " + pt.lng + ")<br><a href='" + gmapsUrl + "' target='_blank' style='font-size:11px; color:#2563eb;'>Lancer l'itinéraire GPS</a></li><br>";
                 });
