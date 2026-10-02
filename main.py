@@ -168,11 +168,15 @@ HTML_TEMPLATE = """
             <div class="card" style="text-align: left;">
                 <h2>Tableau de Bord : {{ user.company_name }}</h2>
                 <label>Vos Clés Actives :</label>
-                {% for k in user.api_keys %}
-                    {% if k.status == 'Active' %}
-                        <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }} (Expire le : {{ k.expires_at.strftime('%Y-%m-%d') }})</div>
-                    {% endif %}
-                {% endfor %}
+                {% if user.api_keys %}
+                    {% for k in user.api_keys %}
+                        {% if k.status == 'Active' %}
+                            <div style="background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-family:monospace; font-size:11px; margin-bottom:5px;">{{ k.key_string }} (Expire le : {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }})</div>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <p style="font-size:12px; color:#64748b;">Aucune clé active.</p>
+                {% endif %}
                 
                 <h3 style="font-size: 14px; margin-top: 25px; color:var(--primary);">📁 Importer une Tournée via Fichier CSV</h3>
                 <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
@@ -286,45 +290,57 @@ HTML_TEMPLATE = """
                         </tr>
                     </thead>
                     <tbody>
-                        {% for u in users %}
-                        <tr>
-                            <td>
-                                <strong>{{ u.company_name }}</strong><br>
-                                <span style="color:#64748b;">{{ u.email }}</span>
-                            </td>
-                            <td>
-                                {% for k in u.api_keys %}
-                                    <div style="margin-bottom:4px;">
-                                        <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
-                                        <span style="font-size:9px; color:#475569;">Pris le: {{ k.created_at.strftime('%Y-%m-%d') }} | Expire: {{ k.expires_at.strftime('%Y-%m-%d') }}</span><br>
-                                        <span class="badge {% if k.status == 'Active' %}badge-active{% else %}badge-revoked{% endif %}">{{ k.status }}</span>
-                                    </div>
-                                {% endfor %}
-                            </td>
-                            <td>
-                                <span class="badge badge-active">{{ u.subscription_status }}</span><br>
-                                <span style="font-size:9px; color:#64748b;">{{ u.payment_method }}</span>
-                            </td>
-                            <td>
-                                {% if u.logs %}
-                                    {% set last_log = u.logs[-1] %}
-                                    {{ last_log.action }}<br>
-                                    <span style="font-size:9px; color:#64748b;">IP: {{ last_log.ip_address or 'N/A' }}<br>{{ last_log.timestamp.strftime('%Y-%m-%d %H:%M') }}</span>
-                                {% else %}
-                                    <span style="color:#94a3b8;">Aucune activité</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% for k in u.api_keys %}
-                                    {% if k.status == 'Active' %}
-                                        <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
-                                            <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
-                                        </form>
+                        {% if users %}
+                            {% for u in users %}
+                            <tr>
+                                <td>
+                                    <strong>{{ u.company_name }}</strong><br>
+                                    <span style="color:#64748b;">{{ u.email }}</span>
+                                </td>
+                                <td>
+                                    {% if u.api_keys %}
+                                        {% for k in u.api_keys %}
+                                            <div style="margin-bottom:4px;">
+                                                <code style="background:#f8fafc; padding:2px 4px; border-radius:3px;">{{ k.key_string[:18] }}...</code><br>
+                                                <span style="font-size:9px; color:#475569;">Créé le: {{ k.created_at.strftime('%Y-%m-%d') if k.created_at else 'N/A' }} | Expire: {{ k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'N/A' }}</span><br>
+                                                <span class="badge {% if k.status == 'Active' %}badge-active{% else %}badge-revoked{% endif %}">{{ k.status }}</span>
+                                            </div>
+                                        {% endfor %}
+                                    {% else %}
+                                        <span style="color:#94a3b8;">Aucune clé</span>
                                     {% endif %}
-                                {% endfor %}
-                            </td>
-                        </tr>
-                        {% endfor %}
+                                </td>
+                                <td>
+                                    <span class="badge badge-active">{{ u.subscription_status }}</span><br>
+                                    <span style="font-size:9px; color:#64748b;">{{ u.payment_method }}</span>
+                                </td>
+                                <td>
+                                    {% if u.logs and u.logs | length > 0 %}
+                                        {% set last_log = u.logs[-1] %}
+                                        {{ last_log.action }}<br>
+                                        <span style="font-size:9px; color:#64748b;">IP: {{ last_log.ip_address or 'N/A' }}<br>{{ last_log.timestamp.strftime('%Y-%m-%d %H:%M') if last_log.timestamp else '' }}</span>
+                                    {% else %}
+                                        <span style="color:#94a3b8;">Aucune activité</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if u.api_keys %}
+                                        {% for k in u.api_keys %}
+                                            {% if k.status == 'Active' %}
+                                                <form method="POST" action="/admin/revoke-key/{{ k.id }}" style="margin:2px 0;">
+                                                    <button type="submit" class="btn" style="padding:4px 8px; font-size:10px; background:#fee2e2; color:#991b1b; width:auto;">Révoquer</button>
+                                                </form>
+                                            {% endif %}
+                                        {% endfor %}
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="5" style="text-align: center; color: #94a3b8;">Aucun utilisateur enregistré.</td>
+                            </tr>
+                        {% endif %}
                     </tbody>
                 </table>
             </div>
@@ -463,7 +479,7 @@ def admin_generate_custom_key():
     db.session.add(new_key)
     db.session.commit()
     
-    flash(f"Clé générée avec succès pour {company_name}. Clé : {key_string} (Expire dans {duration_days} jours)", "success")
+    flash(f"Clé générée avec succès pour {company_name}. Clé : {key_string}", "success")
     return redirect(url_for("admin_panel"))
 
 @app.route("/admin/revoke-key/<int:key_id>", methods=["POST"])
@@ -471,7 +487,6 @@ def admin_revoke_key(key_id):
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
     
-    # CORRECTION : Utilisation de db.session.get au lieu de .query.get (compatible SQLAlchemy 2.0+)
     key_obj = db.session.get(ApiKey, key_id)
     if key_obj:
         key_obj.status = "Révoquée"
@@ -528,7 +543,6 @@ def dashboard():
     if not user_id:
         return redirect(url_for("login_form"))
     
-    # CORRECTION : Utilisation de db.session.get au lieu de User.query.get
     current_user = db.session.get(User, user_id)
     return render_template_string(HTML_TEMPLATE, page="dashboard", user=current_user)
 
