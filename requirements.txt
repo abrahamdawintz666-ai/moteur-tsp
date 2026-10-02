@@ -6,6 +6,6 @@ python-multipart
 Flask
 requests
 gunicorn
-psycopg2-binary 
 Flask
 Flask-SQLAlchemy
+psycopg2-binary
