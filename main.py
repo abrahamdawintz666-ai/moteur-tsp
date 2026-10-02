@@ -68,7 +68,7 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
-# AUTO-MIGRATION TOTALE ANTI-ERREUR 500 (Vérifie et met à jour toutes les tables)
+# AUTO-MIGRATION TOTALE ANTI-ERREUR 500
 with app.app_context():
     db.create_all()
     try:
@@ -582,7 +582,6 @@ def dashboard():
     current_user = db.session.get(User, user_id)
     return render_template_string(HTML_TEMPLATE, page="dashboard", user=current_user)
 
-@app.logout
 @app.route("/logout")
 def logout():
     session.pop("user_id", None)
