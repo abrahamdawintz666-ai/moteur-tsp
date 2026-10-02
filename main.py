@@ -5,6 +5,7 @@ import io
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import inspect, text
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -12,7 +13,7 @@ app.secret_key = secrets.token_hex(32)
 
 ADMIN_SECRET_PASSWORD = "admin123"
 
-# Configuration de la base de données locale
+# Configuration robuste de la base de données (Supporte Render / PostgreSQL et Local SQLite)
 database_url = os.getenv("DATABASE_URL")
 if database_url:
     if database_url.startswith("postgres://"):
@@ -21,17 +22,6 @@ if database_url:
         database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 else:
     database_url = "sqlite:///database.db"
-    # SOLUTION ULTIME DE DEV : Si on est en local sur SQLite, on nettoie le vieux fichier corrompu au démarrage
-    if os.path.exists("instance/database.db"):
-        try:
-            os.remove("instance/database.db")
-        except:
-            pass
-    if os.path.exists("database.db"):
-        try:
-            os.remove("database.db")
-        except:
-            pass
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -78,8 +68,20 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
+# SOLUTION ULTIME : Création des tables et auto-correction des colonnes manquantes en production (Render)
 with app.app_context():
     db.create_all()
+    try:
+        inspector = inspect(db.engine)
+        if "users" in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('users')]
+            with db.engine.begin() as conn:
+                if 'payment_method' not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN payment_method VARCHAR(50) DEFAULT 'Crypto USDC'"))
+                if 'subscription_status' not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) DEFAULT 'Actif'"))
+    except Exception as e:
+        print("Note auto-migration :", e)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -449,7 +451,6 @@ def admin_panel():
         else:
             return render_template_string(HTML_TEMPLATE, page="admin_login")
     
-    # SÉCURITÉ ANTI-PLANTAGE ADMIN : Enveloppé dans un try/except pour capturer l'erreur exacte si elle survient
     try:
         users_list = User.query.all()
     except Exception as e:
