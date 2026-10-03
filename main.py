@@ -49,24 +49,33 @@ SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 PLANS = {
     "standard": {
         "name": "Standard",
-        "monthly_price": 15.00,
-        "credit_limit": 500,
-        "unlimited": False,
+        "monthly_price": 29.00,
+        "annual_price": 290.00,
+        "route_limit": 500,
     },
     "pro": {
         "name": "Pro",
-        "monthly_price": 29.00,
-        "credit_limit": None,
-        "unlimited": True,
+        "monthly_price": 59.00,
+        "annual_price": 590.00,
+        "route_limit": 2500,
+    },
+    "business": {
+        "name": "Business",
+        "monthly_price": 99.00,
+        "annual_price": 990.00,
+        "route_limit": 10000,
+    },
+    "enterprise": {
+        "name": "Enterprise",
+        "monthly_price": None,
+        "annual_price": None,
+        "route_limit": 50000,
     },
 }
 
-DURATIONS = {
-    30: 1.0,
-    90: 2.7,
-    180: 5.0,
-    365: 9.0,
-}
+# Enterprise is quoted manually. Other plans can be purchased for
+# 30/90/180/365 days; the annual price is discounted.
+DURATIONS = (30, 90, 180, 365)
 
 # ------------------------------------------------------------
 # DATABASE
@@ -114,6 +123,8 @@ class User(db.Model):
     credits = db.Column(db.Integer, default=0)
     unlimited = db.Column(db.Boolean, default=False)
     active = db.Column(db.Boolean, default=True)
+    route_limit = db.Column(db.Integer, default=0)
+    routes_used = db.Column(db.Integer, default=0)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -193,11 +204,14 @@ class DeliveryRoute(db.Model):
     )
 
     driver_name = db.Column(db.String(100), nullable=False)
+    route_name = db.Column(db.String(150), default="Tournée")
     access_code = db.Column(
         db.String(80), unique=True, nullable=False
     )
     stops_data = db.Column(db.Text, nullable=False)
+    stops_count = db.Column(db.Integer, default=0)
     status = db.Column(db.String(20), default="En cours")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class AuditLog(db.Model):
@@ -218,62 +232,66 @@ def _column_type_sql(column):
 
 
 def migrate_existing_database():
-    """Upgrade an older GlobalRoute database without deleting its data."""
+    """
+    Add columns introduced by newer versions without deleting existing data.
+
+    db.create_all() creates missing tables, but it deliberately does not alter
+    tables that already exist. The previous GlobalRoute database therefore
+    could keep the old `users` schema and make /admin-panel fail when the new
+    code selected credits/unlimited/active. This small migration closes that
+    gap for the current one-file deployment.
+    """
     from sqlalchemy import inspect, text
 
-    app.logger.info("GLOBALROUTE: starting database migration check")
     inspector = inspect(db.engine)
     existing_tables = set(inspector.get_table_names())
 
-    models = (
+    for table_name, model in (
         ("users", User),
         ("api_keys", ApiKey),
         ("payment_orders", PaymentOrder),
         ("delivery_routes", DeliveryRoute),
         ("audit_logs", AuditLog),
-    )
-
-    for table_name, model in models:
+    ):
         if table_name not in existing_tables:
             continue
 
-        existing_columns = {c["name"] for c in inspector.get_columns(table_name)}
+        existing_columns = {
+            col["name"] for col in inspector.get_columns(table_name)
+        }
+
         for column in model.__table__.columns:
             if column.name in existing_columns or column.primary_key:
                 continue
+
             type_sql = _column_type_sql(column)
-            app.logger.warning("GLOBALROUTE: adding %s.%s", table_name, column.name)
-            db.session.execute(text(
-                f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
-            ))
-        db.session.commit()
 
-    # Backfill values for columns added to old customer rows.
-    if "users" in existing_tables:
-        db.session.execute(text("UPDATE users SET plan = 'standard' WHERE plan IS NULL"))
-        db.session.execute(text("UPDATE users SET credits = 0 WHERE credits IS NULL"))
-        db.session.execute(text("UPDATE users SET unlimited = FALSE WHERE unlimited IS NULL"))
-        db.session.execute(text("UPDATE users SET active = TRUE WHERE active IS NULL"))
-        db.session.execute(text("UPDATE users SET address = '' WHERE address IS NULL"))
-        db.session.execute(text("UPDATE users SET city = '' WHERE city IS NULL"))
-        db.session.execute(text("UPDATE users SET country = '' WHERE country IS NULL"))
-        db.session.commit()
+            # New columns are deliberately nullable during migration. This
+            # lets old customer rows survive even when no historical value
+            # exists. Application-level defaults handle new records.
+            sql = (
+                f'ALTER TABLE "{table_name}" '
+                f'ADD COLUMN "{column.name}" {type_sql}'
+            )
 
-    if "api_keys" in existing_tables:
-        db.session.execute(text("UPDATE api_keys SET revoked = FALSE WHERE revoked IS NULL"))
-        db.session.commit()
+            db.session.execute(text(sql))
 
-    app.logger.info("GLOBALROUTE: database migration check completed successfully")
+        db.session.commit()
 
 
 with app.app_context():
+    # Creates new tables and then upgrades older existing tables in place.
+    db.create_all()
+    migrate_existing_database()
     try:
-        db.create_all()
-        migrate_existing_database()
+        from sqlalchemy import text
+        # Backfill fields added to existing installations.
+        db.session.execute(text('UPDATE users SET route_limit = 0 WHERE route_limit IS NULL'))
+        db.session.execute(text('UPDATE users SET routes_used = 0 WHERE routes_used IS NULL'))
+        db.session.execute(text('UPDATE delivery_routes SET stops_count = 0 WHERE stops_count IS NULL'))
+        db.session.commit()
     except Exception:
-        app.logger.exception("GLOBALROUTE DATABASE STARTUP/MIGRATION ERROR")
         db.session.rollback()
-        raise
 
 
 # ============================================================
@@ -317,15 +335,14 @@ def money(value):
 def calculate_price(plan, duration_days):
     if plan not in PLANS:
         raise ValueError("Plan invalide.")
-
     if duration_days not in DURATIONS:
         raise ValueError("Durée invalide.")
-
+    if plan == "enterprise":
+        raise ValueError("Enterprise nécessite un devis.")
     monthly = PLANS[plan]["monthly_price"]
-    multiplier = DURATIONS[duration_days]
-
-    # 30 days = 1x monthly.
-    return round(monthly * multiplier, 2)
+    if duration_days == 365:
+        return PLANS[plan]["annual_price"]
+    return round(monthly * (duration_days / 30), 2)
 
 
 def create_api_key(user, expires_at=None):
@@ -356,16 +373,13 @@ def active_api_key(user):
 
 def add_subscription(user, plan, duration_days):
     now = utcnow()
-
     if (
         user.subscription_expires_at
         and user.subscription_expires_at > now
         and user.plan == plan
     ):
         start = user.subscription_started_at or now
-        expiry = user.subscription_expires_at + timedelta(
-            days=duration_days
-        )
+        expiry = user.subscription_expires_at + timedelta(days=duration_days)
     else:
         start = now
         expiry = now + timedelta(days=duration_days)
@@ -373,17 +387,16 @@ def add_subscription(user, plan, duration_days):
     user.plan = plan
     user.subscription_started_at = start
     user.subscription_expires_at = expiry
+    user.active = True
+    user.route_limit = PLANS[plan]["route_limit"]
+    user.routes_used = 0
 
-    if PLANS[plan]["unlimited"]:
-        user.unlimited = True
-        user.credits = 0
-    else:
-        user.unlimited = False
-        # Each paid Standard subscription grants 500 credits.
-        user.credits = int(PLANS[plan]["credit_limit"])
+    # Credits are kept for API compatibility; route quotas are tracked
+    # separately so a company can see its actual number of route plans.
+    user.credits = user.route_limit
+    user.unlimited = False
 
     key = active_api_key(user)
-
     if key:
         key.expires_at = expiry
         key.revoked = False
@@ -564,6 +577,42 @@ def admin_required():
     return bool(session.get("is_admin"))
 
 
+def parse_stops_data(raw_data):
+    """Read both the new JSON route format and the old pipe format."""
+    try:
+        data = json.loads(raw_data)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    points = []
+    for line in raw_data.split("\n"):
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) >= 3:
+            try:
+                lat = float(parts[1])
+                lng = float(parts[2])
+            except ValueError:
+                continue
+            points.append({
+                "name": parts[0],
+                "address": "",
+                "lat": lat,
+                "lng": lng,
+            })
+    return points
+
+
+def build_route_rows(stops):
+    return "".join(
+        f"<tr><td>{i}</td><td>{p.get('name','')}</td>"
+        f"<td>{p.get('address','')}</td><td>{p.get('lat')}</td>"
+        f"<td>{p.get('lng')}</td></tr>"
+        for i, p in enumerate(stops, 1)
+    )
+
+
 # ============================================================
 # CSS / HTML
 # ============================================================
@@ -714,6 +763,14 @@ footer {
     .container { padding:15px 10px; }
     table { display:block; overflow-x:auto; white-space:nowrap; }
 }
+@media print {
+    header, footer, .screen-only, .screen-only + .card, .btn, nav, .alert { display:none !important; }
+    body, .container { background:white; padding:0; margin:0; }
+    .card { border:0; box-shadow:none; margin:0; padding:0; }
+    .route-sheet { display:block !important; }
+    .route-sheet table { font-size:10px; }
+    .qr { margin-top:4px; }
+}
 """
 
 HTML_TEMPLATE = """
@@ -776,21 +833,6 @@ def page(body, title=APP_NAME, map_needed=False):
         map_needed=map_needed,
         session=session,
     )
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
-@app.route("/health")
-def health():
-    from sqlalchemy import text
-    try:
-        db.session.execute(text("SELECT 1"))
-        return {"status": "ok", "database": "ok"}, 200
-    except Exception:
-        app.logger.exception("GLOBALROUTE HEALTH DATABASE ERROR")
-        return {"status": "error", "database": "error"}, 500
 
 
 # ============================================================
@@ -954,119 +996,127 @@ def logout():
 @app.route("/dashboard")
 def dashboard():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
     key = active_api_key(user)
-
-    expiry = (
-        user.subscription_expires_at.strftime("%Y-%m-%d")
-        if user.subscription_expires_at else "—"
-    )
-
+    expiry = user.subscription_expires_at.strftime("%Y-%m-%d %H:%M") if user.subscription_expires_at else "—"
+    routes = DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.created_at.desc()).all()
     key_text = key.key_string if key else "Aucune clé active"
+    limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
+    used = user.routes_used or 0
+
+    route_rows = "".join(
+        f"<tr><td>{r.route_name}</td><td>{r.driver_name}</td><td>{r.stops_count}</td>"
+        f"<td>{r.status}</td><td><a class='btn btn-secondary' href='/driver-space?code={urllib.parse.quote(r.access_code)}'>Ouvrir</a></td></tr>"
+        for r in routes
+    )
 
     body = f"""
     <div class="card">
         <h2>{user.company_name}</h2>
         <p class="muted">{user.email}</p>
-
         <div class="grid">
-            <div class="stat">
-                <span class="muted">Plan</span>
-                <strong>{user.plan.title()}</strong>
-            </div>
-            <div class="stat">
-                <span class="muted">Crédits</span>
-                <strong>{"Illimité" if user.unlimited else user.credits}</strong>
-            </div>
-            <div class="stat">
-                <span class="muted">Expiration</span>
-                <strong>{expiry}</strong>
-            </div>
+            <div class="stat"><span class="muted">Abonnement</span><strong>{user.plan.title()}</strong></div>
+            <div class="stat"><span class="muted">Tournées utilisées</span><strong>{used:,} / {limit:,}</strong></div>
+            <div class="stat"><span class="muted">Expiration</span><strong>{expiry}</strong></div>
         </div>
     </div>
 
     <div class="card">
-        <h3>Votre clé API</h3>
+        <h3>🔑 Votre clé API</h3>
         <div class="payment-box mono">{key_text}</div>
-        <p class="muted">
-            Ne partagez jamais une clé API publiquement.
-        </p>
+        <a class="btn btn-secondary" href="/plans">Gérer l'abonnement</a>
     </div>
 
     <div class="card">
-        <h3>Abonnement</h3>
-        <a class="btn" href="/plans">Voir les abonnements</a>
-        <a class="btn btn-secondary" href="/driver-login">Espace livreur</a>
+        <h2>Créer une tournée</h2>
+        <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
+            <label>Nom de la tournée</label>
+            <input name="route_name" placeholder="Ex. Tournée Nord" required>
+            <label>Nom du livreur</label>
+            <input name="driver_name" placeholder="Ex. Jean Dupont" required>
+            <label>Code d'accès du livreur</label>
+            <input name="access_code" placeholder="Ex. NORD01" required>
+            <label>Importer un CSV</label>
+            <input type="file" name="csv_file" accept=".csv">
+            <p class="muted">CSV : nom, latitude, longitude — ou nom, adresse, latitude, longitude.</p>
+            <label>Ou saisir les étapes manuellement</label>
+            <textarea name="manual_stops" rows="6" placeholder="Client A | Adresse A | 19.75 | -72.20&#10;Client B | Adresse B | 19.76 | -72.21"></textarea>
+            <button class="btn btn-green btn-block" type="submit">Créer et envoyer au livreur</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h3>🚚 Mes tournées</h3>
+        <table><thead><tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Statut</th><th>Accès</th></tr></thead>
+        <tbody>{route_rows or '<tr><td colspan="5">Aucune tournée créée.</td></tr>'}</tbody></table>
     </div>
     """
-
     return page(body, title="Dashboard")
 
 
 @app.route("/plans")
 def plans():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
-    body = """
-    <div class="card">
-        <h2>Choisir un abonnement</h2>
-        <p class="muted">
-            Paiement automatique en USDC sur Solana.
-        </p>
+    cards = []
+    for key in ("standard", "pro", "business", "enterprise"):
+        p = PLANS[key]
+        if key == "enterprise":
+            action = "<a class='btn btn-secondary btn-block' href='/contact-enterprise'>Contacter GlobalRoute</a>"
+            price = "Sur devis"
+            annual = "Sur devis"
+        else:
+            action = (
+                f"<form method='POST' action='/create-payment'>"
+                f"<input type='hidden' name='plan' value='{key}'>"
+                f"<label>Durée</label>"
+                f"<select name='duration_days'>"
+                f"<option value='30'>30 jours</option>"
+                f"<option value='90'>90 jours</option>"
+                f"<option value='180'>180 jours</option>"
+                f"<option value='365'>365 jours</option>"
+                f"</select>"
+                f"<p>Prix : <strong>{p['monthly_price']:.2f} USDC / 30 jours</strong></p>"
+                f"<button class='btn btn-green btn-block' type='submit'>Choisir {p['name']}</button>"
+                f"</form>"
+            )
+            price = f"{p['monthly_price']:.0f} USDC / 30 jours"
+            annual = f"{p['annual_price']:.0f} USDC / an"
 
-        <form method="POST" action="/create-payment">
-            <label>Plan</label>
-            <select name="plan" required>
-                <option value="standard">Standard — 500 crédits</option>
-                <option value="pro">Pro — illimité</option>
-            </select>
+        cards.append(
+            f"<div class='card plan-card'>"
+            f"<div class='muted'>{p['name']}</div>"
+            f"<h2>{price}</h2>"
+            f"<p><strong>{p['route_limit']:,}</strong> tournées incluses</p>"
+            f"<p class='muted'>Volume prévu pour l'offre {p['name']}.</p>"
+            f"<p><strong>{annual}</strong></p>"
+            f"{action}</div>"
+        )
 
-            <label>Durée</label>
-            <select name="duration_days" id="duration" required
-                    onchange="updatePrice()">
-                <option value="30">30 jours</option>
-                <option value="90">90 jours</option>
-                <option value="180">180 jours</option>
-                <option value="365">365 jours</option>
-            </select>
-
-            <p>
-                Prix indicatif :
-                <strong id="price">$15.00 USDC</strong>
-            </p>
-
-            <button class="btn btn-green btn-block" type="submit">
-                Créer le paiement USDC
-            </button>
-        </form>
+    body = f"""
+    <div class="card hero">
+        <h2>Choisissez votre abonnement</h2>
+        <p>Paiement en USDC sur Solana. Après confirmation, l'abonnement,
+        la clé API et sa date d'expiration sont activés automatiquement.</p>
     </div>
-
-    <script>
-    const prices = {
-        standard: {30:15,90:40.5,180:75,365:135},
-        pro: {30:29,90:78.3,180:145,365:261}
-    };
-
-    function updatePrice() {
-        const plan = document.querySelector('[name="plan"]').value;
-        const days = document.querySelector('[name="duration_days"]').value;
-        document.getElementById("price").textContent =
-            "$" + prices[plan][days].toFixed(2) + " USDC";
-    }
-
-    document.querySelector('[name="plan"]')
-        .addEventListener("change", updatePrice);
-    updatePrice();
-    </script>
+    <div class="grid plans-grid">{''.join(cards)}</div>
     """
-
     return page(body, title="Abonnements")
+
+
+@app.route("/contact-enterprise")
+def contact_enterprise():
+    return page("""
+    <div class="card hero">
+        <h2>Enterprise — jusqu'à 50 000 tournées</h2>
+        <p>Contactez GlobalRoute pour une offre adaptée à votre volume.</p>
+        <a class="btn" href="mailto:sales@globalroute.ai">Contacter les ventes</a>
+    </div>
+    """, title="Enterprise")
 
 
 # ============================================================
@@ -1281,20 +1331,10 @@ def admin_panel():
         """
         return page(body, title="Admin")
 
-    try:
-        migrate_existing_database()
-        users = User.query.order_by(User.created_at.desc()).all()
-        orders = PaymentOrder.query.order_by(
-            PaymentOrder.created_at.desc()
-        ).limit(50).all()
-    except Exception:
-        app.logger.exception("GLOBALROUTE ADMIN PANEL ERROR")
-        db.session.rollback()
-        return page(
-            '<div class="card"><h2>Erreur de base de données</h2>'
-            '<p>La base PostgreSQL n’a pas pu être préparée. Consultez les logs Render.</p></div>',
-            title="Admin - erreur",
-        ), 500
+    users = User.query.order_by(User.created_at.desc()).all()
+    orders = PaymentOrder.query.order_by(
+        PaymentOrder.created_at.desc()
+    ).limit(50).all()
 
     user_rows = ""
 
@@ -1306,8 +1346,7 @@ def admin_panel():
             if user.subscription_expires_at else "—"
         )
 
-        plan_name = (user.plan or "standard").title()
-        credits = "Illimité" if user.unlimited else str(user.credits or 0)
+        credits = f"{user.routes_used or 0} / {user.route_limit or 0} tournées"
 
         key_text = key.key_string if key else "—"
 
@@ -1317,7 +1356,7 @@ def admin_panel():
                 <strong>{user.company_name}</strong><br>
                 <span class="muted">{user.email}</span>
             </td>
-            <td>{plan_name}</td>
+            <td>{user.plan.title()}</td>
             <td>{credits}</td>
             <td>{expiry}</td>
             <td class="mono">{key_text}</td>
@@ -1372,6 +1411,8 @@ def admin_panel():
             <select name="plan">
                 <option value="standard">Standard</option>
                 <option value="pro">Pro</option>
+                <option value="business">Business</option>
+                <option value="enterprise">Enterprise</option>
             </select>
 
             <label>Durée</label>
@@ -1395,7 +1436,7 @@ def admin_panel():
                 <tr>
                     <th>Entreprise</th>
                     <th>Plan</th>
-                    <th>Crédits</th>
+                    <th>Tournées</th>
                     <th>Expiration</th>
                     <th>Clé API</th>
                 </tr>
@@ -1577,174 +1618,147 @@ def driver_login():
 
 @app.route("/driver-space", methods=["POST", "GET"])
 def driver_space():
-    code = (
-        request.form.get("access_code")
-        if request.method == "POST"
-        else request.args.get("code")
-    )
-
+    code = request.form.get("access_code") if request.method == "POST" else request.args.get("code")
     if not code:
         return redirect(url_for("driver_login"))
 
-    route = DeliveryRoute.query.filter_by(
-        access_code=code.strip().upper()
-    ).first()
-
+    route = DeliveryRoute.query.filter_by(access_code=code.strip().upper()).first()
     if not route:
         flash("Code d'accès incorrect.", "danger")
         return redirect(url_for("driver_login"))
 
-    raw_data = route.stops_data
+    stops = parse_stops_data(route.stops_data)
+    map_points = json.dumps(stops, ensure_ascii=False)
+    route_rows = build_route_rows(stops)
 
     body = f"""
-    <div class="card">
-        <h2>🚚 Tournée de {route.driver_name}</h2>
-        <div id="map"></div>
-        <div id="stops"></div>
+    <div class="card driver-header">
+        <h2>🚚 {route.route_name}</h2>
+        <p><strong>Livreur :</strong> {route.driver_name}</p>
+        <p class="muted">{len(stops)} étapes · GlobalRoute AI</p>
+        <button class="btn" onclick="window.print()">🖨️ Imprimer la fiche de route</button>
     </div>
 
+    <div class="card screen-only">
+        <h3>Carte interactive 2D</h3>
+        <div id="map"></div>
+    </div>
+
+    <div class="card route-sheet">
+        <h2>Fiche de route — {route.route_name}</h2>
+        <p>Livreur : <strong>{route.driver_name}</strong></p>
+        <table>
+            <thead><tr><th>#</th><th>Étape</th><th>Adresse</th><th>Latitude</th><th>Longitude</th><th>Navigation</th></tr></thead>
+            <tbody>{''.join(f"<tr><td>{i}</td><td>{p.get('name','')}</td><td>{p.get('address','')}</td><td>{p.get('lat')}</td><td>{p.get('lng')}</td><td><a href='https://www.google.com/maps/search/?api=1&query={p.get('lat')},{p.get('lng')}' target='_blank'>GPS</a><div class='qr' data-url='https://www.google.com/maps/search/?api=1&query={p.get('lat')},{p.get('lng')}'></div></td></tr>" for i,p in enumerate(stops,1))}</tbody>
+        </table>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script>
-    const raw = {json.dumps(raw_data)};
-    const points = [];
-
-    raw.split("\\n").forEach(line => {{
-        const p = line.split("|");
-
-        if (p.length >= 3) {{
-            const lat = parseFloat(p[1]);
-            const lng = parseFloat(p[2]);
-
-            if (!Number.isNaN(lat) && !Number.isNaN(lng)) {{
-                points.push({{
-                    name: p[0],
-                    lat: lat,
-                    lng: lng
-                }});
-            }}
-        }}
-    }});
-
-    const center = points.length
-        ? [points[0].lat, points[0].lng]
-        : [19.7558, -72.2042];
-
-    const map = L.map("map").setView(center, 13);
-
-    L.tileLayer(
-        "https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
-        {{
-            maxZoom: 19,
-            attribution: "© OpenStreetMap"
-        }}
-    ).addTo(map);
-
+    const points = {map_points};
+    const map = L.map("map").setView(
+        points.length ? [points[0].lat, points[0].lng] : [19.7558,-72.2042], 13
+    );
+    L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
+        {{maxZoom:19, attribution:"© OpenStreetMap"}}).addTo(map);
     const bounds = [];
-    let html = "<ol>";
-
-    points.forEach((p, i) => {{
-        bounds.push([p.lat, p.lng]);
-
-        const marker = L.marker([p.lat, p.lng]).addTo(map);
-
-        marker.bindPopup(
-            "<b>" + p.name + "</b><br>" +
-            "Lat: " + p.lat + "<br>" +
-            "Lng: " + p.lng
+    points.forEach((p,i) => {{
+        bounds.push([p.lat,p.lng]);
+        L.marker([p.lat,p.lng]).addTo(map).bindPopup(
+            "<b>"+(i+1)+". "+p.name+"</b><br>"+(p.address||"")+"<br>GPS: "+p.lat+", "+p.lng
         );
-
-        const url =
-            "https://www.google.com/maps/search/?api=1&query=" +
-            p.lat + "," + p.lng;
-
-        html +=
-            "<li><b>" + p.name + "</b> — " +
-            p.lat + ", " + p.lng +
-            " <a target='_blank' href='" + url +
-            "'>GPS</a></li>";
     }});
-
-    html += "</ol>";
-    document.getElementById("stops").innerHTML = html;
-
     if (bounds.length) {{
-        const line = L.polyline(bounds, {{weight:4}}).addTo(map);
-        map.fitBounds(line.getBounds(), {{padding:[35,35]}});
+        L.polyline(bounds, {{weight:4}}).addTo(map);
+        map.fitBounds(bounds, {{padding:[35,35]}});
     }}
+    document.querySelectorAll(".qr").forEach(el => new QRCode(el, {{text:el.dataset.url,width:72,height:72}}));
     </script>
     """
-
-    return page(body, title="Tournée", map_needed=True)
+    return page(body, title="Fiche de route", map_needed=True)
 
 
 @app.route("/create-driver-route", methods=["POST"])
 def create_driver_route():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
+    limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
+    if limit and (user.routes_used or 0) >= limit:
+        flash("Votre quota de tournées est atteint. Choisissez un abonnement supérieur.", "danger")
+        return redirect(url_for("dashboard"))
+
+    route_name = request.form.get("route_name", "Tournée").strip()
     driver_name = request.form.get("driver_name", "").strip()
-    access_code = request.form.get(
-        "access_code", ""
-    ).strip().upper()
+    access_code = request.form.get("access_code", "").strip().upper()
+    if not driver_name or not access_code:
+        flash("Nom du livreur et code d'accès obligatoires.", "danger")
+        return redirect(url_for("dashboard"))
 
-    file = request.files.get("csv_file")
-
-    if not file or not file.filename.lower().endswith(".csv"):
-        flash("Fichier CSV invalide.", "danger")
+    if DeliveryRoute.query.filter_by(access_code=access_code).first():
+        flash("Ce code d'accès existe déjà.", "danger")
         return redirect(url_for("dashboard"))
 
     stops = []
-
-    try:
-        stream = io.TextIOWrapper(
-            file.stream,
-            encoding="utf-8-sig",
-            errors="replace"
-        )
-
-        reader = csv.reader(stream)
-
-        for row in reader:
-            if len(row) < 3:
-                continue
-
-            name = row[0].strip()
-
-            try:
-                lat = float(row[1].strip())
-                lng = float(row[2].strip())
-            except ValueError:
-                continue
-
-            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
-                continue
-
-            stops.append(f"{name}|{lat}|{lng}")
-
-        if not stops:
-            flash("Aucune coordonnée valide trouvée.", "danger")
+    file = request.files.get("csv_file")
+    if file and file.filename.lower().endswith(".csv"):
+        try:
+            stream = io.TextIOWrapper(file.stream, encoding="utf-8-sig", errors="replace")
+            for row in csv.reader(stream):
+                if len(row) >= 4:
+                    name, address = row[0].strip(), row[1].strip()
+                    lat_s, lng_s = row[2].strip(), row[3].strip()
+                elif len(row) >= 3:
+                    name, address = row[0].strip(), ""
+                    lat_s, lng_s = row[1].strip(), row[2].strip()
+                else:
+                    continue
+                try:
+                    lat, lng = float(lat_s), float(lng_s)
+                except ValueError:
+                    continue
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
+        except Exception:
+            flash("Impossible de lire le CSV.", "danger")
             return redirect(url_for("dashboard"))
 
-        route = DeliveryRoute(
-            user_id=user.id,
-            driver_name=driver_name,
-            access_code=access_code,
-            stops_data="\n".join(stops),
-        )
+    manual = request.form.get("manual_stops", "").strip()
+    if manual:
+        for line in manual.splitlines():
+            parts = [x.strip() for x in line.split("|")]
+            if len(parts) >= 4:
+                name, address, lat_s, lng_s = parts[0], parts[1], parts[2], parts[3]
+            elif len(parts) >= 3:
+                name, address, lat_s, lng_s = parts[0], "", parts[1], parts[2]
+            else:
+                continue
+            try:
+                lat, lng = float(lat_s), float(lng_s)
+            except ValueError:
+                continue
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
 
-        db.session.add(route)
-        db.session.commit()
+    if not stops:
+        flash("Ajoutez un CSV ou saisissez au moins une étape valide.", "danger")
+        return redirect(url_for("dashboard"))
 
-        flash(
-            f"Tournée créée avec {len(stops)} étapes.",
-            "success"
-        )
+    route = DeliveryRoute(
+        user_id=user.id,
+        driver_name=driver_name,
+        route_name=route_name,
+        access_code=access_code,
+        stops_data=json.dumps(stops, ensure_ascii=False),
+        stops_count=len(stops),
+        status="En cours",
+    )
+    db.session.add(route)
+    user.routes_used = (user.routes_used or 0) + 1
+    db.session.commit()
 
-    except Exception:
-        db.session.rollback()
-        flash("Impossible de traiter le fichier.", "danger")
-
+    flash(f"Tournée « {route_name} » créée avec {len(stops)} étapes et envoyée à l'espace livreur.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1821,6 +1835,28 @@ def route_api():
             None if user.unlimited else user.credits
         ),
         "message": "Request accepted by the B2B routing API.",
+    })
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.route("/health")
+def health():
+    try:
+        from sqlalchemy import text
+        db.session.execute(text("SELECT 1"))
+        database = "ok"
+    except Exception as exc:
+        database = "error"
+    return jsonify({
+        "status": "ok" if database == "ok" else "degraded",
+        "database": database,
+        "service": APP_NAME,
+        "payments": "USDC / Solana",
+        "wallet": SOLANA_RECEIVING_WALLET,
+        "network": "mainnet",
     })
 
 
