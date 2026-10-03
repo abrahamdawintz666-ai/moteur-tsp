@@ -197,7 +197,7 @@ class DeliveryRoute(db.Model):
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(80), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
-    stops_summary = db.Column(db.Text, nullable=True)  # Rendu explicitement optionnel
+    stops_summary = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
 
@@ -237,7 +237,6 @@ def migrate_existing_database():
             db.session.execute(text(sql))
         db.session.commit()
 
-    # Correction automatique de la contrainte NOT NULL sur stops_summary si elle existe en base
     try:
         db.session.execute(text('ALTER TABLE delivery_routes ALTER COLUMN stops_summary DROP NOT NULL;'))
         db.session.commit()
@@ -565,7 +564,7 @@ th { background:#f1f5f9; }
 .stat strong { display:block; font-size:22px; margin-top:4px; }
 .muted { color:var(--muted); font-size:12px; }
 .mono { font-family:monospace; word-break:break-all; }
-#map { width:100%; height:420px; border-radius:10px; margin-top:15px; }
+#map { width:100%; height:450px; border-radius:10px; margin-top:15px; }
 .plan-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:20px; }
 .plan-card { background:white; border:1px solid var(--border); border-radius:14px; padding:24px; }
 .plan-card.featured { border:2px solid var(--blue); }
@@ -1090,13 +1089,21 @@ def driver_space():
         flash("Code d'accès invalide.", "danger")
         return redirect(url_for("driver_login"))
 
-    stops_json = route.stops_data or "[]"
+    stops = json.loads(route.stops_data or "[]")
+    stops_json = json.dumps(stops, ensure_ascii=False)
+    
     body = f"""
     <div class="card">
         <h2>Tournée : {route.route_name}</h2>
         <p><strong>Livreur :</strong> {route.driver_name} | <strong>Entreprise :</strong> {route.company.company_name}</p>
-        <div style="margin: 15px 0;">
-            <a class="btn btn-secondary" href="/driver-print?code={urllib.parse.quote(route.access_code)}" target="_blank">🖨️ Imprimer la fiche de route</a>
+        <div class="grid" style="margin: 15px 0;">
+            <div class="stat"><span class="muted">Distance Route (Réelle)</span><strong id="total-distance">Calcul en cours...</strong></div>
+            <div class="stat"><span class="muted">Nombre d'étapes</span><strong>{len(stops)}</strong></div>
+            <div class="stat"><span class="muted">Statut GPS</span><strong id="gps-status" style="color:var(--blue);">Recherche...</strong></div>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+            <button class="btn btn-green" onclick="toggleTracking()">📍 Activer mon suivi GPS en direct</button>
+            <a class="btn btn-secondary" href="/driver-print?code={urllib.parse.quote(route.access_code)}" target="_blank">🖨️ Imprimer la fiche</a>
         </div>
         <div id="map"></div>
     </div>
@@ -1108,13 +1115,110 @@ def driver_space():
     const points = {stops_json};
     const map = L.map('map').setView(points.length ? [points[0].lat, points[0].lng] : [18.5385, -72.335], 13);
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19}}).addTo(map);
+
+    // Ajout des marqueurs pour chaque étape
     let list = "<ol>";
     points.forEach((p, i) => {{
-        L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>" + p.name + "</b><br>" + p.address);
-        list += "<li><strong>" + p.name + "</strong><br>" + p.address + "</li>";
+        L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
+        list += "<li style='margin-bottom: 8px;'><strong>#" + (i+1) + " - " + p.name + "</strong><br><span class='muted'>" + p.address + "</span> <a href='https://www.google.com/maps/dir/?api=1&destination=" + p.lat + "," + p.lng + "' target='_blank' style='margin-left: 10px; font-size: 12px;'>🧭 Naviguer (Google Maps)</a></li>";
     }});
     list += "</ol>";
     document.getElementById('stops-list').innerHTML = list;
+
+    // Interrogation d'Internet via OSRM pour tracer les VRAIES routes goudronnées
+    if (points.length >= 2) {{
+        const coordsString = points.map(p => p.lng + "," + p.lat).join(';');
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${{coordsString}}?overview=full&geometries=geojson`;
+
+        fetch(osrmUrl)
+            .then(response => response.json())
+            .then(data => {{
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {{
+                    const routeData = data.routes[0];
+                    // Distance réelle en km
+                    const km = (routeData.distance / 1000).toFixed(1);
+                    document.getElementById('total-distance').textContent = km + " km";
+
+                    // Tracé géométrique épousant les vraies routes
+                    const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
+                    L.polyline(roadCoords, {{
+                        color: '#2563eb',
+                        weight: 5,
+                        opacity: 0.85
+                    }}).addTo(map);
+                }} else {{
+                    fallbackStraightLine();
+                }}
+            }})
+            .catch(err => {{
+                console.warn("Erreur de connexion aux routes réelles, repli sur le tracé direct", err);
+                fallbackStraightLine();
+            }});
+    }} else {{
+        document.getElementById('total-distance').textContent = "0.0 km";
+    }}
+
+    function fallbackStraightLine() {{
+        const latLngs = points.map(p => [p.lat, p.lng]);
+        if (latLngs.length > 0) {{
+            L.polyline(latLngs, {{ color: '#2563eb', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map);
+        }}
+        document.getElementById('total-distance').textContent = "Calcul indisponible";
+    }}
+
+    // Suivi GPS en direct du téléphone
+    let trackingInterval = null;
+    let driverMarker = null;
+    let trackingActive = false;
+
+    function toggleTracking() {{
+        const statusEl = document.getElementById('gps-status');
+        if (!trackingActive) {{
+            if (!navigator.geolocation) {{
+                alert("La géolocalisation n'est pas supportée par votre appareil.");
+                return;
+            }}
+            trackingActive = true;
+            statusEl.textContent = "Actif (Suivi live)";
+            statusEl.style.color = "var(--green)";
+
+            updateDriverPosition();
+            trackingInterval = setInterval(updateDriverPosition, 5000);
+        }} else {{
+            trackingActive = false;
+            if (trackingInterval) clearInterval(trackingInterval);
+            statusEl.textContent = "Désactivé";
+            statusEl.style.color = "var(--muted)";
+            if (driverMarker) map.removeLayer(driverMarker);
+        }}
+    }}
+
+    function updateDriverPosition() {{
+        navigator.geolocation.getCurrentPosition(
+            (position) => {{
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                
+                if (!driverMarker) {{
+                    driverMarker = L.marker([lat, lng], {{
+                        icon: L.icon({{
+                            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41]
+                        }})
+                    }}).addTo(map).bindPopup("<b>Vous êtes ici (Position en direct)</b>");
+                }} else {{
+                    driverMarker.setLatLng([lat, lng]);
+                }}
+                map.setView([lat, lng], 16);
+            }},
+            (error) => {{
+                document.getElementById('gps-status').textContent = "Erreur GPS";
+                console.warn("Erreur de géolocalisation: " + error.message);
+            }},
+            {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
+        );
+    }}
     </script>
     """
     return page(body, title="Tournée Livreur", map_needed=True)
