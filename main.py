@@ -17,6 +17,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -127,7 +128,7 @@ class User(db.Model):
     company_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(160), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(30), default="dispatcher")  # admin, dispatcher, driver
+    role = db.Column(db.String(30), default="dispatcher")
     language = db.Column(db.String(10), default="fr")
 
     address = db.Column(db.String(250), default="")
@@ -269,10 +270,6 @@ def calculate_price(plan, duration_days):
     return round(PLANS[plan]["monthly_price"] * DURATIONS[duration_days], 2)
 
 def optimize_stops_order(stops):
-    """
-    Algorithme du plus proche voisin (Nearest Neighbor) pour réordonner 
-    les étapes de livraison et minimiser la distance totale parcourue.
-    """
     if len(stops) <= 2:
         return stops
 
@@ -285,7 +282,7 @@ def optimize_stops_order(stops):
         return R * 2 * math.asin(math.sqrt(a))
 
     unvisited = list(stops)
-    optimized = [unvisited.pop(0)]  # Garde le point de départ fixe (ex: entrepôt)
+    optimized = [unvisited.pop(0)]
 
     while unvisited:
         current = optimized[-1]
@@ -459,7 +456,7 @@ HTML_TEMPLATE = """
 <html lang="{{ session.get('lang', 'fr') }}">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ title or APP_NAME }}</title>
 {% if map_needed %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -711,7 +708,10 @@ def import_space():
 
 IMPORT_FORM_HTML = """
 <!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><title>Importer</title><style>{{ style }}</style></head>
+<html lang="fr"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Importer</title><style>{{ style }}</style></head>
 <body>
 <div class="container">
     <div class="card">
@@ -720,7 +720,7 @@ IMPORT_FORM_HTML = """
         <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
             <label>Nom de la tournée</label><input name="route_name" required placeholder="Ex. Tournée Nord">
             <label>Nom du livreur</label><input name="driver_name" required placeholder="Ex. Marc Dubois">
-            <label>Code d'accès du livreur</label><input name="access_code" required placeholder="Ex. DRIVER-99">
+            <label>Code d'accès du livreur (doit être unique)</label><input name="access_code" required placeholder="Ex. DRIVER-99">
             <label>Fichier CSV</label><input type="file" name="csv_file" accept=".csv">
             <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
             <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 48.8566 | 2.3522"></textarea>
@@ -772,7 +772,11 @@ def create_driver_route():
         return redirect(url_for("import_space"))
 
     # Application de l'algorithme d'optimisation VRP
-    optimized_stops = optimize_stops_order(stops)
+    try:
+        optimized_stops = optimize_stops_order(stops)
+    except Exception as e:
+        flash(f"Erreur lors du calcul d'optimisation : {str(e)}", "danger")
+        return redirect(url_for("import_space"))
 
     route = DeliveryRoute(
         user_id=user.id,
@@ -783,11 +787,22 @@ def create_driver_route():
         status="En cours",
         optimized=True
     )
-    db.session.add(route)
-    user.tours_used += 1
-    db.session.commit()
+    
+    # Sécurisation robuste contre l'erreur 500 (doublon de code d'accès)
+    try:
+        db.session.add(route)
+        user.tours_used += 1
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash("Erreur : Ce code d'accès de livreur est déjà utilisé. Veuillez en choisir un autre.", "danger")
+        return redirect(url_for("import_space"))
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Une erreur inattendue est survenue : {str(e)}", "danger")
+        return redirect(url_for("import_space"))
 
-    flash(f"Tournée optimisée et créée avec succès ({len(stops)} étapes triées par l'algorithme).", "success")
+    flash(f"Tournée optimisée et créée avec succès ({len(stops)} étapes triées).", "success")
     return redirect(url_for("dashboard"))
 
 
