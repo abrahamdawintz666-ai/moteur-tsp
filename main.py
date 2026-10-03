@@ -22,30 +22,15 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
-# Secrets are the only important Render variables.
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-
-# Admin password is intentionally read from Render.
 ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_SECRET_PASSWORD", "CHANGE-ME")
 
-# ------------------------------------------------------------
-# FIXED PUBLIC CONFIGURATION
-# These values are safe to keep in code.
-# ------------------------------------------------------------
-
 APP_NAME = "GlobalRoute AI"
-
-# Public Solana wallet supplied for receiving payments.
 SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
-
-# Mainnet USDC mint.
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-
-# Solana mainnet RPC. For high traffic, replace later with a
-# dedicated RPC provider, but no secret is needed for this basic setup.
 SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
-# Subscription catalogue (Tarifs mis à jour : 99 USDC et 300 USDC).
+# Catalogue des abonnements
 PLANS = {
     "standard": {
         "name": "Standard",
@@ -122,24 +107,13 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     api_keys = db.relationship(
-        "ApiKey",
-        backref="owner",
-        lazy=True,
-        cascade="all, delete-orphan"
+        "ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan"
     )
-
     deliveries = db.relationship(
-        "DeliveryRoute",
-        backref="company",
-        lazy=True,
-        cascade="all, delete-orphan"
+        "DeliveryRoute", backref="company", lazy=True, cascade="all, delete-orphan"
     )
-
     payments = db.relationship(
-        "PaymentOrder",
-        backref="customer",
-        lazy=True,
-        cascade="all, delete-orphan"
+        "PaymentOrder", backref="customer", lazy=True, cascade="all, delete-orphan"
     )
 
 
@@ -159,28 +133,16 @@ class PaymentOrder(db.Model):
     __tablename__ = "payment_orders"
 
     id = db.Column(db.Integer, primary_key=True)
-
-    order_code = db.Column(
-        db.String(80), unique=True, nullable=False, index=True
-    )
-    reference = db.Column(
-        db.String(64), unique=True, nullable=False, index=True
-    )
-
+    order_code = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    reference = db.Column(db.String(64), unique=True, nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-
     plan = db.Column(db.String(30), nullable=False)
     duration_days = db.Column(db.Integer, nullable=False)
-
     amount_usdc = db.Column(db.Float, nullable=False)
     asset = db.Column(db.String(20), default="USDC")
     network = db.Column(db.String(30), default="Solana")
-
     status = db.Column(db.String(20), default="pending")
-    transaction_signature = db.Column(
-        db.String(160), unique=True, nullable=True
-    )
-
+    transaction_signature = db.Column(db.String(160), unique=True, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     paid_at = db.Column(db.DateTime, nullable=True)
 
@@ -189,15 +151,10 @@ class DeliveryRoute(db.Model):
     __tablename__ = "delivery_routes"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("users.id"), nullable=False
-    )
-
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     route_name = db.Column(db.String(150), default="Tournée")
     driver_name = db.Column(db.String(100), nullable=False)
-    access_code = db.Column(
-        db.String(80), unique=True, nullable=False
-    )
+    access_code = db.Column(db.String(80), unique=True, nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
 
@@ -233,22 +190,13 @@ def migrate_existing_database():
     ):
         if table_name not in existing_tables:
             continue
-
-        existing_columns = {
-            col["name"] for col in inspector.get_columns(table_name)
-        }
-
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
         for column in model.__table__.columns:
             if column.name in existing_columns or column.primary_key:
                 continue
-
             type_sql = _column_type_sql(column)
-            sql = (
-                f'ALTER TABLE "{table_name}" '
-                f'ADD COLUMN "{column.name}" {type_sql}'
-            )
+            sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
             db.session.execute(text(sql))
-
         db.session.commit()
 
 
@@ -270,7 +218,6 @@ def base58_encode(raw: bytes) -> str:
     while number:
         number, remainder = divmod(number, 58)
         result = ALPHABET[remainder] + result
-
     leading_zeroes = 0
     for byte in raw:
         if byte == 0:
@@ -288,16 +235,11 @@ def utcnow():
     return datetime.utcnow()
 
 
-def money(value):
-    return f"{float(value):.2f}"
-
-
 def calculate_price(plan, duration_days):
     if plan not in PLANS:
         raise ValueError("Plan invalide.")
     if duration_days not in DURATIONS:
         raise ValueError("Durée invalide.")
-
     monthly = PLANS[plan]["monthly_price"]
     multiplier = DURATIONS[duration_days]
     return round(monthly * multiplier, 2)
@@ -332,7 +274,6 @@ def add_subscription(user, plan, duration_days):
         and user.subscription_expires_at > now
         and user.plan == plan
     )
-
     if same_active_plan:
         start = user.subscription_started_at or now
         expiry = user.subscription_expires_at + timedelta(days=duration_days)
@@ -377,13 +318,10 @@ def rpc_call(method, params):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-
     with urllib.request.urlopen(req, timeout=15) as response:
         data = json.loads(response.read().decode("utf-8"))
-
     if "error" in data:
         raise RuntimeError(str(data["error"]))
-
     return data.get("result")
 
 
@@ -413,10 +351,8 @@ def verify_usdc_payment(order):
             },
         ],
     )
-
     if not tx:
         return False, None, "Transaction pas encore disponible."
-
     if tx.get("meta") and tx["meta"].get("err") is not None:
         return False, None, "La transaction Solana a échoué."
 
@@ -430,51 +366,41 @@ def verify_usdc_payment(order):
         owner = balance.get("owner")
         amount_info = balance.get("uiTokenAmount") or {}
         amount_raw = int(amount_info.get("amount", "0"))
-
         if mint == USDC_MINT and owner == SOLANA_RECEIVING_WALLET:
             received_raw += amount_raw
 
     pre_balances = meta.get("preTokenBalances") or []
     pre_raw = 0
-
     for balance in pre_balances:
         mint = balance.get("mint")
         owner = balance.get("owner")
         amount_info = balance.get("uiTokenAmount") or {}
         amount_raw = int(amount_info.get("amount", "0"))
-
         if mint == USDC_MINT and owner == SOLANA_RECEIVING_WALLET:
             pre_raw += amount_raw
 
     delta = received_raw - pre_raw
-
     if delta < expected_raw:
         return (
             False,
             signature,
-            f"Montant reçu insuffisant. Attendu {order.amount_usdc:.2f} USDC."
+            f"Montant reçu insuffisant. Attendu {order.amount_usdc:.2f} USDC.",
         )
-
     return True, signature, "Paiement USDC confirmé."
 
 
 def activate_paid_order(order, signature):
     if order.status == "paid":
         return
-
     user = User.query.get(order.user_id)
     if not user:
         raise RuntimeError("Client introuvable.")
 
-    existing = PaymentOrder.query.filter_by(
-        transaction_signature=signature
-    ).first()
-
+    existing = PaymentOrder.query.filter_by(transaction_signature=signature).first()
     if existing and existing.id != order.id:
         raise RuntimeError("Cette transaction est déjà utilisée.")
 
     expiry = add_subscription(user, order.plan, order.duration_days)
-
     order.status = "paid"
     order.transaction_signature = signature
     order.paid_at = utcnow()
@@ -483,12 +409,9 @@ def activate_paid_order(order, signature):
         AuditLog(
             action="PAYMENT_CONFIRMED",
             details=(
-                f"order={order.order_code}; "
-                f"user={user.email}; "
-                f"plan={order.plan}; "
-                f"days={order.duration_days}; "
-                f"signature={signature}; "
-                f"expires={expiry.isoformat()}"
+                f"order={order.order_code}; user={user.email}; "
+                f"plan={order.plan}; days={order.duration_days}; "
+                f"signature={signature}; expires={expiry.isoformat()}"
             ),
         )
     )
@@ -879,13 +802,9 @@ def register():
 
     db.session.add(user)
     db.session.commit()
-
     session["user_id"] = user.id
 
-    flash(
-        "Compte créé. Choisissez maintenant votre abonnement.",
-        "success"
-    )
+    flash("Compte créé. Choisissez maintenant votre abonnement.", "success")
     return redirect(url_for("plans"))
 
 
@@ -914,7 +833,6 @@ def login_form():
 def login():
     email = request.form.get("email", "").strip().lower()
     password = request.form.get("password", "")
-
     user = User.query.filter_by(email=email).first()
 
     if user and check_password_hash(user.password_hash, password):
@@ -984,7 +902,7 @@ def dashboard():
 
     <div class="card">
         <h3>🚚 Importer / créer une tournée</h3>
-        <p class="muted">Utilisez l'espace d'importation pour charger vos tournées et étapes.</p>
+        <p class="muted">Sélectionnez un fichier CSV ou saisissez vos étapes directement.</p>
         <a class="btn btn-green" href="/import-space">Ouvrir l’espace Importer</a>
         <a class="btn btn-secondary" href="/logout">↪ Déconnexion</a>
     </div>
@@ -1016,113 +934,35 @@ def dashboard():
     return page(body, title="Dashboard")
 
 
-@app.route("/import-space")
-def import_space():
-    user = require_user()
-    if not user:
-        return redirect(url_for("login_form"))
-
-    body = """
+def render_import_form(route_name="", driver_name="", access_code="", manual_stops=""):
+    body = f"""
     <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
             <div>
                 <h2>Importer une tournée</h2>
-                <p class="muted">Importez un fichier CSV ou saisissez vos étapes directement.</p>
+                <p class="muted">Sélectionnez votre fichier CSV (intégration automatique) ou remplissez le texte manuellement.</p>
             </div>
             <a class="btn btn-red" href="/logout">⏻ Déconnexion</a>
         </div>
 
         <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
             <label>Nom de la tournée</label>
-            <input name="route_name" placeholder="Ex. Livraison du matin" required>
+            <input name="route_name" value="{route_name}" placeholder="Ex. Livraison du matin" required>
 
             <label>Nom du livreur</label>
-            <input name="driver_name" placeholder="Ex. Jean Dupont" required>
+            <input name="driver_name" value="{driver_name}" placeholder="Ex. Jean Dupont" required>
 
-            <label>Code d'accès du livreur</label>
-            <input name="access_code" placeholder="Ex. LIVREUR01" required>
+            <label>Code d'accès du livreur (Libre : ex. AB-123, livreur1, etc.)</label>
+            <input name="access_code" value="{access_code}" placeholder="Ex. LIVREUR01" required>
 
-            <label>Importer un CSV</label>
-            <input type="file" id="csv-file-input" name="csv_file" accept=".csv,text/csv" style="padding:8px">
+            <label>Importer un fichier CSV (Recommandé - Intégration directe)</label>
+            <input type="file" name="csv_file" accept=".csv,text/csv" style="padding:8px">
 
-            <label>Contenu des étapes</label>
-            <textarea id="manual-stops" name="manual_stops" rows="14"
-                placeholder="Une ligne par étape : Nom | Adresse | Latitude | Longitude
-Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
+            <label>Ou Saisie manuelle / Optionnel (Nom | Adresse | Latitude | Longitude)</label>
+            <textarea name="manual_stops" rows="6"
+                placeholder="Exemple : Client ABC | 15 Rue Lamartinière | 19.7558 | -72.2042">{manual_stops}</textarea>
 
-            <div id="csv-import-status" class="alert" style="display:none;margin-top:10px;"></div>
-
-            <script>
-            (() => {
-                const input = document.getElementById("csv-file-input");
-                const editor = document.getElementById("manual-stops");
-                const status = document.getElementById("csv-import-status");
-
-                if (!input || !editor) return;
-
-                input.addEventListener("change", () => {
-                    const file = input.files && input.files[0];
-                    if (!file) return;
-
-                    const reader = new FileReader();
-                    reader.onload = (event) => {
-                        const raw = String(event.target.result || "");
-                        const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
-                        const output = [];
-
-                        let separator = ",";
-                        for (const l of lines) {
-                            if (l.includes(";")) { separator = ";"; break; }
-                            else if (l.includes(",")) { separator = ","; break; }
-                        }
-
-                        for (const line of lines) {
-                            if (!line.trim()) continue;
-                            const cells = [];
-                            let cell = "";
-                            let quoted = false;
-
-                            for (let i = 0; i < line.length; i++) {
-                                const ch = line[i];
-                                if (ch === '"') {
-                                    if (quoted && line[i + 1] === '"') { cell += '"'; i++; }
-                                    else { quoted = !quoted; }
-                                } else if (ch === separator && !quoted) {
-                                    cells.push(cell.trim());
-                                    cell = "";
-                                } else {
-                                    cell += ch;
-                                }
-                            }
-                            cells.push(cell.trim());
-
-                            if (cells.length < 2) continue;
-                            const name = cells[0] || "";
-                            const address = cells[1] || "";
-                            const lat = cells[2] || "18.54";
-                            const lng = cells[3] || "-72.33";
-
-                            if (["nom", "name", "client"].includes(name.toLowerCase())) continue;
-                            output.push(`${name} | ${address} | ${lat} | ${lng}`);
-                        }
-
-                        if (output.length === 0) {
-                            for (const line of lines) {
-                                if (line.trim()) output.push(line.trim());
-                            }
-                        }
-
-                        editor.value = output.join("\n");
-                        status.style.display = "block";
-                        status.className = "alert alert-success";
-                        status.textContent = `Succès ! ${output.length} étape(s) chargée(s).`;
-                    };
-                    reader.readAsText(file, "UTF-8");
-                });
-            })();
-            </script>
-
-            <button class="btn btn-green btn-block" type="submit">Créer et envoyer au livreur</button>
+            <button class="btn btn-green btn-block" type="submit" style="margin-top:20px;">Créer et envoyer au livreur</button>
         </form>
     </div>
 
@@ -1131,6 +971,14 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
     </div>
     """
     return page(body, title="Importer une tournée")
+
+
+@app.route("/import-space")
+def import_space():
+    user = require_user()
+    if not user:
+        return redirect(url_for("login_form"))
+    return render_import_form()
 
 
 @app.route("/plans")
@@ -1429,7 +1277,7 @@ def driver_space():
     if not code:
         return redirect(url_for("driver_login"))
 
-    route = DeliveryRoute.query.filter_by(access_code=code.strip().upper()).first()
+    route = DeliveryRoute.query.filter_by(access_code=code.strip()).first()
     if not route:
         flash("Code d'accès incorrect.", "danger")
         return redirect(url_for("driver_login"))
@@ -1450,7 +1298,6 @@ def driver_space():
                     pass
 
     route_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    share_url = url_for("driver_space", code=route.access_code, _external=True)
 
     body = f"""
     <div class="card driver-head">
@@ -1505,9 +1352,15 @@ def create_driver_route():
     if not user:
         return redirect(url_for("login_form"))
 
+    route_name = request.form.get("route_name", "Tournée").strip() or "Tournée"
+    driver_name = request.form.get("driver_name", "").strip()
+    access_code = request.form.get("access_code", "").strip()  # Accepte tout format de code
+    manual = request.form.get("manual_stops", "").strip()
+    file = request.files.get("csv_file")
+
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
         flash("Votre abonnement a expiré.", "danger")
-        return redirect(url_for("plans"))
+        return render_import_form(route_name, driver_name, access_code, manual)
 
     if user.tour_limit is None:
         user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
@@ -1516,54 +1369,68 @@ def create_driver_route():
 
     if user.tours_used >= user.tour_limit:
         flash("Quota atteint.", "danger")
-        return redirect(url_for("plans"))
-
-    route_name = request.form.get("route_name", "Tournée").strip() or "Tournée"
-    driver_name = request.form.get("driver_name", "").strip()
-    access_code = request.form.get("access_code", "").strip().upper()
-    manual = request.form.get("manual_stops", "").strip()
-    file = request.files.get("csv_file")
+        return render_import_form(route_name, driver_name, access_code, manual)
 
     if not driver_name or not access_code:
         flash("Nom du livreur et code d'accès obligatoires.", "danger")
-        return redirect(url_for("dashboard"))
+        return render_import_form(route_name, driver_name, access_code, manual)
 
     if DeliveryRoute.query.filter_by(access_code=access_code).first():
-        flash("Ce code livreur existe déjà.", "danger")
-        return redirect(url_for("dashboard"))
+        flash("Ce code livreur existe déjà. Veuillez en choisir un autre.", "danger")
+        return render_import_form(route_name, driver_name, access_code, manual)
 
     stops = []
     try:
-        if manual:
-            for line in manual.splitlines():
-                parts = [x.strip() for x in line.split('|')]
-                if len(parts) < 4: 
-                    continue
-                try: 
-                    lat = float(parts[-2])
-                    lng = float(parts[-1])
-                except ValueError: 
-                    continue
-                if -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append({"name": parts[0] or f"Étape {len(stops)+1}", "address": " | ".join(parts[1:-2]), "lat": lat, "lng": lng})
-        elif file and file.filename and file.filename.lower().endswith('.csv'):
+        # Priorité au fichier CSV s'il est fourni
+        if file and file.filename:
             stream = io.TextIOWrapper(file.stream, encoding='utf-8-sig', errors='replace')
             for row in csv.reader(stream):
-                if len(row) < 4: 
+                if not row or not any(row):
                     continue
-                name = row[0].strip()
-                address = row[1].strip()
-                try: 
-                    lat = float(row[2].strip())
-                    lng = float(row[3].strip())
-                except ValueError: 
+                name = row[0].strip() if len(row) > 0 else f"Étape {len(stops)+1}"
+                address = row[1].strip() if len(row) > 1 else ""
+                lat, lng = 19.7558, -72.2042  # Valeur par défaut si manquant
+
+                if len(row) >= 4:
+                    try:
+                        lat = float(row[2].strip())
+                        lng = float(row[3].strip())
+                    except ValueError:
+                        pass
+
+                if name.lower() in ["nom", "name", "client"]:
                     continue
-                if -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append({"name": name or f"Étape {len(stops)+1}", "address": address, "lat": lat, "lng": lng})
+
+                stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
+
+        # Sinon, lecture du champ texte manuel
+        elif manual:
+            for line in manual.splitlines():
+                if not line.strip():
+                    continue
+                parts = [x.strip() for x in line.replace(";", "|").split('|')]
+                name = parts[0] if len(parts) > 0 and parts[0] else f"Étape {len(stops)+1}"
+                address = parts[1] if len(parts) > 1 and parts[1] else "Adresse non spécifiée"
+                lat, lng = 19.7558, -72.2042
+
+                if len(parts) >= 4:
+                    try:
+                        lat = float(parts[-2])
+                        lng = float(parts[-1])
+                        address = " | ".join(parts[1:-2])
+                    except ValueError:
+                        pass
+                elif len(parts) == 3:
+                    try:
+                        lat = float(parts[2])
+                    except ValueError:
+                        pass
+
+                stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
 
         if not stops:
-            flash("Aucune étape valide trouvée.", "danger")
-            return redirect(url_for("dashboard"))
+            flash("Aucune étape valide trouvée (veuillez importer un fichier CSV ou remplir le champ texte).", "danger")
+            return render_import_form(route_name, driver_name, access_code, manual)
 
         route = DeliveryRoute(
             user_id=user.id,
@@ -1576,17 +1443,14 @@ def create_driver_route():
         db.session.add(route)
         user.tours_used = int(user.tours_used or 0) + 1
         db.session.commit()
-        flash(f"Tournée créée : {len(stops)} étapes.", "success")
-    except Exception:
+        flash(f"Tournée créée avec succès : {len(stops)} étape(s).", "success")
+        return redirect(url_for("dashboard"))
+
+    except Exception as e:
         db.session.rollback()
-        flash("Impossible de créer la tournée. Vérifiez le format.", "danger")
+        flash(f"Erreur lors de la création : {str(e)}", "danger")
+        return render_import_form(route_name, driver_name, access_code, manual)
 
-    return redirect(url_for("dashboard"))
-
-
-# ============================================================
-# API & HEALTH
-# ============================================================
 
 @app.route("/api/v1/route", methods=["POST"])
 def route_api():
