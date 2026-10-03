@@ -197,7 +197,7 @@ class DeliveryRoute(db.Model):
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(80), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
-    stops_summary = db.Column(db.Text, nullable=True)
+    stops_summary = db.Column(db.Text, nullable=True)  # Rendu explicitement optionnel
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
 
@@ -236,6 +236,13 @@ def migrate_existing_database():
             sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
             db.session.execute(text(sql))
         db.session.commit()
+
+    # Correction automatique de la contrainte NOT NULL sur stops_summary si elle existe en base
+    try:
+        db.session.execute(text('ALTER TABLE delivery_routes ALTER COLUMN stops_summary DROP NOT NULL;'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 
 with app.app_context():
@@ -1249,7 +1256,6 @@ def admin_logout():
     return redirect(url_for("index"))
 
 
-# ROUTE API SÉCURISÉE AMÉLIORÉE (Support GET & POST robuste)
 @app.route("/api/v1/route", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def api_v1_route():
