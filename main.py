@@ -200,10 +200,7 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
-
-    __table_args__ = (
-        db.UniqueConstraint('user_id', 'access_code', name='uq_user_access_code'),
-    )
+    # Suppression de la contrainte d'unicité stricte globale pour permettre de recréer un code s'il n'est plus actif/utilisé
 
 
 class AuditLog(db.Model):
@@ -303,7 +300,6 @@ def route_distance(route):
     return dist
 
 def local_two_opt_pass(route):
-    """FS- / FS+ : Algorithme de raffinement local 2-opt pour nettoyer et supprimer les croisements."""
     improved = True
     iterations = 0
     max_iterations = 50
@@ -322,7 +318,6 @@ def local_two_opt_pass(route):
     return optimized
 
 def nearest_neighbor_guided(route):
-    """Vague 2 : Fourmis ingénieurs (Tracé des plans structurés)"""
     if len(route) <= 2:
         return route
     unvisited = list(route)
@@ -338,13 +333,10 @@ def nearest_neighbor_guided(route):
     return optimized
 
 def certify_route_with_ortools(route):
-    """Étape 2 : Certification mathématique via Google OR-Tools si disponible"""
     if not HAS_ORTOOLS or len(route) <= 3:
         return route
-    
     try:
         n = len(route)
-        # Création d'une matrice de distance entière (multipliée par 1000 pour précision en mètres)
         distance_matrix = [[0] * n for _ in range(n)]
         for i in range(n):
             for j in range(n):
@@ -379,75 +371,39 @@ def certify_route_with_ortools(route):
                 certified_indices.append(manager.IndexToNode(index))
                 index = solution.Value(routing.NextVar(index))
             
-            # Reconstruire la route selon l'ordre certifié par OR-Tools
             certified_route = [route[i] for i in certified_indices if i < len(route)]
             if len(certified_route) == len(route):
                 return certified_route
     except Exception:
         pass
-        
     return route
 
 def process_single_shard(shard):
-    """
-    Traite un bloc (shard) en combinant :
-    1. La colonie de fourmis multicouche (Éclaireuses -> FS- -> Ingénieurs -> FS+)
-    2. La certification mathématique par Google OR-Tools
-    3. Filet de sécurité absolu (zéro plantage)
-    """
     try:
         if len(shard) <= 2:
             return shard
-
-        # ==========================================
-        # ÉTAPE 1 : LA COLONIE DE FOURMIS MULTICOUCHE
-        # ==========================================
-        
-        # Vague 1 : Fourmis éclaireuses (Exploration large aléatoire)
         route = list(shard)
-        anchor = route.pop(0) # Garder le point de départ fixe
+        anchor = route.pop(0)
         random.shuffle(route)
         route = [anchor] + route
-
-        # FS- : Saboteurs correctifs (Nettoyage initial)
         route = local_two_opt_pass(route)
-
-        # Vague 2 : Fourmis ingénieurs (Tracé structuré)
         route = nearest_neighbor_guided(route)
-
-        # FS+ : Raffinement de haute précision
         route = local_two_opt_pass(route)
-
-        # ==========================================
-        # ÉTAPE 2 : LE SOLVEUR GOOGLE OR-TOOLS
-        # ==========================================
         certified_route = certify_route_with_ortools(route)
-        
         return certified_route
-
     except Exception:
         return sorted(shard, key=lambda p: (p['lat'], p['lng']))
 
 def optimize_stops_order(stops):
-    """
-    Fonction principale d'optimisation haut débit : 
-    Découpage intelligent en blocs + Parallélisme (ProcessPoolExecutor) + Moteur Hybride.
-    """
     if len(stops) <= 10:
         return process_single_shard(stops)
-
-    # Découpage en blocs (shards) de ~300 points pour scalabilité massive
     chunk_size = 300
     shards = [stops[i:i + chunk_size] for i in range(0, len(stops), chunk_size)]
-
     processed_shards = []
-    # Parallélisation multi-cœurs sécurisée
     with ProcessPoolExecutor() as executor:
         results = executor.map(process_single_shard, shards)
         for res in results:
             processed_shards.extend(res)
-
-    # Fusion globale et passe finale de consolidation du trajet
     return local_two_opt_pass(processed_shards)
 
 
@@ -912,6 +868,12 @@ def create_driver_route():
         flash("Quota de tournées atteint. Veuillez mettre à niveau votre abonnement.", "danger")
         return redirect(url_for("dashboard"))
 
+    # Vérification intelligente de l'unicité du code d'accès (uniquement parmi les tournées existantes de l'utilisateur)
+    existing_route = DeliveryRoute.query.filter_by(user_id=user.id, access_code=access_code).first()
+    if existing_route:
+        flash("Ce code d'accès est déjà utilisé pour une autre de vos tournées existantes. Veuillez en choisir un autre.", "danger")
+        return redirect(url_for("import_space"))
+
     stops = []
     if file and file.filename:
         stream = io.TextIOWrapper(file.stream, encoding='utf-8-sig', errors='replace')
@@ -954,10 +916,6 @@ def create_driver_route():
         db.session.add(route)
         user.tours_used += 1
         db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        flash("Erreur : Vous utilisez déjà ce code d'accès pour une autre de vos tournées. Veuillez en choisir un autre.", "danger")
-        return redirect(url_for("import_space"))
     except Exception as e:
         db.session.rollback()
         flash(f"Une erreur inattendue est survenue : {str(e)}", "danger")
@@ -1238,6 +1196,7 @@ def admin_panel():
         return page(body, title="Admin")
 
     users = User.query.all()
+    user_options = "".join([f'<option value="{u.id}">{u.company_name} ({u.email})</option>' for u in users])
     user_rows = "".join([f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>{u.plan}</td><td>{u.tours_used}/{u.tour_limit}</td></tr>" for u in users])
 
     body = f"""
@@ -1245,12 +1204,42 @@ def admin_panel():
         <h2>Panel Administrateur</h2>
         <a class="btn btn-red" href="/admin-logout">Quitter l'admin</a>
     </div>
+
+    <div class="card">
+        <h3>🔑 Générer une clé API pour une entreprise</h3>
+        <form method="POST" action="/admin/generate-key">
+            <label>Sélectionner l'entreprise</label>
+            <select name="user_id" required>{user_options}</select>
+            <button class="btn btn-green" type="submit" style="margin-top:15px;">Générer et assigner la clé API</button>
+        </form>
+    </div>
+
     <div class="card">
         <h3>Liste des Entreprises</h3>
         <table><thead><tr><th>Entreprise</th><th>Email</th><th>Plan</th><th>Tournées</th></tr></thead><tbody>{user_rows}</tbody></table>
     </div>
     """
     return page(body, title="Admin Panel")
+
+
+@app.route("/admin/generate-key", methods=["POST"])
+def admin_generate_key():
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_panel"))
+
+    user_id = request.form.get("user_id")
+    user = User.query.get(user_id)
+    if not user:
+        flash("Entreprise introuvable.", "danger")
+        return redirect(url_for("admin_panel"))
+
+    # Générer une nouvelle clé active pour cette entreprise
+    expiry = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > utcnow() else utcnow() + timedelta(days=30)
+    create_api_key(user, expiry)
+    db.session.commit()
+
+    flash(f"Nouvelle clé API générée avec succès pour {user.company_name}.", "success")
+    return redirect(url_for("admin_panel"))
 
 
 @app.route("/admin-logout")
@@ -1265,19 +1254,19 @@ def api_v1_route():
     key_val = request.headers.get("X-API-KEY")
     key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
     if not key or (key.expires_at and key.expires_at < utcnow()):
-        return jsonify({"error": "invalid_api_key"}), 401
+        return jsonify({"error": "invalid_api_key"}}, 401
 
     user = User.query.get(key.user_id)
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        return jsonify({"error": "subscription_expired"}), 402
+        return jsonify({"error": "subscription_expired"}}, 402
 
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}), 402
+        return jsonify({"error": "quota_exceeded"}}, 402
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
     if len(points) < 2:
-        return jsonify({"error": "at_least_2_points_required"}), 400
+        return jsonify({"error": "at_least_2_points_required"}}, 400
 
     optimized = optimize_stops_order(points)
     user.tours_used += 1
