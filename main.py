@@ -1151,13 +1151,6 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                     const file = input.files && input.files[0];
                     if (!file) return;
 
-                    if (!/\.csv$/i.test(file.name) && file.type && file.type !== "text/csv") {
-                        status.style.display = "block";
-                        status.className = "alert alert-danger";
-                        status.textContent = "Veuillez sélectionner un fichier CSV.";
-                        return;
-                    }
-
                     const reader = new FileReader();
 
                     reader.onload = (event) => {
@@ -1165,12 +1158,21 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                         const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
                         const output = [];
 
-                        // Convertit immédiatement chaque ligne CSV en :
-                        // Nom | Adresse | Latitude | Longitude
+                        // Détecte automatiquement le séparateur (, ou ;) sur la première ligne non vide
+                        let separator = ",";
+                        for (const l of lines) {
+                            if (l.includes(";")) {
+                                separator = ";";
+                                break;
+                            } else if (l.includes(",")) {
+                                separator = ",";
+                                break;
+                            }
+                        }
+
                         for (const line of lines) {
                             if (!line.trim()) continue;
 
-                            // Petit parseur CSV compatible avec les champs entre guillemets.
                             const cells = [];
                             let cell = "";
                             let quoted = false;
@@ -1185,7 +1187,28 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                                     } else {
                                         quoted = !quoted;
                                     }
-                                } else if (ch === "," && !quoted) {
+                                } else if (ch === separator && !quoted) {
+                                    cells.path ? null : cells.push(cell.trim());
+                                    cells.push(cell.trim());
+                                    cell = "";
+                                } else {
+                                    cell += ch;
+                                }
+                            }
+                            // Correction pour push propre sans doublon
+                            cells.length = 0;
+                            cell = "";
+                            quoted = false;
+                            for (let i = 0; i < line.length; i++) {
+                                const ch = line[i];
+                                if (ch === '"') {
+                                    if (quoted && line[i + 1] === '"') {
+                                        cell += '"';
+                                        i++;
+                                    } else {
+                                        quoted = !quoted;
+                                    }
+                                } else if (ch === separator && !quoted) {
                                     cells.push(cell.trim());
                                     cell = "";
                                 } else {
@@ -1194,19 +1217,18 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                             }
                             cells.push(cell.trim());
 
-                            if (cells.length < 4) continue;
+                            if (cells.length < 2) continue;
 
                             const name = cells[0] || "";
                             const address = cells[1] || "";
-                            const lat = cells[2] || "";
-                            const lng = cells[3] || "";
+                            const lat = cells[2] || "18.54";
+                            const lng = cells[3] || "-72.33";
 
                             // Ignore l'en-tête éventuel.
                             if (
-                                name.toLowerCase() === "nom" &&
-                                address.toLowerCase() === "adresse" &&
-                                lat.toLowerCase() === "latitude" &&
-                                lng.toLowerCase() === "longitude"
+                                name.toLowerCase() === "nom" ||
+                                name.toLowerCase() === "name" ||
+                                name.toLowerCase() === "client"
                             ) {
                                 continue;
                             }
@@ -1214,19 +1236,26 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                             output.push(`${name} | ${address} | ${lat} | ${lng}`);
                         }
 
+                        if (output.length === 0) {
+                            // Si le fichier texte simple contient directement des lignes au format | ou autre
+                            for (const line of lines) {
+                                if (line.trim()) output.push(line.trim());
+                            }
+                        }
+
                         editor.value = output.join("\n");
                         editor.dispatchEvent(new Event("input", {bubbles:true}));
 
                         status.style.display = "block";
                         status.className = "alert alert-success";
-                        status.textContent = `${output.length} étape(s) importée(s) directement dans l'espace d'écriture.`;
+                        status.textContent = `Succès ! ${output.length} étape(s) chargée(s) instantanément dans le champ d'écriture ci-dessous.`;
                         editor.focus();
                     };
 
                     reader.onerror = () => {
                         status.style.display = "block";
                         status.className = "alert alert-danger";
-                        status.textContent = "Impossible de lire ce fichier CSV.";
+                        status.textContent = "Impossible de lire le fichier.";
                     };
 
                     reader.readAsText(file, "UTF-8");
