@@ -209,8 +209,66 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+def _column_type_sql(column):
+    """Return a portable SQL type for the lightweight startup migration."""
+    try:
+        return column.type.compile(dialect=db.engine.dialect)
+    except Exception:
+        return str(column.type)
+
+
+def migrate_existing_database():
+    """
+    Add columns introduced by newer versions without deleting existing data.
+
+    db.create_all() creates missing tables, but it deliberately does not alter
+    tables that already exist. The previous GlobalRoute database therefore
+    could keep the old `users` schema and make /admin-panel fail when the new
+    code selected credits/unlimited/active. This small migration closes that
+    gap for the current one-file deployment.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table_name, model in (
+        ("users", User),
+        ("api_keys", ApiKey),
+        ("payment_orders", PaymentOrder),
+        ("delivery_routes", DeliveryRoute),
+        ("audit_logs", AuditLog),
+    ):
+        if table_name not in existing_tables:
+            continue
+
+        existing_columns = {
+            col["name"] for col in inspector.get_columns(table_name)
+        }
+
+        for column in model.__table__.columns:
+            if column.name in existing_columns or column.primary_key:
+                continue
+
+            type_sql = _column_type_sql(column)
+
+            # New columns are deliberately nullable during migration. This
+            # lets old customer rows survive even when no historical value
+            # exists. Application-level defaults handle new records.
+            sql = (
+                f'ALTER TABLE "{table_name}" '
+                f'ADD COLUMN "{column.name}" {type_sql}'
+            )
+
+            db.session.execute(text(sql))
+
+        db.session.commit()
+
+
 with app.app_context():
+    # Creates new tables and then upgrades older existing tables in place.
     db.create_all()
+    migrate_existing_database()
 
 
 # ============================================================
