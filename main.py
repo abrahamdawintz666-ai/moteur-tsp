@@ -524,7 +524,7 @@ def activate_paid_order(order, signature):
 
 
 # ============================================================
-# DESIGN & CSS STYLES
+# DESIGN & CSS STYLES (FLUIDE & MOBILE OPTIMIZED)
 # ============================================================
 
 BASE_STYLE = """
@@ -533,42 +533,64 @@ BASE_STYLE = """
     --bg:#f8fafc; --card:#ffffff; --text:#0f172a; --muted:#64748b; --border:#e2e8f0;
 }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+html, body { 
+    margin:0; 
+    padding:0; 
+    background:var(--bg); 
+    color:var(--text); 
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; 
+    overflow-x: hidden; 
+}
 header { background:var(--navy); color:white; padding:12px 20px; display:flex; align-items:center; gap:15px; position:relative; }
-header h1 { margin:0; font-size:18px; flex:1; }
+header h1 { margin:0; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lang-selector { background:rgba(255,255,255,.1); color:white; border:1px solid rgba(255,255,255,.2); border-radius:6px; padding:6px; font-size:12px; }
-.menu-toggle { width:40px; height:40px; border:1px solid rgba(255,255,255,.2); border-radius:8px; background:rgba(255,255,255,.1); color:white; font-size:20px; cursor:pointer; }
+.menu-toggle { width:40px; height:40px; border:1px solid rgba(255,255,255,.2); border-radius:8px; background:rgba(255,255,255,.1); color:white; font-size:20px; cursor:pointer; flex-shrink: 0; }
 nav { display:none; position:absolute; top:60px; left:15px; z-index:1000; min-width:220px; padding:10px; background:var(--navy); border:1px solid rgba(255,255,255,.15); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.3); flex-direction:column; gap:6px; }
 nav.open { display:flex; }
 nav a { color:#e2e8f0; text-decoration:none; font-size:13px; padding:10px; border-radius:8px; }
 nav a:hover { background:rgba(255,255,255,.1); }
-.container { width:100%; max-width:1150px; margin:0 auto; padding:24px 16px; }
-.card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:22px; margin-bottom:20px; box-shadow:0 4px 15px rgba(0,0,0,.03); }
-.hero { text-align:center; padding:40px 20px; }
-.btn { display:inline-block; border:0; border-radius:8px; padding:10px 16px; font-weight:600; text-decoration:none; cursor:pointer; background:var(--blue); color:white; }
+
+.container { width:100%; max-width:1150px; margin:0 auto; padding:16px; overflow-x: hidden; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:18px; margin-bottom:20px; box-shadow:0 4px 15px rgba(0,0,0,.03); word-break:break-word; }
+.hero { text-align:center; padding:30px 15px; }
+
+.btn { display:inline-block; border:0; border-radius:8px; padding:12px 16px; font-weight:600; text-decoration:none; cursor:pointer; background:var(--blue); color:white; text-align:center; font-size:14px; }
 .btn:hover { background:var(--blue2); }
 .btn-secondary { background:#e2e8f0; color:var(--navy); }
 .btn-green { background:var(--green); color:white; }
 .btn-red { background:var(--red); color:white; }
-.btn-block { width:100%; text-align:center; }
+.btn-block { width:100%; display:block; }
+
 label { display:block; margin:12px 0 6px; font-size:13px; font-weight:700; }
-input, select, textarea { width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:11px; font-size:14px; background:white; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
+input, select, textarea { width:100%; max-width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:11px; font-size:14px; background:white; }
+
+.table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 10px; }
+table { width:100%; border-collapse:collapse; font-size:13px; white-space: nowrap; }
 th, td { border-bottom:1px solid var(--border); padding:12px 10px; text-align:left; }
 th { background:#f1f5f9; }
+
 .alert { padding:12px; border-radius:8px; margin-bottom:15px; font-size:13px; }
 .alert-success { background:#dcfce7; color:#166534; }
 .alert-danger { background:#fee2e2; color:#991b1b; }
+
 .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:15px; }
 .stat { background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:15px; }
-.stat strong { display:block; font-size:22px; margin-top:4px; }
+.stat strong { display:block; font-size:20px; margin-top:4px; word-break:break-all; }
 .muted { color:var(--muted); font-size:12px; }
 .mono { font-family:monospace; word-break:break-all; }
-#map { width:100%; height:450px; border-radius:10px; margin-top:15px; }
+
+#map { width:100%; height:400px; border-radius:10px; margin-top:15px; z-index: 1; }
 .plan-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:20px; }
-.plan-card { background:white; border:1px solid var(--border); border-radius:14px; padding:24px; }
+.plan-card { background:white; border:1px solid var(--border); border-radius:14px; padding:20px; }
 .plan-card.featured { border:2px solid var(--blue); }
-@media(max-width:768px) { .grid, .plan-grid { grid-template-columns:1fr; } }
+
+@media(max-width:768px) { 
+    .grid { grid-template-columns:1fr; } 
+    .plan-grid { grid-template-columns:1fr; }
+    body { font-size: 14px; }
+    .container { padding: 10px; }
+    .card { padding: 14px; }
+}
 """
 
 HTML_TEMPLATE = """
@@ -798,18 +820,22 @@ def dashboard():
 
     <div class="card">
         <h3>📋 Historique des tournées</h3>
-        <table>
-            <thead><tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Optimisation</th><th>Action</th></tr></thead>
-            <tbody>{route_rows or '<tr><td colspan="5" class="muted">Aucune tournée.</td></tr>'}</tbody>
-        </table>
+        <div class="table-responsive">
+            <table>
+                <thead><tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Optimisation</th><th>Action</th></tr></thead>
+                <tbody>{route_rows or '<tr><td colspan="5" class="muted">Aucune tournée.</td></tr>'}</tbody>
+            </table>
+        </div>
     </div>
 
     <div class="card">
         <h3>💳 Factures & Paiements</h3>
-        <table>
-            <thead><tr><th>Commande</th><th>Plan</th><th>Montant</th><th>Statut</th><th>Facture</th></tr></thead>
-            <tbody>{payment_rows or '<tr><td colspan="5" class="muted">Aucun paiement.</td></tr>'}</tbody>
-        </table>
+        <div class="table-responsive">
+            <table>
+                <thead><tr><th>Commande</th><th>Plan</th><th>Montant</th><th>Statut</th><th>Facture</th></tr></thead>
+                <tbody>{payment_rows or '<tr><td colspan="5" class="muted">Aucun paiement.</td></tr>'}</tbody>
+            </table>
+        </div>
     </div>
 
     <div class="card">
@@ -837,19 +863,36 @@ IMPORT_FORM_HTML = """
 <div class="container">
     <div class="card">
         <h2>Trouver le raccourci optimal</h2>
-        <p class="muted">Importez un CSV (Nom, Adresse, Lat, Lng) ou saisissez manuellement.</p>
+        <p class="muted">Sélectionnez un fichier ou remplissez la saisie manuelle ci-dessous.</p>
         <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
             <label>Nom de la tournée</label><input name="route_name" required placeholder="Ex. Tournée Centre-Ville">
             <label>Nom du livreur</label><input name="driver_name" required placeholder="Ex. Thomas">
             <label>Code d'accès du livreur (Réutilisable)</label><input name="access_code" required placeholder="Ex. LIVREUR-01">
-            <label>Fichier CSV</label><input type="file" name="csv_file" accept=".csv">
+            
+            <label>Sélectionner un fichier (Le texte s'injectera automatiquement)</label>
+            <input type="file" id="file-input" accept=".csv,.txt">
+
             <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
-            <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 18.5385 | -72.335"></textarea>
+            <textarea id="manual-stops" name="manual_stops" rows="6" placeholder="Client A | 12 Rue de Paris | 18.5385 | -72.335"></textarea>
+            
             <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Calculer le raccourci et créer</button>
         </form>
         <a class="btn btn-secondary" href="/dashboard" style="margin-top:10px;display:inline-block;">Retour</a>
     </div>
 </div>
+<script>
+// Injection automatique du contenu du fichier dans le textarea dès la sélection
+document.getElementById('file-input').addEventListener('change', function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('manual-stops').value = e.target.result;
+    };
+    reader.readAsText(file, 'UTF-8');
+});
+</script>
 </body></html>
 """
 
@@ -868,22 +911,13 @@ def create_driver_route():
     driver_name = request.form.get("driver_name", "").strip()
     access_code = request.form.get("access_code", "").strip()
     manual = request.form.get("manual_stops", "").strip()
-    file = request.files.get("csv_file")
 
     if user.tours_used >= user.tour_limit:
         flash("Quota de tournées atteint. Veuillez mettre à niveau votre abonnement.", "danger")
         return redirect(url_for("dashboard"))
 
     stops = []
-    if file and file.filename:
-        stream = io.TextIOWrapper(file.stream, encoding='utf-8-sig', errors='replace')
-        for row in csv.reader(stream):
-            if len(row) >= 4:
-                lat = parse_coordinate(row[2])
-                lng = parse_coordinate(row[3])
-                if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append({"name": row[0].strip(), "address": row[1].strip(), "lat": lat, "lng": lng})
-    elif manual:
+    if manual:
         for line in manual.splitlines():
             parts = [x.strip() for x in line.split("|")]
             if len(parts) >= 4:
@@ -1116,7 +1150,6 @@ def driver_space():
     const map = L.map('map').setView(points.length ? [points[0].lat, points[0].lng] : [18.5385, -72.335], 13);
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19}}).addTo(map);
 
-    // Ajout des marqueurs pour chaque étape
     let list = "<ol>";
     points.forEach((p, i) => {{
         L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
@@ -1125,7 +1158,6 @@ def driver_space():
     list += "</ol>";
     document.getElementById('stops-list').innerHTML = list;
 
-    // Interrogation d'Internet via OSRM pour tracer les VRAIES routes goudronnées
     if (points.length >= 2) {{
         const coordsString = points.map(p => p.lng + "," + p.lat).join(';');
         const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${{coordsString}}?overview=full&geometries=geojson`;
@@ -1135,11 +1167,9 @@ def driver_space():
             .then(data => {{
                 if (data.code === 'Ok' && data.routes && data.routes.length > 0) {{
                     const routeData = data.routes[0];
-                    // Distance réelle en km
                     const km = (routeData.distance / 1000).toFixed(1);
                     document.getElementById('total-distance').textContent = km + " km";
 
-                    // Tracé géométrique épousant les vraies routes
                     const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
                     L.polyline(roadCoords, {{
                         color: '#2563eb',
@@ -1166,7 +1196,6 @@ def driver_space():
         document.getElementById('total-distance').textContent = "Calcul indisponible";
     }}
 
-    // Suivi GPS en direct du téléphone
     let trackingInterval = null;
     let driverMarker = null;
     let trackingActive = false;
@@ -1329,7 +1358,9 @@ def admin_panel():
 
     <div class="card">
         <h3>Liste des Entreprises</h3>
-        <table><thead><tr><th>Entreprise</th><th>Email</th><th>Plan</th><th>Tournées</th></tr></thead><tbody>{user_rows}</tbody></table>
+        <div class="table-responsive">
+            <table><thead><tr><th>Entreprise</th><th>Email</th><th>Plan</th><th>Tournées</th></tr></thead><tbody>{user_rows}</tbody></table>
+        </div>
     </div>
     """
     return page(body, title="Admin Panel")
