@@ -50,14 +50,16 @@ PLANS = {
     "standard": {
         "name": "Standard",
         "monthly_price": 15.00,
+        "tour_limit": 500,
         "credit_limit": 500,
         "unlimited": False,
     },
     "pro": {
         "name": "Pro",
         "monthly_price": 29.00,
-        "credit_limit": None,
-        "unlimited": True,
+        "tour_limit": 2500,
+        "credit_limit": 2500,
+        "unlimited": False,
     },
 }
 
@@ -111,8 +113,12 @@ class User(db.Model):
     subscription_started_at = db.Column(db.DateTime, nullable=True)
     subscription_expires_at = db.Column(db.DateTime, nullable=True)
 
+    # Legacy fields are kept for database compatibility, but the customer-facing
+    # product now uses tours rather than credits.
     credits = db.Column(db.Integer, default=0)
     unlimited = db.Column(db.Boolean, default=False)
+    tour_limit = db.Column(db.Integer, default=500)
+    tours_used = db.Column(db.Integer, default=0)
     active = db.Column(db.Boolean, default=True)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -192,6 +198,7 @@ class DeliveryRoute(db.Model):
         db.Integer, db.ForeignKey("users.id"), nullable=False
     )
 
+    route_name = db.Column(db.String(150), default="Tournée")
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(
         db.String(80), unique=True, nullable=False
@@ -351,6 +358,11 @@ def active_api_key(user):
 
 def add_subscription(user, plan, duration_days):
     now = utcnow()
+    same_active_plan = bool(
+        user.subscription_expires_at
+        and user.subscription_expires_at > now
+        and user.plan == plan
+    )
 
     if (
         user.subscription_expires_at
@@ -369,13 +381,18 @@ def add_subscription(user, plan, duration_days):
     user.subscription_started_at = start
     user.subscription_expires_at = expiry
 
-    if PLANS[plan]["unlimited"]:
-        user.unlimited = True
-        user.credits = 0
+    # Customer-facing quota is measured in complete tours, not individual
+    # coordinates/credits. A new subscription adds its tour allowance;
+    # switching plans starts a fresh allowance.
+    if same_active_plan:
+        user.tour_limit = int(user.tour_limit or 0) + int(PLANS[plan]["tour_limit"])
     else:
-        user.unlimited = False
-        # Each paid Standard subscription grants 500 credits.
-        user.credits = int(PLANS[plan]["credit_limit"])
+        user.tour_limit = int(PLANS[plan]["tour_limit"])
+        user.tours_used = 0
+
+    # Keep legacy columns synchronized for older database rows/code paths.
+    user.unlimited = False
+    user.credits = user.tour_limit
 
     key = active_api_key(user)
 
@@ -577,14 +594,7 @@ BASE_STYLE = """
     --border:#e2e8f0;
 }
 * { box-sizing:border-box; }
-.top-actions { display:flex; align-items:center; }
-        .menu-toggle { border:0; background:transparent; color:#fff; font-size:22px; cursor:pointer; padding:6px 9px; }
-        .side-menu { position:fixed; top:0; right:-280px; width:260px; height:100vh; background:#fff; box-shadow:-8px 0 25px rgba(0,0,0,.14); z-index:9999; padding:70px 18px 20px; box-sizing:border-box; transition:right .2s ease; }
-        .side-menu.open { right:0; }
-        .side-menu a { display:block; padding:13px 12px; margin-bottom:6px; border-radius:9px; text-decoration:none; color:#0f172a; font-weight:600; }
-        .side-menu a:hover { background:#f1f5f9; }
-        .menu-close { position:absolute; top:16px; right:16px; border:0; background:#f1f5f9; border-radius:8px; font-size:22px; cursor:pointer; width:38px; height:38px; }
-        body {
+body {
     margin:0;
     background:var(--bg);
     color:var(--text);
@@ -593,19 +603,50 @@ BASE_STYLE = """
 header {
     background:var(--navy);
     color:white;
-    padding:15px 20px;
+    padding:10px 16px;
     display:flex;
-    justify-content:space-between;
     align-items:center;
     gap:12px;
+    position:relative;
 }
-header h1 { margin:0; font-size:17px; }
-nav { display:flex; gap:10px; flex-wrap:wrap; }
+header h1 { margin:0; font-size:17px; flex:1; }
+.menu-toggle {
+    width:42px;
+    height:42px;
+    border:1px solid rgba(255,255,255,.18);
+    border-radius:10px;
+    background:rgba(255,255,255,.08);
+    color:white;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    font-size:23px;
+    cursor:pointer;
+}
+nav {
+    display:none;
+    position:absolute;
+    top:58px;
+    left:12px;
+    z-index:1000;
+    min-width:210px;
+    padding:8px;
+    flex-direction:column;
+    gap:4px;
+    background:var(--navy);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:12px;
+    box-shadow:0 14px 35px rgba(0,0,0,.25);
+}
+nav.open { display:flex; }
 nav a {
-    color:#cbd5e1;
+    color:#e2e8f0;
     text-decoration:none;
-    font-size:12px;
+    font-size:13px;
+    padding:10px 12px;
+    border-radius:8px;
 }
+nav a:hover { background:rgba(255,255,255,.09); }
 .container {
     width:100%;
     max-width:1120px;
@@ -704,6 +745,22 @@ th { background:#f8fafc; }
     border-radius:10px;
     margin-top:15px;
 }
+.plan-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:18px; }
+.plan-card { background:white; border:1px solid var(--border); border-radius:16px; padding:24px; box-shadow:0 8px 28px rgba(15,23,42,.06); }
+.plan-card.featured { border:2px solid var(--blue); }
+.plan-badge { font-size:11px; font-weight:800; letter-spacing:.08em; color:var(--blue); }
+.plan-price { font-size:30px; font-weight:800; margin:12px 0; }
+.plan-price small { font-size:12px; font-weight:500; color:var(--muted); }
+.plan-card li { margin:8px 0; color:#475569; }
+.btn-small { padding:6px 9px; font-size:11px; margin:0; }
+.driver-head { display:flex; justify-content:space-between; align-items:center; gap:15px; }
+.driver-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.stop-list { padding-left:22px; }
+.stop-list li { margin:12px 0; padding-bottom:12px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; gap:10px; align-items:center; }
+.address { font-size:13px; }
+.print-only { display:none; }
+@media print { body { background:white; } header, footer, .driver-actions, .map-card, .no-print { display:none !important; } .container { max-width:none; padding:0; } .card { box-shadow:none; border:0; } .print-only { display:block; } }
+@media(max-width:760px) { .plan-grid { grid-template-columns:1fr; } .driver-head { flex-direction:column; align-items:flex-start; } }
 footer {
     color:#94a3b8;
     text-align:center;
@@ -733,23 +790,39 @@ HTML_TEMPLATE = """
 </head>
 <body>
 <header>
+    <button class="menu-toggle" type="button" aria-label="Ouvrir le menu" aria-expanded="false"
+            onclick="toggleGlobalMenu()">☰</button>
     <h1>{{ APP_NAME }}</h1>
-    <nav>
-        <a href="/">Accueil</a>
+    <nav id="global-menu">
+        <a href="/">⌂ &nbsp;Accueil</a>
         {% if session.get("user_id") %}
-        <a href="/dashboard">Dashboard</a>
-        <a href="/logout">Déconnexion</a>
+        <a href="/dashboard">▣ &nbsp;Dashboard</a>
+        <a href="/import-space">⇧ &nbsp;Importer</a>
+        <a href="/plans">◈ &nbsp;Abonnement</a>
         {% else %}
-        <a href="/login-form">Connexion</a>
-        <a href="/register-form">Créer un compte</a>
+        <a href="/login-form">↪ &nbsp;Connexion</a>
+        <a href="/register-form">＋ &nbsp;Créer un compte</a>
         {% endif %}
-        {% if session.get("is_admin") %}
-        <a href="/admin-panel">Admin</a>
-        {% else %}
-        <a href="/admin-panel">Admin</a>
-        {% endif %}
-        <a href="/driver-login">Livreur</a>
+        <a href="/admin-panel">⚙ &nbsp;Admin</a>
+        <a href="/driver-login">🚚 &nbsp;Espace livreur</a>
     </nav>
+    <script>
+    function toggleGlobalMenu() {
+        const menu = document.getElementById("global-menu");
+        const button = document.querySelector(".menu-toggle");
+        const open = menu.classList.toggle("open");
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    document.addEventListener("click", function(event) {
+        const menu = document.getElementById("global-menu");
+        const button = document.querySelector(".menu-toggle");
+        if (menu && menu.classList.contains("open") &&
+            !menu.contains(event.target) && !button.contains(event.target)) {
+            menu.classList.remove("open");
+            button.setAttribute("aria-expanded", "false");
+        }
+    });
+    </script>
 </header>
 
 <div class="container">
@@ -941,46 +1014,70 @@ def logout():
 @app.route("/dashboard")
 def dashboard():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
     key = active_api_key(user)
-
-    expiry = (
-        user.subscription_expires_at.strftime("%Y-%m-%d")
-        if user.subscription_expires_at else "—"
-    )
-
+    expiry = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
     key_text = key.key_string if key else "Aucune clé active"
+
+    # Backward-compatible defaults for customers created by an older version.
+    if user.tour_limit is None:
+        user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
+        user.tours_used = int(user.tours_used or 0)
+        db.session.commit()
+
+    remaining = max(0, int(user.tour_limit or 0) - int(user.tours_used or 0))
+    route_rows = ""
+    for r in DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.id.desc()).limit(50).all():
+        try:
+            stops = json.loads(r.stops_data or "[]")
+            count = len(stops) if isinstance(stops, list) else 0
+        except Exception:
+            count = len([x for x in (r.stops_data or "").splitlines() if x.strip()])
+        route_rows += f"""
+        <tr>
+            <td><strong>{r.route_name or 'Tournée'}</strong></td>
+            <td>{r.driver_name}</td>
+            <td>{count}</td>
+            <td>{r.status}</td>
+            <td><a class='btn btn-small' href='/driver-space?code={urllib.parse.quote(r.access_code)}'>Ouvrir</a></td>
+        </tr>"""
+
+    if not route_rows:
+        route_rows = '<tr><td colspan="5" class="muted">Aucune tournée créée.</td></tr>'
 
     body = f"""
     <div class="card">
         <h2>{user.company_name}</h2>
         <p class="muted">{user.email}</p>
-
         <div class="grid">
-            <div class="stat">
-                <span class="muted">Plan</span>
-                <strong>{user.plan.title()}</strong>
-            </div>
-            <div class="stat">
-                <span class="muted">Crédits</span>
-                <strong>{"Illimité" if user.unlimited else user.credits}</strong>
-            </div>
-            <div class="stat">
-                <span class="muted">Expiration</span>
-                <strong>{expiry}</strong>
-            </div>
+            <div class="stat"><span class="muted">Abonnement</span><strong>{user.plan.title()}</strong></div>
+            <div class="stat"><span class="muted">Tournées utilisées</span><strong>{int(user.tours_used or 0)} / {int(user.tour_limit or 0)}</strong></div>
+            <div class="stat"><span class="muted">Tournées restantes</span><strong>{remaining}</strong></div>
         </div>
+        <p class="muted">Expiration : {expiry}</p>
     </div>
 
     <div class="card">
-        <h3>Votre clé API</h3>
+        <h3>🚚 Importer / créer une tournée</h3>
+        <p class="muted">L’espace Importer utilise exactement les champs attendus par le Dashboard : nom de tournée, livreur, code d’accès et étapes au format nom, adresse, latitude, longitude.</p>
+        <a class="btn btn-green" href="/import-space">Ouvrir l’espace Importer</a>
+        <a class="btn btn-secondary" href="/logout">↪ Déconnexion</a>
+    </div>
+
+    <div class="card">
+        <h3>📋 Mes tournées</h3>
+        <table>
+            <thead><tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Statut</th><th></th></tr></thead>
+            <tbody>{route_rows}</tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h3>🔑 Votre clé API</h3>
         <div class="payment-box mono">{key_text}</div>
-        <p class="muted">
-            Ne partagez jamais une clé API publiquement.
-        </p>
+        <p class="muted">La clé est liée à votre abonnement et à son quota de tournées.</p>
     </div>
 
     <div class="card">
@@ -988,71 +1085,206 @@ def dashboard():
         <a class="btn" href="/plans">Voir les abonnements</a>
         <a class="btn btn-secondary" href="/driver-login">Espace livreur</a>
     </div>
-    """
 
+    <div class="card no-print" style="text-align:right;">
+        <a class="btn btn-red" href="/logout">⏻ Déconnexion du Dashboard</a>
+    </div>
+    """
     return page(body, title="Dashboard")
 
 
-@app.route("/plans")
-def plans():
+@app.route("/import-space")
+def import_space():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
     body = """
     <div class="card">
-        <h2>Choisir un abonnement</h2>
-        <p class="muted">
-            Paiement automatique en USDC sur Solana.
-        </p>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div>
+                <h2>Importer une tournée</h2>
+                <p class="muted">Ce formulaire est volontairement identique aux données attendues par le Dashboard et par l’espace livreur.</p>
+            </div>
+            <a class="btn btn-red" href="/logout">⏻ Déconnexion</a>
+        </div>
 
-        <form method="POST" action="/create-payment">
-            <label>Plan</label>
-            <select name="plan" required>
-                <option value="standard">Standard — 500 crédits</option>
-                <option value="pro">Pro — illimité</option>
-            </select>
+        <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
+            <label>Nom de la tournée</label>
+            <input name="route_name" placeholder="Ex. Livraison du matin" required>
 
-            <label>Durée</label>
-            <select name="duration_days" id="duration" required
-                    onchange="updatePrice()">
-                <option value="30">30 jours</option>
-                <option value="90">90 jours</option>
-                <option value="180">180 jours</option>
-                <option value="365">365 jours</option>
-            </select>
+            <label>Nom du livreur</label>
+            <input name="driver_name" placeholder="Ex. Jean Dupont" required>
 
-            <p>
-                Prix indicatif :
-                <strong id="price">$15.00 USDC</strong>
-            </p>
+            <label>Code d'accès du livreur</label>
+            <input name="access_code" placeholder="Ex. LIVREUR01" required>
 
-            <button class="btn btn-green btn-block" type="submit">
-                Créer le paiement USDC
-            </button>
+            <label>Importer un CSV</label>
+            <input type="file" id="csv-file-input" name="csv_file" accept=".csv,text/csv" style="padding:8px">
+
+            <label>Contenu des étapes</label>
+            <textarea id="manual-stops" name="manual_stops" rows="14"
+                placeholder="Une ligne par étape : Nom | Adresse | Latitude | Longitude
+Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
+
+            <div id="csv-import-status" class="alert" style="display:none;margin-top:10px;"></div>
+
+            <div class="payment-box" style="margin-top:14px;">
+                <strong>Import instantané</strong><br>
+                Dès que vous choisissez un CSV, son contenu est lu immédiatement et
+                placé directement dans l'espace d'écriture ci-dessus.
+                <br><br>
+                <strong>Format exact attendu</strong><br>
+                CSV : <span class="mono">nom,adresse,latitude,longitude</span><br>
+                Dans l'espace d'écriture : <span class="mono">Nom | Adresse | Latitude | Longitude</span>
+            </div>
+
+            <script>
+            (() => {
+                const input = document.getElementById("csv-file-input");
+                const editor = document.getElementById("manual-stops");
+                const status = document.getElementById("csv-import-status");
+
+                if (!input || !editor) return;
+
+                input.addEventListener("change", () => {
+                    const file = input.files && input.files[0];
+                    if (!file) return;
+
+                    if (!/\.csv$/i.test(file.name) && file.type && file.type !== "text/csv") {
+                        status.style.display = "block";
+                        status.className = "alert alert-danger";
+                        status.textContent = "Veuillez sélectionner un fichier CSV.";
+                        return;
+                    }
+
+                    const reader = new FileReader();
+
+                    reader.onload = (event) => {
+                        const raw = String(event.target.result || "");
+                        const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
+                        const output = [];
+
+                        // Convertit immédiatement chaque ligne CSV en :
+                        // Nom | Adresse | Latitude | Longitude
+                        for (const line of lines) {
+                            if (!line.trim()) continue;
+
+                            // Petit parseur CSV compatible avec les champs entre guillemets.
+                            const cells = [];
+                            let cell = "";
+                            let quoted = false;
+
+                            for (let i = 0; i < line.length; i++) {
+                                const ch = line[i];
+
+                                if (ch === '"') {
+                                    if (quoted && line[i + 1] === '"') {
+                                        cell += '"';
+                                        i++;
+                                    } else {
+                                        quoted = !quoted;
+                                    }
+                                } else if (ch === "," && !quoted) {
+                                    cells.push(cell.trim());
+                                    cell = "";
+                                } else {
+                                    cell += ch;
+                                }
+                            }
+                            cells.push(cell.trim());
+
+                            if (cells.length < 4) continue;
+
+                            const name = cells[0] || "";
+                            const address = cells[1] || "";
+                            const lat = cells[2] || "";
+                            const lng = cells[3] || "";
+
+                            // Ignore l'en-tête éventuel.
+                            if (
+                                name.toLowerCase() === "nom" &&
+                                address.toLowerCase() === "adresse" &&
+                                lat.toLowerCase() === "latitude" &&
+                                lng.toLowerCase() === "longitude"
+                            ) {
+                                continue;
+                            }
+
+                            output.push(`${name} | ${address} | ${lat} | ${lng}`);
+                        }
+
+                        editor.value = output.join("\n");
+                        editor.dispatchEvent(new Event("input", {bubbles:true}));
+
+                        status.style.display = "block";
+                        status.className = "alert alert-success";
+                        status.textContent = `${output.length} étape(s) importée(s) directement dans l'espace d'écriture.`;
+                        editor.focus();
+                    };
+
+                    reader.onerror = () => {
+                        status.style.display = "block";
+                        status.className = "alert alert-danger";
+                        status.textContent = "Impossible de lire ce fichier CSV.";
+                    };
+
+                    reader.readAsText(file, "UTF-8");
+                });
+            })();
+            </script>
+
+            <button class="btn btn-green btn-block" type="submit">Créer et envoyer au livreur</button>
         </form>
     </div>
 
-    <script>
-    const prices = {
-        standard: {30:15,90:40.5,180:75,365:135},
-        pro: {30:29,90:78.3,180:145,365:261}
-    };
-
-    function updatePrice() {
-        const plan = document.querySelector('[name="plan"]').value;
-        const days = document.querySelector('[name="duration_days"]').value;
-        document.getElementById("price").textContent =
-            "$" + prices[plan][days].toFixed(2) + " USDC";
-    }
-
-    document.querySelector('[name="plan"]')
-        .addEventListener("change", updatePrice);
-    updatePrice();
-    </script>
+    <div class="card">
+        <a class="btn btn-secondary" href="/dashboard">← Retour au Dashboard</a>
+    </div>
     """
+    return page(body, title="Importer une tournée")
 
+
+@app.route("/plans")
+def plans():
+    user = require_user()
+    if not user:
+        return redirect(url_for("login_form"))
+
+    body = """
+    <div class="card hero">
+        <h2>Abonnements GlobalRoute</h2>
+        <p class="muted">Choisissez votre volume de tournées et votre durée. Paiement USDC sur Solana.</p>
+    </div>
+    <div class="plan-grid">
+        <div class="plan-card">
+            <span class="plan-badge">STANDARD</span>
+            <h2>Standard</h2>
+            <div class="plan-price">15 USDC <small>/ 30 jours</small></div>
+            <p><strong>500 tournées</strong></p>
+            <ul><li>Carte interactive</li><li>Espace livreur</li><li>CSV / saisie manuelle</li><li>Fiche imprimable</li><li>Clé API</li></ul>
+            <form method="POST" action="/create-payment">
+                <input type="hidden" name="plan" value="standard">
+                <label>Durée</label>
+                <select name="duration_days"><option value="30">30 jours — 15 USDC</option><option value="90">90 jours — 40.50 USDC</option><option value="180">180 jours — 75 USDC</option><option value="365">365 jours — 135 USDC</option></select>
+                <button class="btn btn-block" type="submit">Choisir Standard</button>
+            </form>
+        </div>
+        <div class="plan-card featured">
+            <span class="plan-badge">PRO</span>
+            <h2>Pro</h2>
+            <div class="plan-price">29 USDC <small>/ 30 jours</small></div>
+            <p><strong>2 500 tournées</strong></p>
+            <ul><li>Tout le Standard</li><li>Quota 2 500 tournées</li><li>API B2B</li><li>Statistiques</li><li>Gestion avancée des livreurs</li></ul>
+            <form method="POST" action="/create-payment">
+                <input type="hidden" name="plan" value="pro">
+                <label>Durée</label>
+                <select name="duration_days"><option value="30">30 jours — 29 USDC</option><option value="90">90 jours — 78.30 USDC</option><option value="180">180 jours — 145 USDC</option><option value="365">365 jours — 261 USDC</option></select>
+                <button class="btn btn-green btn-block" type="submit">Choisir Pro</button>
+            </form>
+        </div>
+    </div>
+    """
     return page(body, title="Abonnements")
 
 
@@ -1218,7 +1450,7 @@ def payment_status(order_id):
                 "paid": True,
                 "message": (
                     "Paiement confirmé. "
-                    "Votre abonnement et vos crédits sont actifs."
+                    "Votre abonnement et votre quota de tournées sont actifs."
                 ),
             })
 
@@ -1534,17 +1766,24 @@ def admin_logout():
 # DRIVER
 # ============================================================
 
+@app.route("/driver-logout")
+def driver_logout():
+    # L’espace livreur fonctionne avec un code de tournée plutôt qu’une
+    # session entreprise. Ce bouton quitte donc proprement l’espace courant.
+    session.pop("driver_route_code", None)
+    return redirect(url_for("driver_login"))
+
+
 @app.route("/driver-login")
 def driver_login():
     body = """
     <div class="card">
         <h2>🚚 Espace livreur</h2>
+        <p class="muted">Entrez le code fourni par votre entreprise.</p>
         <form method="POST" action="/driver-space">
             <label>Code d'accès</label>
             <input name="access_code" required>
-            <button class="btn btn-green btn-block" type="submit">
-                Afficher la tournée
-            </button>
+            <button class="btn btn-green btn-block" type="submit">Afficher ma tournée</button>
         </form>
     </div>
     """
@@ -1553,223 +1792,171 @@ def driver_login():
 
 @app.route("/driver-space", methods=["POST", "GET"])
 def driver_space():
-    code = (
-        request.form.get("access_code")
-        if request.method == "POST"
-        else request.args.get("code")
-    )
-
+    code = request.form.get("access_code") if request.method == "POST" else request.args.get("code")
     if not code:
         return redirect(url_for("driver_login"))
 
-    route = DeliveryRoute.query.filter_by(
-        access_code=code.strip().upper()
-    ).first()
-
+    route = DeliveryRoute.query.filter_by(access_code=code.strip().upper()).first()
     if not route:
         flash("Code d'accès incorrect.", "danger")
         return redirect(url_for("driver_login"))
 
-    raw_data = route.stops_data
+    raw_data = route.stops_data or "[]"
+    try:
+        data = json.loads(raw_data)
+        if not isinstance(data, list):
+            raise ValueError
+    except Exception:
+        data = []
+        for line in raw_data.splitlines():
+            p = [x.strip() for x in line.split("|")]
+            if len(p) >= 3:
+                try:
+                    data.append({"name": p[0], "address": p[1] if len(p) >= 4 else "", "lat": float(p[-2]), "lng": float(p[-1])})
+                except Exception:
+                    pass
+
+    route_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    share_url = url_for("driver_space", code=route.access_code, _external=True)
 
     body = f"""
+    <div class="card driver-head">
+        <div><span class="muted">Entreprise</span><h2>{route.company.company_name}</h2><p><strong>{route.route_name or 'Tournée'}</strong> · Livreur : {route.driver_name}</p></div>
+        <div class="driver-actions">
+            <button class="btn btn-green" onclick="locateDriver()">📍 Ma position</button>
+            <button class="btn" onclick="window.print()">🖨️ Imprimer</button>
+            <a class="btn btn-red" href="/driver-logout">⏻ Déconnexion</a>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="stat"><span class="muted">Étapes</span><strong id="stop-count">0</strong></div>
+        <div class="stat"><span class="muted">Distance</span><strong id="distance-total">0 km</strong></div>
+        <div class="stat"><span class="muted">Navigation</span><strong>GPS</strong></div>
+    </div>
+
+    <div class="card map-card"><div id="map"></div><div id="location-status" class="muted"></div></div>
+
     <div class="card">
-        <h2>🚚 Tournée de {route.driver_name}</h2>
-        <div id="map"></div>
+        <h3>📋 Fiche de route</h3>
         <div id="stops"></div>
     </div>
 
+    <div class="card print-only">
+        <h2>GLOBALROUTE — FICHE DE ROUTE</h2>
+        <p><strong>Entreprise :</strong> {route.company.company_name}<br><strong>Livreur :</strong> {route.driver_name}<br><strong>Tournée :</strong> {route.route_name or 'Tournée'}<br><strong>Date :</strong> {datetime.utcnow().strftime('%Y-%m-%d')}</p>
+        <div id="print-stops"></div>
+        <p><strong>Distance totale :</strong> <span id="print-distance">0 km</span></p>
+        <div style="text-align:center"><img src="https://quickchart.io/qr?size=180&text={urllib.parse.quote(share_url, safe='')}" alt="QR code" width="150" height="150"></div>
+    </div>
+
     <script>
-    const raw = {json.dumps(raw_data)};
-    const points = [];
-
-    raw.split("\\n").forEach(line => {{
-        const p = line.split("|");
-
-        if (p.length >= 3) {{
-            const lat = parseFloat(p[1]);
-            const lng = parseFloat(p[2]);
-
-            if (!Number.isNaN(lat) && !Number.isNaN(lng)) {{
-                points.push({{
-                    name: p[0],
-                    lat: lat,
-                    lng: lng
-                }});
-            }}
-        }}
+    const points = {route_json};
+    const map = L.map("map").setView(points.length ? [points[0].lat, points[0].lng] : [19.7558,-72.2042], 13);
+    L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{maxZoom:19, attribution:"© OpenStreetMap contributors"}}).addTo(map);
+    const bounds=[]; let total=0; let list="<ol class='stop-list'>"; let printList="<ol>";
+    function esc(v) {{ return String(v ?? '').replace(/[&<>\"']/g, m => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m])); }}
+    function hav(a,b,c,d) {{ const R=6371, r=Math.PI/180; const x=(c-a)*r, y=(d-b)*r; const q=Math.sin(x/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(y/2)**2; return 2*R*Math.asin(Math.sqrt(q)); }}
+    points.forEach((p,i)=>{{
+        if(Number.isNaN(Number(p.lat))||Number.isNaN(Number(p.lng))) return;
+        p.lat=Number(p.lat); p.lng=Number(p.lng); bounds.push([p.lat,p.lng]);
+        if(i>0) total += hav(points[i-1].lat,points[i-1].lng,p.lat,p.lng);
+        const url="https://www.google.com/maps/search/?api=1&query="+p.lat+","+p.lng;
+        L.marker([p.lat,p.lng]).addTo(map).bindPopup("<b>"+esc(p.name)+"</b><br>"+esc(p.address)+"<br>Lat: "+p.lat+"<br>Lng: "+p.lng);
+        list += "<li><div><strong>"+esc(p.name)+"</strong><br><span class='address'>"+esc(p.address||'Adresse non renseignée')+"</span><br><span class='muted'>GPS: "+p.lat+", "+p.lng+"</span></div><a class='btn btn-small' target='_blank' href='"+url+"'>🧭 Naviguer</a></li>";
+        printList += "<li><strong>"+esc(p.name)+"</strong><br>"+esc(p.address||'Adresse non renseignée')+"<br><small>GPS: "+p.lat+", "+p.lng+"</small></li>";
     }});
-
-    const center = points.length
-        ? [points[0].lat, points[0].lng]
-        : [19.7558, -72.2042];
-
-    const map = L.map("map").setView(center, 13);
-
-    L.tileLayer(
-        "https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
-        {{
-            maxZoom: 19,
-            attribution: "© OpenStreetMap"
-        }}
-    ).addTo(map);
-
-    const bounds = [];
-    let html = "<ol>";
-
-    points.forEach((p, i) => {{
-        bounds.push([p.lat, p.lng]);
-
-        const marker = L.marker([p.lat, p.lng]).addTo(map);
-
-        marker.bindPopup(
-            "<b>" + p.name + "</b><br>" +
-            "Lat: " + p.lat + "<br>" +
-            "Lng: " + p.lng
-        );
-
-        const url =
-            "https://www.google.com/maps/search/?api=1&query=" +
-            p.lat + "," + p.lng;
-
-        html +=
-            "<li><b>" + p.name + "</b> — " +
-            p.lat + ", " + p.lng +
-            " <a target='_blank' href='" + url +
-            "'>GPS</a></li>";
-    }});
-
-    html += "</ol>";
-    document.getElementById("stops").innerHTML = html;
-
-    if (bounds.length) {{
-        const line = L.polyline(bounds, {{weight:4}}).addTo(map);
-        map.fitBounds(line.getBounds(), {{padding:[35,35]}});
-    }}
+    list += "</ol>"; printList += "</ol>"; document.getElementById('stops').innerHTML=list; document.getElementById('print-stops').innerHTML=printList;
+    document.getElementById('stop-count').textContent=points.length; document.getElementById('distance-total').textContent=total.toFixed(1)+' km'; document.getElementById('print-distance').textContent=total.toFixed(1)+' km';
+    if(bounds.length) {{ const line=L.polyline(bounds,{{weight:3,dashArray:'4 8'}}).addTo(map); map.fitBounds(line.getBounds(),{{padding:[35,35]}}); }}
+    function locateDriver() {{ if(!navigator.geolocation) {{document.getElementById('location-status').textContent='Géolocalisation non disponible.';return;}} navigator.geolocation.getCurrentPosition(pos=>{{ const ll=[pos.coords.latitude,pos.coords.longitude]; L.marker(ll).addTo(map).bindPopup('📍 Votre position').openPopup(); map.setView(ll,16); document.getElementById('location-status').textContent='Position actuelle : '+ll[0].toFixed(5)+', '+ll[1].toFixed(5); }},()=>document.getElementById('location-status').textContent='Autorisation de localisation refusée ou indisponible.'); }}
     </script>
     """
-
     return page(body, title="Tournée", map_needed=True)
 
 
 @app.route("/create-driver-route", methods=["POST"])
 def create_driver_route():
-    user_id = session.get("user_id")
-    if not user_id:
+    user = require_user()
+    if not user:
         return redirect(url_for("login_form"))
 
-    driver_name = (request.form.get("driver_name") or "").strip()
-    access_code = (request.form.get("access_code") or "").strip().upper()
+    if user.subscription_expires_at and user.subscription_expires_at < utcnow():
+        flash("Votre abonnement a expiré. Choisissez un abonnement pour créer une nouvelle tournée.", "danger")
+        return redirect(url_for("plans"))
+
+    if user.tour_limit is None:
+        user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
+    if user.tours_used is None:
+        user.tours_used = 0
+
+    if user.tours_used >= user.tour_limit:
+        flash(f"Quota atteint : {user.tour_limit} tournées utilisées. Choisissez un abonnement supérieur ou renouvelez votre quota.", "danger")
+        return redirect(url_for("plans"))
+
+    route_name = request.form.get("route_name", "Tournée").strip() or "Tournée"
+    driver_name = request.form.get("driver_name", "").strip()
+    access_code = request.form.get("access_code", "").strip().upper()
+    manual = request.form.get("manual_stops", "").strip()
     file = request.files.get("csv_file")
 
     if not driver_name or not access_code:
         flash("Nom du livreur et code d'accès obligatoires.", "danger")
         return redirect(url_for("dashboard"))
-
-    if not file or not file.filename.lower().endswith(".csv"):
-        flash("Sélectionnez un fichier CSV valide.", "danger")
+    if DeliveryRoute.query.filter_by(access_code=access_code).first():
+        flash("Ce code livreur existe déjà. Choisissez-en un autre.", "danger")
         return redirect(url_for("dashboard"))
 
+    stops=[]
     try:
-        raw = file.stream.read()
-        stream = io.StringIO(raw.decode("utf-8-sig"))
-        reader = csv.DictReader(stream)
-        headers = [((h or "").strip().lower()) for h in (reader.fieldnames or [])]
-
-        # Format recommandé:
-        # tour_id, stop_order, name, address, latitude, longitude
-        if all(x in headers for x in ("name", "latitude", "longitude")):
-            stops = []
-            for row in reader:
-                name = (row.get("name") or "").strip()
-                address = (row.get("address") or "").strip()
-                order = (row.get("stop_order") or "").strip()
-
-                try:
-                    lat = float((row.get("latitude") or "").strip())
-                    lng = float((row.get("longitude") or "").strip())
-                except (TypeError, ValueError):
-                    continue
-
-                if not name:
-                    name = f"Destination {len(stops) + 1}"
-
-                if not (-90 <= lat <= 90 and -180 <= lng <= 180):
-                    continue
-
-                # Compatible avec le nouveau lecteur:
-                # name|address|lat|lng|order
-                stops.append(
-                    f"{name.replace('|',' ')}|{address.replace('|',' ')}|"
-                    f"{lat}|{lng}|{order.replace('|',' ')}"
-                )
+        # Le navigateur place maintenant le CSV directement dans manual_stops.
+        # On utilise donc cet espace d'écriture comme source principale.
+        if manual:
+            for line in manual.splitlines():
+                parts=[x.strip() for x in line.split('|')]
+                if len(parts)<4: continue
+                try: lat=float(parts[-2]); lng=float(parts[-1])
+                except ValueError: continue
+                if -90<=lat<=90 and -180<=lng<=180:
+                    stops.append({"name":parts[0] or f"Étape {len(stops)+1}","address":" | ".join(parts[1:-2]),"lat":lat,"lng":lng})
+        elif file and file.filename and file.filename.lower().endswith('.csv'):
+            stream=io.TextIOWrapper(file.stream,encoding='utf-8-sig',errors='replace')
+            for row in csv.reader(stream):
+                if len(row)<4: continue
+                name=row[0].strip(); address=row[1].strip()
+                try: lat=float(row[2].strip()); lng=float(row[3].strip())
+                except ValueError: continue
+                if -90<=lat<=90 and -180<=lng<=180:
+                    stops.append({"name":name or f"Étape {len(stops)+1}","address":address,"lat":lat,"lng":lng})
         else:
-            # Compatibilité avec ancien CSV: nom,latitude,longitude
-            stream.seek(0)
-            old_reader = csv.reader(stream)
-            stops = []
-            for row in old_reader:
-                if len(row) < 3:
-                    continue
-                try:
-                    name = row[0].strip() or f"Destination {len(stops) + 1}"
-                    lat = float(row[1].strip())
-                    lng = float(row[2].strip())
-                except (ValueError, IndexError):
-                    continue
-                if -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append(
-                        f"{name.replace('|',' ')}||{lat}|{lng}|{len(stops)+1}"
-                    )
+            for line in manual.splitlines():
+                parts=[x.strip() for x in line.split('|')]
+                if len(parts)<4: continue
+                try: lat=float(parts[-2]); lng=float(parts[-1])
+                except ValueError: continue
+                if -90<=lat<=90 and -180<=lng<=180: stops.append({"name":parts[0] or f"Étape {len(stops)+1}","address":" | ".join(parts[1:-2]),"lat":lat,"lng":lng})
+        else:
+            flash("Importez un CSV ou saisissez les étapes manuellement.", "danger")
+            return redirect(url_for("dashboard"))
 
         if not stops:
-            flash(
-                "Aucune destination valide trouvée. "
-                "Utilisez les colonnes name, address, latitude, longitude.",
-                "danger",
-            )
+            flash("Aucune étape valide trouvée. Utilisez nom, adresse, latitude et longitude.", "danger")
             return redirect(url_for("dashboard"))
 
-        # Empêche un code livreur d'être attribué à une autre tournée.
-        existing = DeliveryRoute.query.filter_by(access_code=access_code).first()
-        if existing:
-            flash("Ce code livreur existe déjà. Choisissez un autre code.", "danger")
-            return redirect(url_for("dashboard"))
-
-        # Une importation = une tournée consommée, indépendamment du nombre de points.
-        user = User.query.get(user_id)
-        if not user:
-            return redirect(url_for("login_form"))
-
-        limit = getattr(user, "tour_limit", None)
-        used = getattr(user, "tour_used", 0) or 0
-        if limit is not None and used >= limit:
-            flash("Votre quota de tournées est atteint.", "danger")
-            return redirect(url_for("dashboard"))
-
-        new_route = DeliveryRoute(
-            user_id=user_id,
-            driver_name=driver_name,
-            access_code=access_code,
-            stops_data="\n".join(stops),
-        )
-        db.session.add(new_route)
-
-        if hasattr(user, "tour_used"):
-            user.tour_used = used + 1
-
+        route=DeliveryRoute(user_id=user.id,route_name=route_name,driver_name=driver_name,access_code=access_code,stops_data=json.dumps(stops,ensure_ascii=False),status='En cours')
+        db.session.add(route)
+        user.tours_used=int(user.tours_used or 0)+1
         db.session.commit()
-
-        flash(
-            f"✅ Tournée importée : {len(stops)} destinations. "
-            "Elle est maintenant disponible dans l'espace livreur.",
-            "success",
-        )
-    except Exception as e:
+        flash(f"Tournée créée : {len(stops)} étapes. Elle est maintenant disponible dans l'espace livreur.", "success")
+    except Exception:
         db.session.rollback()
-        flash(f"Erreur lors de l'importation : {str(e)}", "danger")
-
+        flash("Impossible de créer la tournée. Vérifiez le format des données.", "danger")
     return redirect(url_for("dashboard"))
+
+
+# ============================================================
+# API
+# ============================================================
 
 @app.route("/api/v1/route", methods=["POST"])
 def route_api():
@@ -1818,27 +2005,31 @@ def route_api():
             "error": "at_least_two_points_required"
         }), 400
 
-    if not user.unlimited:
-        cost = len(points)
+    if user.tour_limit is None:
+        user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
+    if user.tours_used is None:
+        user.tours_used = 0
 
-        if user.credits < cost:
-            return jsonify({
-                "error": "insufficient_credits",
-                "credits_remaining": user.credits,
-            }), 402
+    if user.tours_used >= user.tour_limit:
+        return jsonify({
+            "error": "tour_quota_exceeded",
+            "tours_used": user.tours_used,
+            "tour_limit": user.tour_limit,
+            "tours_remaining": 0,
+        }), 402
 
-        user.credits -= cost
-        db.session.commit()
+    # One successful API routing request represents one tour, regardless of
+    # the number of stops inside that tour.
+    user.tours_used += 1
+    db.session.commit()
 
-    # This endpoint validates the commercial API request.
-    # The production routing engine can be connected here.
     return jsonify({
         "success": True,
         "engine": APP_NAME,
         "points_received": len(points),
-        "credits_remaining": (
-            None if user.unlimited else user.credits
-        ),
+        "tours_used": user.tours_used,
+        "tour_limit": user.tour_limit,
+        "tours_remaining": max(0, user.tour_limit - user.tours_used),
         "message": "Request accepted by the B2B routing API.",
     })
 
