@@ -10,3 +10,5 @@ Flask
 Flask-SQLAlchemy
 psycopg2-binary
 Werkzeug
+Flask-Limiter
+ReportLab
