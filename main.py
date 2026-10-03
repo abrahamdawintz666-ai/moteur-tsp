@@ -1,5 +1,10 @@
 import os
 import io
+import requests
+import hashlib
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 import csv
 import json
 import secrets
@@ -1657,7 +1662,9 @@ def driver_space():
         <h2>🚚 {route.route_name}</h2>
         <p><strong>Livreur :</strong> {route.driver_name}</p>
         <p class="muted">{len(stops)} étapes · GlobalRoute AI</p>
+        <p><strong>Distance géographique estimée :</strong> <span id="route-distance">calcul…</span></p>
         <button class="btn" onclick="window.print()">🖨️ Imprimer la fiche de route</button>
+        <button class="btn btn-secondary" id="locate-driver" type="button">📍 Utiliser ma position</button>
     </div>
 
     <div class="card screen-only">
@@ -1689,10 +1696,55 @@ def driver_space():
             "<b>"+(i+1)+". "+p.name+"</b><br>"+(p.address||"")+"<br>GPS: "+p.lat+", "+p.lng
         );
     }});
+    function distanceKm(a,b) {{
+        const R=6371.0088, rad=x=>x*Math.PI/180;
+        const dLat=rad(b[0]-a[0]), dLng=rad(b[1]-a[1]);
+        const la1=rad(a[0]), la2=rad(b[0]);
+        const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
+        return R*2*Math.asin(Math.min(1,Math.sqrt(h)));
+    }}
+    let totalKm = 0;
+    for (let i=1; i<bounds.length; i++) totalKm += distanceKm(bounds[i-1], bounds[i]);
+    const distanceEl = document.getElementById("route-distance");
+    if (distanceEl) distanceEl.textContent = totalKm.toFixed(2) + " km";
+
+    let dottedLine = null;
     if (bounds.length) {{
-        L.polyline(bounds, {{weight:4}}).addTo(map);
+        dottedLine = L.polyline(bounds, {{
+            weight: 3,
+            dashArray: "3 8",
+            opacity: 0.9
+        }}).addTo(map);
         map.fitBounds(bounds, {{padding:[35,35]}});
     }}
+
+    // Driver location: browser permission is requested only when the
+    // driver presses the button.
+    function locateDriver() {{
+        if (!navigator.geolocation) {{
+            alert("La géolocalisation n'est pas disponible sur cet appareil.");
+            return;
+        }}
+        navigator.geolocation.getCurrentPosition(
+            function(pos) {{
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                L.circleMarker([lat,lng], {{
+                    radius: 8,
+                    weight: 3
+                }}).addTo(map).bindPopup("Votre position").openPopup();
+                map.setView([lat,lng], 15);
+            }},
+            function() {{
+                alert("Autorisation de localisation refusée ou indisponible.");
+            }},
+            {{enableHighAccuracy:true, timeout:10000, maximumAge:10000}}
+        );
+    }}
+
+    const locBtn = document.getElementById("locate-driver");
+    if (locBtn) locBtn.addEventListener("click", locateDriver);
+
     document.querySelectorAll(".qr").forEach(el => new QRCode(el, {{text:el.dataset.url,width:72,height:72}}));
     </script>
     """
@@ -1783,6 +1835,267 @@ def create_driver_route():
     return redirect(url_for("dashboard"))
 
 
+
+# ============================================================
+# ROUTING ENGINE — GLOBAL SCALE ARCHITECTURE
+# ============================================================
+
+ROUTING_URL = os.getenv("ROUTING_URL", "https://router.project-osrm.org").rstrip("/")
+OSRM_MAX_POINTS = int(os.getenv("OSRM_MAX_POINTS", "80"))
+ROUTER_TIMEOUT = int(os.getenv("ROUTER_TIMEOUT", "20"))
+ROUTER_WORKERS = max(1, int(os.getenv("ROUTER_WORKERS", "4")))
+MAX_POINTS_PER_JOB = int(os.getenv("MAX_POINTS_PER_JOB", "5000"))
+
+
+def haversine_km(a, b):
+    from math import radians, sin, cos, asin, sqrt
+    lat1, lon1 = radians(float(a["lat"])), radians(float(a["lng"]))
+    lat2, lon2 = radians(float(b["lat"])), radians(float(b["lng"]))
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 6371.0088 * 2 * asin(min(1.0, sqrt(h)))
+
+
+def validate_points(points):
+    if not isinstance(points, list) or len(points) < 2:
+        raise ValueError("Au moins deux destinations sont nécessaires.")
+    if len(points) > MAX_POINTS_PER_JOB:
+        raise ValueError(
+            f"Cette optimisation contient {len(points)} points. "
+            f"La limite d'une optimisation est {MAX_POINTS_PER_JOB} points."
+        )
+
+    clean = []
+    for i, p in enumerate(points):
+        try:
+            lat = float(p["lat"])
+            lng = float(p["lng"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"Coordonnées invalides à l'étape {i + 1}.")
+
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise ValueError(f"Coordonnées hors limites à l'étape {i + 1}.")
+
+        clean.append({
+            "id": p.get("id", i + 1),
+            "name": str(p.get("name", f"Étape {i + 1}")),
+            "address": str(p.get("address", "")),
+            "lat": lat,
+            "lng": lng,
+        })
+    return clean
+
+
+def _grid_key(point, precision=2):
+    # Spatial bucketing. It avoids comparing every point with every other
+    # point and gives a stable partitioning strategy for global workloads.
+    return (
+        round(point["lat"], precision),
+        round(point["lng"], precision),
+    )
+
+
+def optimize_points_scalable(points):
+    """
+    Scalable sweep heuristic.
+
+    Complexity is dominated by sorting: O(n log n).
+    It is deterministic and avoids O(n²) pairwise distance calculations.
+
+    This is an ordering heuristic, not a mathematical guarantee of the
+    globally optimal TSP solution.
+    """
+    if len(points) <= 2:
+        return list(points)
+
+    from math import atan2, degrees
+
+    # For a single local route, use the geographic centroid as the sweep
+    # origin. This keeps the algorithm cheap for thousands of stops.
+    center_lat = sum(p["lat"] for p in points) / len(points)
+    center_lng = sum(p["lng"] for p in points) / len(points)
+
+    def key(p):
+        angle = degrees(atan2(
+            p["lng"] - center_lng,
+            p["lat"] - center_lat
+        ))
+        radius = (p["lat"] - center_lat) ** 2 + (p["lng"] - center_lng) ** 2
+        return (angle, radius)
+
+    return sorted(points, key=key)
+
+
+def _route_signature(points):
+    payload = [
+        (p["lat"], p["lng"])
+        for p in points
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+@lru_cache(maxsize=256)
+def _cached_osrm_route(signature, coords):
+    url = f"{ROUTING_URL}/route/v1/driving/{coords}"
+    response = requests.get(
+        url,
+        params={
+            "overview": "full",
+            "geometries": "geojson",
+            "steps": "false",
+        },
+        timeout=ROUTER_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if data.get("code") != "Ok" or not data.get("routes"):
+        raise RuntimeError("Le routeur routier n'a pas trouvé de trajet.")
+
+    route = data["routes"][0]
+    return {
+        "distance_km": round(float(route["distance"]) / 1000, 2),
+        "duration_seconds": int(round(float(route["duration"]))),
+        "geometry": route.get("geometry", {}).get("coordinates", []),
+        "source": "OSRM",
+    }
+
+
+def route_road_segment(points):
+    if len(points) < 2:
+        return {
+            "distance_km": 0.0,
+            "duration_seconds": 0,
+            "geometry": [],
+            "source": "none",
+        }
+
+    coords = ";".join(
+        f'{p["lng"]},{p["lat"]}' for p in points
+    )
+    signature = _route_signature(points)
+
+    return _cached_osrm_route(signature, coords)
+
+
+def route_distance_fallback(points):
+    return round(sum(
+        haversine_km(points[i], points[i + 1])
+        for i in range(len(points) - 1)
+    ), 2)
+
+
+def road_route_global(points):
+    """
+    Global-scale routing strategy:
+
+    - Small routes: one real OSRM request.
+    - Larger routes: split into bounded road segments and request them
+      concurrently.
+    - If the external router is unavailable, return a clearly labelled
+      geographic estimate rather than claiming it is road distance.
+
+    This prevents one huge request from becoming the bottleneck.
+    """
+    if len(points) <= OSRM_MAX_POINTS:
+        return route_road_segment(points)
+
+    chunks = []
+    # Overlap adjacent chunks so the road path remains continuous.
+    step = OSRM_MAX_POINTS - 1
+    for start in range(0, len(points) - 1, step):
+        chunk = points[start:min(start + OSRM_MAX_POINTS, len(points))]
+        if len(chunk) >= 2:
+            chunks.append(chunk)
+
+    results = [None] * len(chunks)
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=ROUTER_WORKERS) as executor:
+        future_map = {
+            executor.submit(route_road_segment, chunk): i
+            for i, chunk in enumerate(chunks)
+        }
+
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results[idx] = future.result()
+            except Exception:
+                failures += 1
+
+    if failures:
+        # Do not silently label a fallback as road routing.
+        return {
+            "distance_km": route_distance_fallback(points),
+            "duration_seconds": None,
+            "geometry": [],
+            "source": "geodesic_estimate",
+            "router_segments_failed": failures,
+        }
+
+    total_distance = sum(r["distance_km"] for r in results)
+    total_duration = sum(
+        r["duration_seconds"] for r in results
+        if r["duration_seconds"] is not None
+    )
+
+    geometry = []
+    for r in results:
+        segment = r.get("geometry", [])
+        if geometry and segment:
+            segment = segment[1:]
+        geometry.extend(segment)
+
+    return {
+        "distance_km": round(total_distance, 2),
+        "duration_seconds": total_duration,
+        "geometry": geometry,
+        "source": "OSRM-segmented",
+        "segments": len(results),
+    }
+
+
+def solve_route(points):
+    clean = validate_points(points)
+    ordered = optimize_points_scalable(clean)
+    routing = road_route_global(ordered)
+
+    return {
+        "ordered_stops": ordered,
+        "distance_km": routing["distance_km"],
+        "duration_seconds": routing["duration_seconds"],
+        "geometry": routing["geometry"],
+        "routing_source": routing["source"],
+        "segments": routing.get("segments", 1),
+    }
+
+
+def solve_route_batch(jobs):
+    """
+    Batch processor for enterprise workloads.
+
+    Each job is independently optimized. Workers are bounded so a large
+    batch cannot create an unlimited number of outbound router requests.
+    """
+    if not isinstance(jobs, list):
+        raise ValueError("jobs doit être une liste.")
+
+    results = [None] * len(jobs)
+    with ThreadPoolExecutor(max_workers=ROUTER_WORKERS) as executor:
+        futures = {
+            executor.submit(solve_route, job.get("points", [])): i
+            for i, job in enumerate(jobs)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            results[idx] = future.result()
+
+    return results
+
+
 # ============================================================
 # API
 # ============================================================
@@ -1792,9 +2105,7 @@ def route_api():
     api_key_value = request.headers.get("X-API-KEY", "").strip()
 
     if not api_key_value:
-        return jsonify({
-            "error": "missing_api_key"
-        }), 401
+        return jsonify({"error": "missing_api_key"}), 401
 
     key = ApiKey.query.filter_by(
         key_string=api_key_value,
@@ -1802,29 +2113,20 @@ def route_api():
     ).first()
 
     if not key:
-        return jsonify({
-            "error": "invalid_api_key"
-        }), 401
+        return jsonify({"error": "invalid_api_key"}), 401
 
-    if key.expires_at and key.expires_at < utcnow():
-        return jsonify({
-            "error": "api_key_expired"
-        }), 403
+    now = utcnow()
+
+    if key.expires_at and key.expires_at < now:
+        return jsonify({"error": "api_key_expired"}), 403
 
     user = User.query.get(key.user_id)
 
     if not user or not user.active:
-        return jsonify({
-            "error": "account_inactive"
-        }), 403
+        return jsonify({"error": "account_inactive"}), 403
 
-    if (
-        user.subscription_expires_at
-        and user.subscription_expires_at < utcnow()
-    ):
-        return jsonify({
-            "error": "subscription_expired"
-        }), 403
+    if user.subscription_expires_at and user.subscription_expires_at < now:
+        return jsonify({"error": "subscription_expired"}), 403
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
@@ -1834,10 +2136,10 @@ def route_api():
             "error": "at_least_two_points_required"
         }), 400
 
-    # Commercial quota: one accepted routing request consumes one
-    # route from the company's subscription quota. The limit is tied
-    # to the account/API key, not to the number of GPS points.
-    route_limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
+    route_limit = (
+        user.route_limit
+        or PLANS.get(user.plan, {}).get("route_limit", 0)
+    )
     routes_used = user.routes_used or 0
 
     if route_limit and routes_used >= route_limit:
@@ -1849,20 +2151,124 @@ def route_api():
             "routes_remaining": 0,
         }), 402
 
+    try:
+        result = solve_route(points)
+    except ValueError as exc:
+        return jsonify({"error": "invalid_route", "message": str(exc)}), 400
+    except requests.RequestException as exc:
+        # The optimization order is still valid even if the external road
+        # router is temporarily unavailable. Do not consume a paid route.
+        return jsonify({
+            "error": "road_router_unavailable",
+            "message": "Le calcul des routes routières est temporairement indisponible.",
+        }), 503
+    except Exception:
+        app.logger.exception("Routing engine failure")
+        return jsonify({
+            "error": "routing_engine_error",
+            "message": "Le moteur de routage n'a pas pu terminer le calcul.",
+        }), 500
+
+    # Count the route only after a successful engine calculation.
     user.routes_used = routes_used + 1
     db.session.commit()
 
-    # This endpoint validates the commercial API request.
-    # The production routing engine can be connected here.
+    remaining = (
+        max(0, route_limit - user.routes_used)
+        if route_limit else None
+    )
+
     return jsonify({
         "success": True,
         "engine": APP_NAME,
-        "points_received": len(points),
+        "optimization": {
+            "ordered_stops": result["ordered_stops"],
+            "distance_km": result["distance_km"],
+            "duration_seconds": result["duration_seconds"],
+            "routing_source": result["routing_source"],
+            "geometry": result["geometry"],
+        },
         "plan": user.plan,
         "route_limit": route_limit,
         "routes_used": user.routes_used,
-        "routes_remaining": max(0, route_limit - user.routes_used) if route_limit else None,
-        "message": "Request accepted by the B2B routing API.",
+        "routes_remaining": remaining,
+    })
+
+
+@app.route("/api/v1/optimize", methods=["POST"])
+def optimize_api():
+    """
+    Developer-friendly alias returning the same real optimization result.
+    """
+    return route_api()
+
+
+@app.route("/api/v1/batch", methods=["POST"])
+def batch_route_api():
+    """Enterprise batch endpoint for multiple independent route jobs."""
+    api_key_value = request.headers.get("X-API-KEY", "").strip()
+    key = ApiKey.query.filter_by(
+        key_string=api_key_value,
+        revoked=False
+    ).first() if api_key_value else None
+
+    if not key:
+        return jsonify({"error": "invalid_api_key"}), 401
+
+    now = utcnow()
+    if key.expires_at and key.expires_at < now:
+        return jsonify({"error": "api_key_expired"}), 403
+
+    user = User.query.get(key.user_id)
+    if not user or not user.active:
+        return jsonify({"error": "account_inactive"}), 403
+
+    if user.subscription_expires_at and user.subscription_expires_at < now:
+        return jsonify({"error": "subscription_expired"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    jobs = payload.get("jobs", [])
+
+    if not isinstance(jobs, list) or not jobs:
+        return jsonify({"error": "jobs_required"}), 400
+
+    route_limit = (
+        user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
+    )
+    routes_used = user.routes_used or 0
+
+    if route_limit and routes_used + len(jobs) > route_limit:
+        return jsonify({
+            "error": "route_quota_exceeded",
+            "route_limit": route_limit,
+            "routes_used": routes_used,
+            "routes_requested": len(jobs),
+            "routes_remaining": max(0, route_limit - routes_used),
+        }), 402
+
+    try:
+        results = solve_route_batch(jobs)
+    except Exception:
+        app.logger.exception("Enterprise batch routing failure")
+        return jsonify({
+            "error": "routing_engine_error",
+            "message": "Le traitement batch n'a pas pu être terminé."
+        }), 500
+
+    user.routes_used = routes_used + len(results)
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "count": len(results),
+        "results": results,
+        "plan": user.plan,
+        "route_limit": route_limit,
+        "routes_used": user.routes_used,
+        "routes_remaining": (
+            max(0, route_limit - user.routes_used)
+            if route_limit else None
+        ),
     })
 
 
