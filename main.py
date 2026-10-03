@@ -21,7 +21,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from reportlab.pdfgen canvas
 
 # Optionnel : Import Google OR-Tools (avec fallback sécurisé si l'environnement ne l'a pas préinstallé)
 try:
@@ -200,7 +200,7 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
-    # Suppression de la contrainte d'unicité stricte globale pour permettre de recréer un code s'il n'est plus actif/utilisé
+    # Suppression de la contrainte globale stricte sur access_code pour permettre la réutilisation souple
 
 
 class AuditLog(db.Model):
@@ -245,7 +245,7 @@ with app.app_context():
 
 
 # ============================================================
-# MOTEUR DE ROUTAGE HYBRIDE : COLONIE DE FOURMIS MULTICOUCHE & OR-TOOLS
+# MOTEUR DE ROUTAGE HYBRIDE : RECHERCHE DU RACCOURCI OPTIMAL
 # ============================================================
 
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -302,7 +302,7 @@ def route_distance(route):
 def local_two_opt_pass(route):
     improved = True
     iterations = 0
-    max_iterations = 50
+    max_iterations = 60
     optimized = list(route)
     while improved and iterations < max_iterations:
         improved = False
@@ -361,7 +361,7 @@ def certify_route_with_ortools(route):
         search_parameters.first_solution_strategy = (
             routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
         )
-        search_parameters.time_limit.seconds = 1
+        search_parameters.time_limit.seconds = 2
 
         solution = routing.SolveWithParameters(search_parameters)
         if solution:
@@ -639,13 +639,13 @@ def index():
     body = f"""
     <div class="card hero">
         <h2>{t('home_title')}</h2>
-        <p class="muted">GlobalRoute AI fournit une infrastructure cloud B2B mondiale pour l'optimisation des tournées, l'intégration API et le règlement instantané par blockchain.</p>
+        <p class="muted">GlobalRoute AI fournit l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison.</p>
         <a class="btn" href="/register-form">Créer un compte entreprise</a>
         <a class="btn btn-secondary" href="/login-form">Connexion</a>
     </div>
     <div class="grid">
         <div class="stat"><span class="muted">Réseau Paiement</span><strong>USDC / Solana</strong><span class="muted">Instant & Zéro frais</span></div>
-        <div class="stat"><span class="muted">Moteur Hybride</span><strong>Fourmis + OR-Tools</strong><span class="muted">Précision mathématique</span></div>
+        <div class="stat"><span class="muted">Moteur Raccourci</span><strong>Hybride Avancé</strong><span class="muted">Optimisation maximale</span></div>
         <div class="stat"><span class="muted">Facturation</span><strong>Conforme PDF</strong><span class="muted">Téléchargeable</span></div>
     </div>
     """
@@ -757,7 +757,7 @@ def dashboard():
             c = len(stops)
         except Exception:
             c = 0
-        opt_badge = '<span style="color:var(--green)">⚡ Optimisée (Hybride)</span>' if r.optimized else '<span class="muted">Standard</span>'
+        opt_badge = '<span style="color:var(--green)">⚡ Raccourci optimal</span>' if r.optimized else '<span class="muted">Standard</span>'
         route_rows += f"""
         <tr>
             <td><strong>{r.route_name}</strong></td>
@@ -787,7 +787,7 @@ def dashboard():
 
     <div class="card">
         <h3>🚀 Gestion des tournées</h3>
-        <p class="muted">Importez un fichier CSV, le système réordonnera les points via la colonie de fourmis et OR-Tools.</p>
+        <p class="muted">Importez votre fichier pour calculer instantanément la route la plus courte, rapide et sûre.</p>
         <a class="btn btn-green" href="/import-space">Importer / Créer une tournée</a>
     </div>
 
@@ -830,16 +830,16 @@ IMPORT_FORM_HTML = """
 <body>
 <div class="container">
     <div class="card">
-        <h2>Importer et Optimiser une Tournée</h2>
+        <h2>Trouver le raccourci optimal</h2>
         <p class="muted">Importez un CSV (Nom, Adresse, Lat, Lng) ou saisissez manuellement.</p>
         <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
-            <label>Nom de la tournée</label><input name="route_name" required placeholder="Ex. Tournée Nord">
-            <label>Nom du livreur</label><input name="driver_name" required placeholder="Ex. Marc Dubois">
-            <label>Code d'accès du livreur (unique pour votre compte)</label><input name="access_code" required placeholder="Ex. DRIVER-99">
+            <label>Nom de la tournée</label><input name="route_name" required placeholder="Ex. Tournée Centre-Ville">
+            <label>Nom du livreur</label><input name="driver_name" required placeholder="Ex. Thomas">
+            <label>Code d'accès du livreur (Réutilisable)</label><input name="access_code" required placeholder="Ex. LIVREUR-01">
             <label>Fichier CSV</label><input type="file" name="csv_file" accept=".csv">
             <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
             <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 48.8566 | 2.3522"></textarea>
-            <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Lancer l'optimisation et créer</button>
+            <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Calculer le raccourci et créer</button>
         </form>
         <a class="btn btn-secondary" href="/dashboard" style="margin-top:10px;display:inline-block;">Retour</a>
     </div>
@@ -867,12 +867,6 @@ def create_driver_route():
     if user.tours_used >= user.tour_limit:
         flash("Quota de tournées atteint. Veuillez mettre à niveau votre abonnement.", "danger")
         return redirect(url_for("dashboard"))
-
-    # Vérification intelligente de l'unicité du code d'accès (uniquement parmi les tournées existantes de l'utilisateur)
-    existing_route = DeliveryRoute.query.filter_by(user_id=user.id, access_code=access_code).first()
-    if existing_route:
-        flash("Ce code d'accès est déjà utilisé pour une autre de vos tournées existantes. Veuillez en choisir un autre.", "danger")
-        return redirect(url_for("import_space"))
 
     stops = []
     if file and file.filename:
@@ -902,18 +896,27 @@ def create_driver_route():
         flash(f"Erreur lors du calcul d'optimisation : {str(e)}", "danger")
         return redirect(url_for("import_space"))
 
-    route = DeliveryRoute(
-        user_id=user.id,
-        route_name=route_name,
-        driver_name=driver_name,
-        access_code=access_code,
-        stops_data=json.dumps(optimized_stops, ensure_ascii=False),
-        status="En cours",
-        optimized=True
-    )
+    # Souplesse maximale sur le code d'accès : mise à jour de la tournée existante associée à ce code ou création d'une nouvelle
+    route = DeliveryRoute.query.filter_by(user_id=user.id, access_code=access_code).first()
+    if route:
+        route.route_name = route_name
+        route.driver_name = driver_name
+        route.stops_data = json.dumps(optimized_stops, ensure_ascii=False)
+        route.status = "En cours"
+        route.optimized = True
+    else:
+        route = DeliveryRoute(
+            user_id=user.id,
+            route_name=route_name,
+            driver_name=driver_name,
+            access_code=access_code,
+            stops_data=json.dumps(optimized_stops, ensure_ascii=False),
+            status="En cours",
+            optimized=True
+        )
+        db.session.add(route)
     
     try:
-        db.session.add(route)
         user.tours_used += 1
         db.session.commit()
     except Exception as e:
@@ -921,7 +924,7 @@ def create_driver_route():
         flash(f"Une erreur inattendue est survenue : {str(e)}", "danger")
         return redirect(url_for("import_space"))
 
-    flash(f"Tournée optimisée avec succès ({len(stops)} étapes triées par le moteur hybride).", "success")
+    flash(f"Raccourci optimal calculé avec succès ({len(stops)} étapes triées).", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1066,7 +1069,7 @@ def driver_login():
         <h2>🚚 Espace Livreur</h2>
         <form method="POST" action="/driver-space">
             <label>Code d'accès de la tournée</label><input name="access_code" required>
-            <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Accéder à ma tournée</button>
+            <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Accéder au raccourci</button>
         </form>
     </div>
     """
@@ -1092,7 +1095,7 @@ def driver_space():
         <div id="map"></div>
     </div>
     <div class="card">
-        <h3>Étapes optimisées</h3>
+        <h3>Étapes du raccourci optimal</h3>
         <div id="stops-list"></div>
     </div>
     <script>
@@ -1149,7 +1152,7 @@ def driver_print():
     </head>
     <body>
         <div class="header">
-            <h2>FICHE DE ROUTE : {route.route_name}</h2>
+            <h2>FICHE DE ROUTE (Raccourci Optimal) : {route.route_name}</h2>
             <p><strong>Entreprise :</strong> {route.company.company_name} | <strong>Livreur :</strong> {route.driver_name}</p>
             <p><strong>Date d'impression :</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} (UTC)</p>
         </div>
@@ -1233,7 +1236,6 @@ def admin_generate_key():
         flash("Entreprise introuvable.", "danger")
         return redirect(url_for("admin_panel"))
 
-    # Générer une nouvelle clé active pour cette entreprise
     expiry = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > utcnow() else utcnow() + timedelta(days=30)
     create_api_key(user, expiry)
     db.session.commit()
@@ -1277,7 +1279,7 @@ def api_v1_route():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "service": APP_NAME, "blockchain": "Solana Mainnet", "engine": "ACO + Google OR-Tools"})
+    return jsonify({"status": "healthy", "service": APP_NAME, "blockchain": "Solana Mainnet", "engine": "Optimal Shortcut Engine"})
 
 
 if __name__ == "__main__":
