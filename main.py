@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-# Optionnel : Import Google OR-Tools (avec fallback sécurisé si l'environnement ne l'a pas préinstallé)
+# Optionnel : Import Google OR-Tools
 try:
     from ortools.constraint_solver import pywrapcp, routing_enums_pb2
     HAS_ORTOOLS = True
@@ -39,12 +39,11 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_SECRET_PASSWORD", "CHANGE-ME")
 
-APP_NAME = "GlobalRoute AI"
+APP_NAME = "GlobalRoute AI — Global Enterprise Logistics"
 SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
-# Rate Limiter global pour sécuriser l'API B2B
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
@@ -54,7 +53,7 @@ limiter = Limiter(
 
 TRANSLATIONS = {
     "fr": {
-        "home_title": "Optimisation de tournées pour entreprises modernes.",
+        "home_title": "Optimisation mondiale de tournées pour entreprises B2B.",
         "dashboard": "Tableau de bord",
         "import": "Importer",
         "plans": "Abonnements",
@@ -65,7 +64,7 @@ TRANSLATIONS = {
         "driver_space": "Espace livreur"
     },
     "en": {
-        "home_title": "Route optimization for modern businesses.",
+        "home_title": "Global route optimization for modern B2B enterprises.",
         "dashboard": "Dashboard",
         "import": "Import",
         "plans": "Plans",
@@ -76,7 +75,7 @@ TRANSLATIONS = {
         "driver_space": "Driver Space"
     },
     "es": {
-        "home_title": "Optimización de rutas para empresas modernas.",
+        "home_title": "Optimización global de rutas para empresas B2B.",
         "dashboard": "Panel",
         "import": "Importar",
         "plans": "Planes",
@@ -198,6 +197,7 @@ class DeliveryRoute(db.Model):
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(80), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
+    stops_summary = db.Column(db.Text, nullable=True)  # Corrigé en nullable=True pour éviter l'erreur NotNullViolation
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
 
@@ -244,7 +244,7 @@ with app.app_context():
 
 
 # ============================================================
-# MOTEUR DE ROUTAGE HYBRIDE : RECHERCHE DU RACCOURCI OPTIMAL
+# MOTEUR DE ROUTAGE HYBRIDE
 # ============================================================
 
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -477,7 +477,7 @@ def verify_usdc_payment(order):
 
     existing_order = PaymentOrder.query.filter_by(transaction_signature=signature).first()
     if existing_order and existing_order.id != order.id:
-        return False, signature, "Cette transaction a déjà été validée pour une autre commande (Replay Attack bloqué)."
+        return False, signature, "Cette transaction a déjà été validée pour une autre commande."
 
     tx = rpc_call("getTransaction", [signature, {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
     if not tx or (tx.get("meta") and tx["meta"].get("err") is not None):
@@ -613,7 +613,7 @@ HTML_TEMPLATE = """
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>© 2026 {{ APP_NAME }} — Global Enterprise B2B Logistics</footer>
+<footer>© 2026 GlobalRoute AI — Global Enterprise B2B Logistics</footer>
 </body>
 </html>
 """
@@ -638,7 +638,7 @@ def index():
     body = f"""
     <div class="card hero">
         <h2>{t('home_title')}</h2>
-        <p class="muted">GlobalRoute AI fournit l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison.</p>
+        <p class="muted">GlobalRoute AI fournit l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison internationales.</p>
         <a class="btn" href="/register-form">Créer un compte entreprise</a>
         <a class="btn btn-secondary" href="/login-form">Connexion</a>
     </div>
@@ -807,7 +807,8 @@ def dashboard():
     </div>
 
     <div class="card">
-        <h3>🔑 Clé API B2B</h3>
+        <h3>🔑 Clé API B2B & Accès JSON</h3>
+        <p class="muted">Utilisez cet endpoint pour intégrer les calculs directement via JSON : <code class="mono">POST /api/v1/route</code> avec le header <code class="mono">X-API-KEY: [Votre Clé]</code></p>
         <div class="payment-box mono" style="background:#f1f5f9;padding:12px;border-radius:8px;">{key_text}</div>
     </div>
     """
@@ -837,7 +838,7 @@ IMPORT_FORM_HTML = """
             <label>Code d'accès du livreur (Réutilisable)</label><input name="access_code" required placeholder="Ex. LIVREUR-01">
             <label>Fichier CSV</label><input type="file" name="csv_file" accept=".csv">
             <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
-            <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 48.8566 | 2.3522"></textarea>
+            <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 18.5385 | -72.335"></textarea>
             <button class="btn btn-green btn-block" type="submit" style="margin-top:15px;">Calculer le raccourci et créer</button>
         </form>
         <a class="btn btn-secondary" href="/dashboard" style="margin-top:10px;display:inline-block;">Retour</a>
@@ -1098,7 +1099,7 @@ def driver_space():
     </div>
     <script>
     const points = {stops_json};
-    const map = L.map('map').setView(points.length ? [points[0].lat, points[0].lng] : [48.8566, 2.3522], 13);
+    const map = L.map('map').setView(points.length ? [points[0].lat, points[0].lng] : [18.5385, -72.335], 13);
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19}}).addTo(map);
     let list = "<ol>";
     points.forEach((p, i) => {{
@@ -1254,7 +1255,7 @@ def api_v1_route():
     key_val = request.headers.get("X-API-KEY")
     key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
     if not key or (key.expires_at and key.expires_at < utcnow()):
-        return jsonify({"error": "invalid_api_key"}), 401  # <--- Correction ici (parenthèse fermante corrigée)
+        return jsonify({"error": "invalid_api_key"}), 401
 
     user = User.query.get(key.user_id)
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
