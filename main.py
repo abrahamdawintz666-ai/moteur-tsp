@@ -218,57 +218,62 @@ def _column_type_sql(column):
 
 
 def migrate_existing_database():
-    """
-    Add columns introduced by newer versions without deleting existing data.
-
-    db.create_all() creates missing tables, but it deliberately does not alter
-    tables that already exist. The previous GlobalRoute database therefore
-    could keep the old `users` schema and make /admin-panel fail when the new
-    code selected credits/unlimited/active. This small migration closes that
-    gap for the current one-file deployment.
-    """
+    """Upgrade an older GlobalRoute database without deleting its data."""
     from sqlalchemy import inspect, text
 
+    app.logger.info("GLOBALROUTE: starting database migration check")
     inspector = inspect(db.engine)
     existing_tables = set(inspector.get_table_names())
 
-    for table_name, model in (
+    models = (
         ("users", User),
         ("api_keys", ApiKey),
         ("payment_orders", PaymentOrder),
         ("delivery_routes", DeliveryRoute),
         ("audit_logs", AuditLog),
-    ):
+    )
+
+    for table_name, model in models:
         if table_name not in existing_tables:
             continue
 
-        existing_columns = {
-            col["name"] for col in inspector.get_columns(table_name)
-        }
-
+        existing_columns = {c["name"] for c in inspector.get_columns(table_name)}
         for column in model.__table__.columns:
             if column.name in existing_columns or column.primary_key:
                 continue
-
             type_sql = _column_type_sql(column)
-
-            # New columns are deliberately nullable during migration. This
-            # lets old customer rows survive even when no historical value
-            # exists. Application-level defaults handle new records.
-            sql = (
-                f'ALTER TABLE "{table_name}" '
-                f'ADD COLUMN "{column.name}" {type_sql}'
-            )
-
-            db.session.execute(text(sql))
-
+            app.logger.warning("GLOBALROUTE: adding %s.%s", table_name, column.name)
+            db.session.execute(text(
+                f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
+            ))
         db.session.commit()
+
+    # Backfill values for columns added to old customer rows.
+    if "users" in existing_tables:
+        db.session.execute(text("UPDATE users SET plan = 'standard' WHERE plan IS NULL"))
+        db.session.execute(text("UPDATE users SET credits = 0 WHERE credits IS NULL"))
+        db.session.execute(text("UPDATE users SET unlimited = FALSE WHERE unlimited IS NULL"))
+        db.session.execute(text("UPDATE users SET active = TRUE WHERE active IS NULL"))
+        db.session.execute(text("UPDATE users SET address = '' WHERE address IS NULL"))
+        db.session.execute(text("UPDATE users SET city = '' WHERE city IS NULL"))
+        db.session.execute(text("UPDATE users SET country = '' WHERE country IS NULL"))
+        db.session.commit()
+
+    if "api_keys" in existing_tables:
+        db.session.execute(text("UPDATE api_keys SET revoked = FALSE WHERE revoked IS NULL"))
+        db.session.commit()
+
+    app.logger.info("GLOBALROUTE: database migration check completed successfully")
 
 
 with app.app_context():
-    # Creates new tables and then upgrades older existing tables in place.
-    db.create_all()
-    migrate_existing_database()
+    try:
+        db.create_all()
+        migrate_existing_database()
+    except Exception:
+        app.logger.exception("GLOBALROUTE DATABASE STARTUP/MIGRATION ERROR")
+        db.session.rollback()
+        raise
 
 
 # ============================================================
@@ -774,6 +779,21 @@ def page(body, title=APP_NAME, map_needed=False):
 
 
 # ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health")
+def health():
+    from sqlalchemy import text
+    try:
+        db.session.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "ok"}, 200
+    except Exception:
+        app.logger.exception("GLOBALROUTE HEALTH DATABASE ERROR")
+        return {"status": "error", "database": "error"}, 500
+
+
+# ============================================================
 # PUBLIC
 # ============================================================
 
@@ -1261,10 +1281,20 @@ def admin_panel():
         """
         return page(body, title="Admin")
 
-    users = User.query.order_by(User.created_at.desc()).all()
-    orders = PaymentOrder.query.order_by(
-        PaymentOrder.created_at.desc()
-    ).limit(50).all()
+    try:
+        migrate_existing_database()
+        users = User.query.order_by(User.created_at.desc()).all()
+        orders = PaymentOrder.query.order_by(
+            PaymentOrder.created_at.desc()
+        ).limit(50).all()
+    except Exception:
+        app.logger.exception("GLOBALROUTE ADMIN PANEL ERROR")
+        db.session.rollback()
+        return page(
+            '<div class="card"><h2>Erreur de base de données</h2>'
+            '<p>La base PostgreSQL n’a pas pu être préparée. Consultez les logs Render.</p></div>',
+            title="Admin - erreur",
+        ), 500
 
     user_rows = ""
 
@@ -1276,7 +1306,8 @@ def admin_panel():
             if user.subscription_expires_at else "—"
         )
 
-        credits = "Illimité" if user.unlimited else str(user.credits)
+        plan_name = (user.plan or "standard").title()
+        credits = "Illimité" if user.unlimited else str(user.credits or 0)
 
         key_text = key.key_string if key else "—"
 
@@ -1286,7 +1317,7 @@ def admin_panel():
                 <strong>{user.company_name}</strong><br>
                 <span class="muted">{user.email}</span>
             </td>
-            <td>{user.plan.title()}</td>
+            <td>{plan_name}</td>
             <td>{credits}</td>
             <td>{expiry}</td>
             <td class="mono">{key_text}</td>
