@@ -1935,9 +1935,6 @@ def create_driver_route():
                 try: lat=float(parts[-2]); lng=float(parts[-1])
                 except ValueError: continue
                 if -90<=lat<=90 and -180<=lng<=180: stops.append({"name":parts[0] or f"Étape {len(stops)+1}","address":" | ".join(parts[1:-2]),"lat":lat,"lng":lng})
-        else:
-            flash("Importez un CSV ou saisissez les étapes manuellement.", "danger")
-            return redirect(url_for("dashboard"))
 
         if not stops:
             flash("Aucune étape valide trouvée. Utilisez nom, adresse, latitude et longitude.", "danger")
