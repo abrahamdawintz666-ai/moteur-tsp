@@ -12,3 +12,4 @@ limits>=3.8.0
 ordered-set>=4.1.0
 pyparsing>=3.1.0
 packaging>=23.0
+ortools==9.8.3296
