@@ -1012,6 +1012,8 @@ def dashboard():
         for r in routes
     )
 
+    pct = min(100, round((used / limit) * 100)) if limit else 0
+    remaining = max(0, limit - used) if limit else 0
     body = f"""
     <div class="card">
         <h2>{user.company_name}</h2>
@@ -1019,7 +1021,26 @@ def dashboard():
         <div class="grid">
             <div class="stat"><span class="muted">Abonnement</span><strong>{user.plan.title()}</strong></div>
             <div class="stat"><span class="muted">Tournées utilisées</span><strong>{used:,} / {limit:,}</strong></div>
+            <div class="stat"><span class="muted">Tournées restantes</span><strong>{remaining:,}</strong></div>
             <div class="stat"><span class="muted">Expiration</span><strong>{expiry}</strong></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>📊 Utilisation de votre abonnement</h3>
+        <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+            <div style="width:130px;height:130px;border-radius:50%;background:conic-gradient(#2563eb {pct}%, #e2e8f0 0);display:grid;place-items:center">
+                <div style="width:88px;height:88px;border-radius:50%;background:white;display:grid;place-items:center;font-weight:800;font-size:20px">{pct}%</div>
+            </div>
+            <div style="flex:1;min-width:220px">
+                <div class="muted">Quota de tournées</div>
+                <div style="height:14px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin:8px 0 12px">
+                    <div style="height:100%;width:{pct}%;background:#2563eb;border-radius:999px"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:13px">
+                    <span><b>{used:,}</b> utilisées</span><span><b>{remaining:,}</b> restantes</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1813,17 +1834,23 @@ def route_api():
             "error": "at_least_two_points_required"
         }), 400
 
-    if not user.unlimited:
-        cost = len(points)
+    # Commercial quota: one accepted routing request consumes one
+    # route from the company's subscription quota. The limit is tied
+    # to the account/API key, not to the number of GPS points.
+    route_limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
+    routes_used = user.routes_used or 0
 
-        if user.credits < cost:
-            return jsonify({
-                "error": "insufficient_credits",
-                "credits_remaining": user.credits,
-            }), 402
+    if route_limit and routes_used >= route_limit:
+        return jsonify({
+            "error": "route_quota_exceeded",
+            "plan": user.plan,
+            "route_limit": route_limit,
+            "routes_used": routes_used,
+            "routes_remaining": 0,
+        }), 402
 
-        user.credits -= cost
-        db.session.commit()
+    user.routes_used = routes_used + 1
+    db.session.commit()
 
     # This endpoint validates the commercial API request.
     # The production routing engine can be connected here.
@@ -1831,9 +1858,10 @@ def route_api():
         "success": True,
         "engine": APP_NAME,
         "points_received": len(points),
-        "credits_remaining": (
-            None if user.unlimited else user.credits
-        ),
+        "plan": user.plan,
+        "route_limit": route_limit,
+        "routes_used": user.routes_used,
+        "routes_remaining": max(0, route_limit - user.routes_used) if route_limit else None,
         "message": "Request accepted by the B2B routing API.",
     })
 
