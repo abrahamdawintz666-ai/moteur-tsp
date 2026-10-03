@@ -188,10 +188,15 @@ class DeliveryRoute(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     route_name = db.Column(db.Text, default="Tournée")
     driver_name = db.Column(db.String(100), nullable=False)
-    access_code = db.Column(db.String(80), unique=True, nullable=False)
+    access_code = db.Column(db.String(80), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
+
+    # Le code d'accès est désormais unique uniquement *par utilisateur*
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'access_code', name='uq_user_access_code'),
+    )
 
 
 class AuditLog(db.Model):
@@ -720,7 +725,7 @@ IMPORT_FORM_HTML = """
         <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
             <label>Nom de la tournée</label><input name="route_name" required placeholder="Ex. Tournée Nord">
             <label>Nom du livreur</label><input name="driver_name" required placeholder="Ex. Marc Dubois">
-            <label>Code d'accès du livreur (doit être unique)</label><input name="access_code" required placeholder="Ex. DRIVER-99">
+            <label>Code d'accès du livreur (unique pour votre compte)</label><input name="access_code" required placeholder="Ex. DRIVER-99">
             <label>Fichier CSV</label><input type="file" name="csv_file" accept=".csv">
             <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
             <textarea name="manual_stops" rows="5" placeholder="Client A | 12 Rue de Paris | 48.8566 | 2.3522"></textarea>
@@ -788,14 +793,14 @@ def create_driver_route():
         optimized=True
     )
     
-    # Sécurisation robuste contre l'erreur 500 (doublon de code d'accès)
+    # Sécurisation contre le doublon de code d'accès par utilisateur
     try:
         db.session.add(route)
         user.tours_used += 1
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        flash("Erreur : Ce code d'accès de livreur est déjà utilisé. Veuillez en choisir un autre.", "danger")
+        flash("Erreur : Vous utilisez déjà ce code d'accès pour une autre de vos tournées. Veuillez en choisir un autre.", "danger")
         return redirect(url_for("import_space"))
     except Exception as e:
         db.session.rollback()
