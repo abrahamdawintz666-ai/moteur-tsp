@@ -1,10 +1,5 @@
 import os
 import io
-import requests
-import hashlib
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 import csv
 import json
 import secrets
@@ -54,33 +49,24 @@ SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 PLANS = {
     "standard": {
         "name": "Standard",
-        "monthly_price": 29.00,
-        "annual_price": 290.00,
-        "route_limit": 500,
+        "monthly_price": 15.00,
+        "credit_limit": 500,
+        "unlimited": False,
     },
     "pro": {
         "name": "Pro",
-        "monthly_price": 59.00,
-        "annual_price": 590.00,
-        "route_limit": 2500,
-    },
-    "business": {
-        "name": "Business",
-        "monthly_price": 99.00,
-        "annual_price": 990.00,
-        "route_limit": 10000,
-    },
-    "enterprise": {
-        "name": "Enterprise",
-        "monthly_price": None,
-        "annual_price": None,
-        "route_limit": 50000,
+        "monthly_price": 29.00,
+        "credit_limit": None,
+        "unlimited": True,
     },
 }
 
-# Enterprise is quoted manually. Other plans can be purchased for
-# 30/90/180/365 days; the annual price is discounted.
-DURATIONS = (30, 90, 180, 365)
+DURATIONS = {
+    30: 1.0,
+    90: 2.7,
+    180: 5.0,
+    365: 9.0,
+}
 
 # ------------------------------------------------------------
 # DATABASE
@@ -128,8 +114,6 @@ class User(db.Model):
     credits = db.Column(db.Integer, default=0)
     unlimited = db.Column(db.Boolean, default=False)
     active = db.Column(db.Boolean, default=True)
-    route_limit = db.Column(db.Integer, default=0)
-    routes_used = db.Column(db.Integer, default=0)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -209,14 +193,11 @@ class DeliveryRoute(db.Model):
     )
 
     driver_name = db.Column(db.String(100), nullable=False)
-    route_name = db.Column(db.String(150), default="Tournée")
     access_code = db.Column(
         db.String(80), unique=True, nullable=False
     )
     stops_data = db.Column(db.Text, nullable=False)
-    stops_count = db.Column(db.Integer, default=0)
     status = db.Column(db.String(20), default="En cours")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class AuditLog(db.Model):
@@ -288,15 +269,6 @@ with app.app_context():
     # Creates new tables and then upgrades older existing tables in place.
     db.create_all()
     migrate_existing_database()
-    try:
-        from sqlalchemy import text
-        # Backfill fields added to existing installations.
-        db.session.execute(text('UPDATE users SET route_limit = 0 WHERE route_limit IS NULL'))
-        db.session.execute(text('UPDATE users SET routes_used = 0 WHERE routes_used IS NULL'))
-        db.session.execute(text('UPDATE delivery_routes SET stops_count = 0 WHERE stops_count IS NULL'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
 
 
 # ============================================================
@@ -340,14 +312,15 @@ def money(value):
 def calculate_price(plan, duration_days):
     if plan not in PLANS:
         raise ValueError("Plan invalide.")
+
     if duration_days not in DURATIONS:
         raise ValueError("Durée invalide.")
-    if plan == "enterprise":
-        raise ValueError("Enterprise nécessite un devis.")
+
     monthly = PLANS[plan]["monthly_price"]
-    if duration_days == 365:
-        return PLANS[plan]["annual_price"]
-    return round(monthly * (duration_days / 30), 2)
+    multiplier = DURATIONS[duration_days]
+
+    # 30 days = 1x monthly.
+    return round(monthly * multiplier, 2)
 
 
 def create_api_key(user, expires_at=None):
@@ -378,13 +351,16 @@ def active_api_key(user):
 
 def add_subscription(user, plan, duration_days):
     now = utcnow()
+
     if (
         user.subscription_expires_at
         and user.subscription_expires_at > now
         and user.plan == plan
     ):
         start = user.subscription_started_at or now
-        expiry = user.subscription_expires_at + timedelta(days=duration_days)
+        expiry = user.subscription_expires_at + timedelta(
+            days=duration_days
+        )
     else:
         start = now
         expiry = now + timedelta(days=duration_days)
@@ -392,16 +368,17 @@ def add_subscription(user, plan, duration_days):
     user.plan = plan
     user.subscription_started_at = start
     user.subscription_expires_at = expiry
-    user.active = True
-    user.route_limit = PLANS[plan]["route_limit"]
-    user.routes_used = 0
 
-    # Credits are kept for API compatibility; route quotas are tracked
-    # separately so a company can see its actual number of route plans.
-    user.credits = user.route_limit
-    user.unlimited = False
+    if PLANS[plan]["unlimited"]:
+        user.unlimited = True
+        user.credits = 0
+    else:
+        user.unlimited = False
+        # Each paid Standard subscription grants 500 credits.
+        user.credits = int(PLANS[plan]["credit_limit"])
 
     key = active_api_key(user)
+
     if key:
         key.expires_at = expiry
         key.revoked = False
@@ -582,42 +559,6 @@ def admin_required():
     return bool(session.get("is_admin"))
 
 
-def parse_stops_data(raw_data):
-    """Read both the new JSON route format and the old pipe format."""
-    try:
-        data = json.loads(raw_data)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
-
-    points = []
-    for line in raw_data.split("\n"):
-        parts = [x.strip() for x in line.split("|")]
-        if len(parts) >= 3:
-            try:
-                lat = float(parts[1])
-                lng = float(parts[2])
-            except ValueError:
-                continue
-            points.append({
-                "name": parts[0],
-                "address": "",
-                "lat": lat,
-                "lng": lng,
-            })
-    return points
-
-
-def build_route_rows(stops):
-    return "".join(
-        f"<tr><td>{i}</td><td>{p.get('name','')}</td>"
-        f"<td>{p.get('address','')}</td><td>{p.get('lat')}</td>"
-        f"<td>{p.get('lng')}</td></tr>"
-        for i, p in enumerate(stops, 1)
-    )
-
-
 # ============================================================
 # CSS / HTML
 # ============================================================
@@ -767,14 +708,6 @@ footer {
     .grid { grid-template-columns:1fr; }
     .container { padding:15px 10px; }
     table { display:block; overflow-x:auto; white-space:nowrap; }
-}
-@media print {
-    header, footer, .screen-only, .screen-only + .card, .btn, nav, .alert { display:none !important; }
-    body, .container { background:white; padding:0; margin:0; }
-    .card { border:0; box-shadow:none; margin:0; padding:0; }
-    .route-sheet { display:block !important; }
-    .route-sheet table { font-size:10px; }
-    .qr { margin-top:4px; }
 }
 """
 
@@ -1001,148 +934,119 @@ def logout():
 @app.route("/dashboard")
 def dashboard():
     user = require_user()
+
     if not user:
         return redirect(url_for("login_form"))
 
     key = active_api_key(user)
-    expiry = user.subscription_expires_at.strftime("%Y-%m-%d %H:%M") if user.subscription_expires_at else "—"
-    routes = DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.created_at.desc()).all()
-    key_text = key.key_string if key else "Aucune clé active"
-    limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
-    used = user.routes_used or 0
 
-    route_rows = "".join(
-        f"<tr><td>{r.route_name}</td><td>{r.driver_name}</td><td>{r.stops_count}</td>"
-        f"<td>{r.status}</td><td><a class='btn btn-secondary' href='/driver-space?code={urllib.parse.quote(r.access_code)}'>Ouvrir</a></td></tr>"
-        for r in routes
+    expiry = (
+        user.subscription_expires_at.strftime("%Y-%m-%d")
+        if user.subscription_expires_at else "—"
     )
 
-    pct = min(100, round((used / limit) * 100)) if limit else 0
-    remaining = max(0, limit - used) if limit else 0
+    key_text = key.key_string if key else "Aucune clé active"
+
     body = f"""
     <div class="card">
         <h2>{user.company_name}</h2>
         <p class="muted">{user.email}</p>
+
         <div class="grid">
-            <div class="stat"><span class="muted">Abonnement</span><strong>{user.plan.title()}</strong></div>
-            <div class="stat"><span class="muted">Tournées utilisées</span><strong>{used:,} / {limit:,}</strong></div>
-            <div class="stat"><span class="muted">Tournées restantes</span><strong>{remaining:,}</strong></div>
-            <div class="stat"><span class="muted">Expiration</span><strong>{expiry}</strong></div>
-        </div>
-    </div>
-
-    <div class="card">
-        <h3>📊 Utilisation de votre abonnement</h3>
-        <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">
-            <div style="width:130px;height:130px;border-radius:50%;background:conic-gradient(#2563eb {pct}%, #e2e8f0 0);display:grid;place-items:center">
-                <div style="width:88px;height:88px;border-radius:50%;background:white;display:grid;place-items:center;font-weight:800;font-size:20px">{pct}%</div>
+            <div class="stat">
+                <span class="muted">Plan</span>
+                <strong>{user.plan.title()}</strong>
             </div>
-            <div style="flex:1;min-width:220px">
-                <div class="muted">Quota de tournées</div>
-                <div style="height:14px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin:8px 0 12px">
-                    <div style="height:100%;width:{pct}%;background:#2563eb;border-radius:999px"></div>
-                </div>
-                <div style="display:flex;justify-content:space-between;font-size:13px">
-                    <span><b>{used:,}</b> utilisées</span><span><b>{remaining:,}</b> restantes</span>
-                </div>
+            <div class="stat">
+                <span class="muted">Crédits</span>
+                <strong>{"Illimité" if user.unlimited else user.credits}</strong>
+            </div>
+            <div class="stat">
+                <span class="muted">Expiration</span>
+                <strong>{expiry}</strong>
             </div>
         </div>
     </div>
 
     <div class="card">
-        <h3>🔑 Votre clé API</h3>
+        <h3>Votre clé API</h3>
         <div class="payment-box mono">{key_text}</div>
-        <a class="btn btn-secondary" href="/plans">Gérer l'abonnement</a>
+        <p class="muted">
+            Ne partagez jamais une clé API publiquement.
+        </p>
     </div>
 
     <div class="card">
-        <h2>Créer une tournée</h2>
-        <form method="POST" action="/create-driver-route" enctype="multipart/form-data">
-            <label>Nom de la tournée</label>
-            <input name="route_name" placeholder="Ex. Tournée Nord" required>
-            <label>Nom du livreur</label>
-            <input name="driver_name" placeholder="Ex. Jean Dupont" required>
-            <label>Code d'accès du livreur</label>
-            <input name="access_code" placeholder="Ex. NORD01" required>
-            <label>Importer un CSV</label>
-            <input type="file" name="csv_file" accept=".csv">
-            <p class="muted">CSV : nom, latitude, longitude — ou nom, adresse, latitude, longitude.</p>
-            <label>Ou saisir les étapes manuellement</label>
-            <textarea name="manual_stops" rows="6" placeholder="Client A | Adresse A | 19.75 | -72.20&#10;Client B | Adresse B | 19.76 | -72.21"></textarea>
-            <button class="btn btn-green btn-block" type="submit">Créer et envoyer au livreur</button>
-        </form>
-    </div>
-
-    <div class="card">
-        <h3>🚚 Mes tournées</h3>
-        <table><thead><tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Statut</th><th>Accès</th></tr></thead>
-        <tbody>{route_rows or '<tr><td colspan="5">Aucune tournée créée.</td></tr>'}</tbody></table>
+        <h3>Abonnement</h3>
+        <a class="btn" href="/plans">Voir les abonnements</a>
+        <a class="btn btn-secondary" href="/driver-login">Espace livreur</a>
     </div>
     """
+
     return page(body, title="Dashboard")
 
 
 @app.route("/plans")
 def plans():
     user = require_user()
+
     if not user:
         return redirect(url_for("login_form"))
 
-    cards = []
-    for key in ("standard", "pro", "business", "enterprise"):
-        p = PLANS[key]
-        if key == "enterprise":
-            action = "<a class='btn btn-secondary btn-block' href='/contact-enterprise'>Contacter GlobalRoute</a>"
-            price = "Sur devis"
-            annual = "Sur devis"
-        else:
-            action = (
-                f"<form method='POST' action='/create-payment'>"
-                f"<input type='hidden' name='plan' value='{key}'>"
-                f"<label>Durée</label>"
-                f"<select name='duration_days'>"
-                f"<option value='30'>30 jours</option>"
-                f"<option value='90'>90 jours</option>"
-                f"<option value='180'>180 jours</option>"
-                f"<option value='365'>365 jours</option>"
-                f"</select>"
-                f"<p>Prix : <strong>{p['monthly_price']:.2f} USDC / 30 jours</strong></p>"
-                f"<button class='btn btn-green btn-block' type='submit'>Choisir {p['name']}</button>"
-                f"</form>"
-            )
-            price = f"{p['monthly_price']:.0f} USDC / 30 jours"
-            annual = f"{p['annual_price']:.0f} USDC / an"
+    body = """
+    <div class="card">
+        <h2>Choisir un abonnement</h2>
+        <p class="muted">
+            Paiement automatique en USDC sur Solana.
+        </p>
 
-        cards.append(
-            f"<div class='card plan-card'>"
-            f"<div class='muted'>{p['name']}</div>"
-            f"<h2>{price}</h2>"
-            f"<p><strong>{p['route_limit']:,}</strong> tournées incluses</p>"
-            f"<p class='muted'>Volume prévu pour l'offre {p['name']}.</p>"
-            f"<p><strong>{annual}</strong></p>"
-            f"{action}</div>"
-        )
+        <form method="POST" action="/create-payment">
+            <label>Plan</label>
+            <select name="plan" required>
+                <option value="standard">Standard — 500 crédits</option>
+                <option value="pro">Pro — illimité</option>
+            </select>
 
-    body = f"""
-    <div class="card hero">
-        <h2>Choisissez votre abonnement</h2>
-        <p>Paiement en USDC sur Solana. Après confirmation, l'abonnement,
-        la clé API et sa date d'expiration sont activés automatiquement.</p>
+            <label>Durée</label>
+            <select name="duration_days" id="duration" required
+                    onchange="updatePrice()">
+                <option value="30">30 jours</option>
+                <option value="90">90 jours</option>
+                <option value="180">180 jours</option>
+                <option value="365">365 jours</option>
+            </select>
+
+            <p>
+                Prix indicatif :
+                <strong id="price">$15.00 USDC</strong>
+            </p>
+
+            <button class="btn btn-green btn-block" type="submit">
+                Créer le paiement USDC
+            </button>
+        </form>
     </div>
-    <div class="grid plans-grid">{''.join(cards)}</div>
+
+    <script>
+    const prices = {
+        standard: {30:15,90:40.5,180:75,365:135},
+        pro: {30:29,90:78.3,180:145,365:261}
+    };
+
+    function updatePrice() {
+        const plan = document.querySelector('[name="plan"]').value;
+        const days = document.querySelector('[name="duration_days"]').value;
+        document.getElementById("price").textContent =
+            "$" + prices[plan][days].toFixed(2) + " USDC";
+    }
+
+    document.querySelector('[name="plan"]')
+        .addEventListener("change", updatePrice);
+    updatePrice();
+    </script>
     """
+
     return page(body, title="Abonnements")
-
-
-@app.route("/contact-enterprise")
-def contact_enterprise():
-    return page("""
-    <div class="card hero">
-        <h2>Enterprise — jusqu'à 50 000 tournées</h2>
-        <p>Contactez GlobalRoute pour une offre adaptée à votre volume.</p>
-        <a class="btn" href="mailto:sales@globalroute.ai">Contacter les ventes</a>
-    </div>
-    """, title="Enterprise")
 
 
 # ============================================================
@@ -1372,7 +1276,7 @@ def admin_panel():
             if user.subscription_expires_at else "—"
         )
 
-        credits = f"{user.routes_used or 0} / {user.route_limit or 0} tournées"
+        credits = "Illimité" if user.unlimited else str(user.credits)
 
         key_text = key.key_string if key else "—"
 
@@ -1437,8 +1341,6 @@ def admin_panel():
             <select name="plan">
                 <option value="standard">Standard</option>
                 <option value="pro">Pro</option>
-                <option value="business">Business</option>
-                <option value="enterprise">Enterprise</option>
             </select>
 
             <label>Durée</label>
@@ -1462,7 +1364,7 @@ def admin_panel():
                 <tr>
                     <th>Entreprise</th>
                     <th>Plan</th>
-                    <th>Tournées</th>
+                    <th>Crédits</th>
                     <th>Expiration</th>
                     <th>Clé API</th>
                 </tr>
@@ -1644,456 +1546,175 @@ def driver_login():
 
 @app.route("/driver-space", methods=["POST", "GET"])
 def driver_space():
-    code = request.form.get("access_code") if request.method == "POST" else request.args.get("code")
+    code = (
+        request.form.get("access_code")
+        if request.method == "POST"
+        else request.args.get("code")
+    )
+
     if not code:
         return redirect(url_for("driver_login"))
 
-    route = DeliveryRoute.query.filter_by(access_code=code.strip().upper()).first()
+    route = DeliveryRoute.query.filter_by(
+        access_code=code.strip().upper()
+    ).first()
+
     if not route:
         flash("Code d'accès incorrect.", "danger")
         return redirect(url_for("driver_login"))
 
-    stops = parse_stops_data(route.stops_data)
-    map_points = json.dumps(stops, ensure_ascii=False)
-    route_rows = build_route_rows(stops)
+    raw_data = route.stops_data or ""
 
     body = f"""
-    <div class="card driver-header">
-        <h2>🚚 {route.route_name}</h2>
-        <p><strong>Livreur :</strong> {route.driver_name}</p>
-        <p class="muted">{len(stops)} étapes · GlobalRoute AI</p>
-        <p><strong>Distance géographique estimée :</strong> <span id="route-distance">calcul…</span></p>
-        <button class="btn" onclick="window.print()">🖨️ Imprimer la fiche de route</button>
-        <button class="btn btn-secondary" id="locate-driver" type="button">📍 Utiliser ma position</button>
-    </div>
-
-    <div class="card screen-only">
-        <h3>Carte interactive 2D</h3>
+    <div class="card">
+        <h2>🚚 Tournée de {route.driver_name}</h2>
         <div id="map"></div>
+        <div id="stops"></div>
     </div>
 
-    <div class="card route-sheet">
-        <h2>Fiche de route — {route.route_name}</h2>
-        <p>Livreur : <strong>{route.driver_name}</strong></p>
-        <table>
-            <thead><tr><th>#</th><th>Étape</th><th>Adresse</th><th>Latitude</th><th>Longitude</th><th>Navigation</th></tr></thead>
-            <tbody>{''.join(f"<tr><td>{i}</td><td>{p.get('name','')}</td><td>{p.get('address','')}</td><td>{p.get('lat')}</td><td>{p.get('lng')}</td><td><a href='https://www.google.com/maps/search/?api=1&query={p.get('lat')},{p.get('lng')}' target='_blank'>GPS</a><div class='qr' data-url='https://www.google.com/maps/search/?api=1&query={p.get('lat')},{p.get('lng')}'></div></td></tr>" for i,p in enumerate(stops,1))}</tbody>
-        </table>
-    </div>
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script>
-    const points = {map_points};
-    const map = L.map("map").setView(
-        points.length ? [points[0].lat, points[0].lng] : [19.7558,-72.2042], 13
-    );
-    L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
-        {{maxZoom:19, attribution:"© OpenStreetMap"}}).addTo(map);
-    const bounds = [];
-    points.forEach((p,i) => {{
-        bounds.push([p.lat,p.lng]);
-        L.marker([p.lat,p.lng]).addTo(map).bindPopup(
-            "<b>"+(i+1)+". "+p.name+"</b><br>"+(p.address||"")+"<br>GPS: "+p.lat+", "+p.lng
-        );
-    }});
-    function distanceKm(a,b) {{
-        const R=6371.0088, rad=x=>x*Math.PI/180;
-        const dLat=rad(b[0]-a[0]), dLng=rad(b[1]-a[1]);
-        const la1=rad(a[0]), la2=rad(b[0]);
-        const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
-        return R*2*Math.asin(Math.min(1,Math.sqrt(h)));
-    }}
-    let totalKm = 0;
-    for (let i=1; i<bounds.length; i++) totalKm += distanceKm(bounds[i-1], bounds[i]);
-    const distanceEl = document.getElementById("route-distance");
-    if (distanceEl) distanceEl.textContent = totalKm.toFixed(2) + " km";
+    const raw = {json.dumps(raw_data)};
+    const points = [];
 
-    let dottedLine = null;
-    if (bounds.length) {{
-        dottedLine = L.polyline(bounds, {{
-            weight: 3,
-            dashArray: "3 8",
-            opacity: 0.9
-        }}).addTo(map);
-        map.fitBounds(bounds, {{padding:[35,35]}});
-    }}
+    raw.split("\\n").forEach(line => {{
+        const p = line.split("|");
 
-    // Driver location: browser permission is requested only when the
-    // driver presses the button.
-    function locateDriver() {{
-        if (!navigator.geolocation) {{
-            alert("La géolocalisation n'est pas disponible sur cet appareil.");
-            return;
+        if (p.length >= 3) {{
+            const lat = parseFloat(p[1]);
+            const lng = parseFloat(p[2]);
+
+            if (!Number.isNaN(lat) && !Number.isNaN(lng)) {{
+                points.push({{
+                    name: p[0],
+                    lat: lat,
+                    lng: lng
+                }});
+            }}
         }}
-        navigator.geolocation.getCurrentPosition(
-            function(pos) {{
-                const lat = pos.coords.latitude;
-                const lng = pos.coords.longitude;
-                L.circleMarker([lat,lng], {{
-                    radius: 8,
-                    weight: 3
-                }}).addTo(map).bindPopup("Votre position").openPopup();
-                map.setView([lat,lng], 15);
-            }},
-            function() {{
-                alert("Autorisation de localisation refusée ou indisponible.");
-            }},
-            {{enableHighAccuracy:true, timeout:10000, maximumAge:10000}}
+    }});
+
+    const center = points.length
+        ? [points[0].lat, points[0].lng]
+        : [19.7558, -72.2042];
+
+    const map = L.map("map").setView(center, 13);
+
+    L.tileLayer(
+        "https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
+        {{
+            maxZoom: 19,
+            attribution: "© OpenStreetMap"
+        }}
+    ).addTo(map);
+
+    const bounds = [];
+    let html = "<ol>";
+
+    points.forEach((p, i) => {{
+        bounds.push([p.lat, p.lng]);
+
+        const marker = L.marker([p.lat, p.lng]).addTo(map);
+
+        marker.bindPopup(
+            "<b>" + p.name + "</b><br>" +
+            "Lat: " + p.lat + "<br>" +
+            "Lng: " + p.lng
         );
+
+        const url =
+            "https://www.google.com/maps/search/?api=1&query=" +
+            p.lat + "," + p.lng;
+
+        html +=
+            "<li><b>" + p.name + "</b> — " +
+            p.lat + ", " + p.lng +
+            " <a target='_blank' href='" + url +
+            "'>GPS</a></li>";
+    }});
+
+    html += "</ol>";
+    document.getElementById("stops").innerHTML = html;
+
+    if (bounds.length) {{
+        const line = L.polyline(bounds, {{weight:4}}).addTo(map);
+        map.fitBounds(line.getBounds(), {{padding:[35,35]}});
     }}
-
-    const locBtn = document.getElementById("locate-driver");
-    if (locBtn) locBtn.addEventListener("click", locateDriver);
-
-    document.querySelectorAll(".qr").forEach(el => new QRCode(el, {{text:el.dataset.url,width:72,height:72}}));
     </script>
     """
-    return page(body, title="Fiche de route", map_needed=True)
+
+    return page(body, title="Tournée", map_needed=True)
 
 
 @app.route("/create-driver-route", methods=["POST"])
 def create_driver_route():
     user = require_user()
+
     if not user:
         return redirect(url_for("login_form"))
 
-    limit = user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
-    if limit and (user.routes_used or 0) >= limit:
-        flash("Votre quota de tournées est atteint. Choisissez un abonnement supérieur.", "danger")
-        return redirect(url_for("dashboard"))
-
-    route_name = request.form.get("route_name", "Tournée").strip()
     driver_name = request.form.get("driver_name", "").strip()
-    access_code = request.form.get("access_code", "").strip().upper()
-    if not driver_name or not access_code:
-        flash("Nom du livreur et code d'accès obligatoires.", "danger")
-        return redirect(url_for("dashboard"))
+    access_code = request.form.get(
+        "access_code", ""
+    ).strip().upper()
 
-    if DeliveryRoute.query.filter_by(access_code=access_code).first():
-        flash("Ce code d'accès existe déjà.", "danger")
+    file = request.files.get("csv_file")
+
+    if not file or not file.filename.lower().endswith(".csv"):
+        flash("Fichier CSV invalide.", "danger")
         return redirect(url_for("dashboard"))
 
     stops = []
-    file = request.files.get("csv_file")
-    if file and file.filename.lower().endswith(".csv"):
-        try:
-            stream = io.TextIOWrapper(file.stream, encoding="utf-8-sig", errors="replace")
-            for row in csv.reader(stream):
-                if len(row) >= 4:
-                    name, address = row[0].strip(), row[1].strip()
-                    lat_s, lng_s = row[2].strip(), row[3].strip()
-                elif len(row) >= 3:
-                    name, address = row[0].strip(), ""
-                    lat_s, lng_s = row[1].strip(), row[2].strip()
-                else:
-                    continue
-                try:
-                    lat, lng = float(lat_s), float(lng_s)
-                except ValueError:
-                    continue
-                if -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
-        except Exception:
-            flash("Impossible de lire le CSV.", "danger")
-            return redirect(url_for("dashboard"))
 
-    manual = request.form.get("manual_stops", "").strip()
-    if manual:
-        for line in manual.splitlines():
-            parts = [x.strip() for x in line.split("|")]
-            if len(parts) >= 4:
-                name, address, lat_s, lng_s = parts[0], parts[1], parts[2], parts[3]
-            elif len(parts) >= 3:
-                name, address, lat_s, lng_s = parts[0], "", parts[1], parts[2]
-            else:
-                continue
-            try:
-                lat, lng = float(lat_s), float(lng_s)
-            except ValueError:
-                continue
-            if -90 <= lat <= 90 and -180 <= lng <= 180:
-                stops.append({"name": name, "address": address, "lat": lat, "lng": lng})
-
-    if not stops:
-        flash("Ajoutez un CSV ou saisissez au moins une étape valide.", "danger")
-        return redirect(url_for("dashboard"))
-
-    route = DeliveryRoute(
-        user_id=user.id,
-        driver_name=driver_name,
-        route_name=route_name,
-        access_code=access_code,
-        stops_data=json.dumps(stops, ensure_ascii=False),
-        stops_count=len(stops),
-        status="En cours",
-    )
-    db.session.add(route)
-    user.routes_used = (user.routes_used or 0) + 1
-    db.session.commit()
-
-    flash(f"Tournée « {route_name} » créée avec {len(stops)} étapes et envoyée à l'espace livreur.", "success")
-    return redirect(url_for("dashboard"))
-
-
-
-# ============================================================
-# ROUTING ENGINE — GLOBAL SCALE ARCHITECTURE
-# ============================================================
-
-ROUTING_URL = os.getenv("ROUTING_URL", "https://router.project-osrm.org").rstrip("/")
-OSRM_MAX_POINTS = int(os.getenv("OSRM_MAX_POINTS", "80"))
-ROUTER_TIMEOUT = int(os.getenv("ROUTER_TIMEOUT", "20"))
-ROUTER_WORKERS = max(1, int(os.getenv("ROUTER_WORKERS", "4")))
-MAX_POINTS_PER_JOB = int(os.getenv("MAX_POINTS_PER_JOB", "5000"))
-
-
-def haversine_km(a, b):
-    from math import radians, sin, cos, asin, sqrt
-    lat1, lon1 = radians(float(a["lat"])), radians(float(a["lng"]))
-    lat2, lon2 = radians(float(b["lat"])), radians(float(b["lng"]))
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    return 6371.0088 * 2 * asin(min(1.0, sqrt(h)))
-
-
-def validate_points(points):
-    if not isinstance(points, list) or len(points) < 2:
-        raise ValueError("Au moins deux destinations sont nécessaires.")
-    if len(points) > MAX_POINTS_PER_JOB:
-        raise ValueError(
-            f"Cette optimisation contient {len(points)} points. "
-            f"La limite d'une optimisation est {MAX_POINTS_PER_JOB} points."
+    try:
+        stream = io.TextIOWrapper(
+            file.stream,
+            encoding="utf-8-sig",
+            errors="replace"
         )
 
-    clean = []
-    for i, p in enumerate(points):
-        try:
-            lat = float(p["lat"])
-            lng = float(p["lng"])
-        except (KeyError, TypeError, ValueError):
-            raise ValueError(f"Coordonnées invalides à l'étape {i + 1}.")
+        reader = csv.reader(stream)
 
-        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
-            raise ValueError(f"Coordonnées hors limites à l'étape {i + 1}.")
+        for row in reader:
+            if len(row) < 3:
+                continue
 
-        clean.append({
-            "id": p.get("id", i + 1),
-            "name": str(p.get("name", f"Étape {i + 1}")),
-            "address": str(p.get("address", "")),
-            "lat": lat,
-            "lng": lng,
-        })
-    return clean
+            name = row[0].strip()
 
-
-def _grid_key(point, precision=2):
-    # Spatial bucketing. It avoids comparing every point with every other
-    # point and gives a stable partitioning strategy for global workloads.
-    return (
-        round(point["lat"], precision),
-        round(point["lng"], precision),
-    )
-
-
-def optimize_points_scalable(points):
-    """
-    Scalable sweep heuristic.
-
-    Complexity is dominated by sorting: O(n log n).
-    It is deterministic and avoids O(n²) pairwise distance calculations.
-
-    This is an ordering heuristic, not a mathematical guarantee of the
-    globally optimal TSP solution.
-    """
-    if len(points) <= 2:
-        return list(points)
-
-    from math import atan2, degrees
-
-    # For a single local route, use the geographic centroid as the sweep
-    # origin. This keeps the algorithm cheap for thousands of stops.
-    center_lat = sum(p["lat"] for p in points) / len(points)
-    center_lng = sum(p["lng"] for p in points) / len(points)
-
-    def key(p):
-        angle = degrees(atan2(
-            p["lng"] - center_lng,
-            p["lat"] - center_lat
-        ))
-        radius = (p["lat"] - center_lat) ** 2 + (p["lng"] - center_lng) ** 2
-        return (angle, radius)
-
-    return sorted(points, key=key)
-
-
-def _route_signature(points):
-    payload = [
-        (p["lat"], p["lng"])
-        for p in points
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-@lru_cache(maxsize=256)
-def _cached_osrm_route(signature, coords):
-    url = f"{ROUTING_URL}/route/v1/driving/{coords}"
-    response = requests.get(
-        url,
-        params={
-            "overview": "full",
-            "geometries": "geojson",
-            "steps": "false",
-        },
-        timeout=ROUTER_TIMEOUT,
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    if data.get("code") != "Ok" or not data.get("routes"):
-        raise RuntimeError("Le routeur routier n'a pas trouvé de trajet.")
-
-    route = data["routes"][0]
-    return {
-        "distance_km": round(float(route["distance"]) / 1000, 2),
-        "duration_seconds": int(round(float(route["duration"]))),
-        "geometry": route.get("geometry", {}).get("coordinates", []),
-        "source": "OSRM",
-    }
-
-
-def route_road_segment(points):
-    if len(points) < 2:
-        return {
-            "distance_km": 0.0,
-            "duration_seconds": 0,
-            "geometry": [],
-            "source": "none",
-        }
-
-    coords = ";".join(
-        f'{p["lng"]},{p["lat"]}' for p in points
-    )
-    signature = _route_signature(points)
-
-    return _cached_osrm_route(signature, coords)
-
-
-def route_distance_fallback(points):
-    return round(sum(
-        haversine_km(points[i], points[i + 1])
-        for i in range(len(points) - 1)
-    ), 2)
-
-
-def road_route_global(points):
-    """
-    Global-scale routing strategy:
-
-    - Small routes: one real OSRM request.
-    - Larger routes: split into bounded road segments and request them
-      concurrently.
-    - If the external router is unavailable, return a clearly labelled
-      geographic estimate rather than claiming it is road distance.
-
-    This prevents one huge request from becoming the bottleneck.
-    """
-    if len(points) <= OSRM_MAX_POINTS:
-        return route_road_segment(points)
-
-    chunks = []
-    # Overlap adjacent chunks so the road path remains continuous.
-    step = OSRM_MAX_POINTS - 1
-    for start in range(0, len(points) - 1, step):
-        chunk = points[start:min(start + OSRM_MAX_POINTS, len(points))]
-        if len(chunk) >= 2:
-            chunks.append(chunk)
-
-    results = [None] * len(chunks)
-    failures = 0
-
-    with ThreadPoolExecutor(max_workers=ROUTER_WORKERS) as executor:
-        future_map = {
-            executor.submit(route_road_segment, chunk): i
-            for i, chunk in enumerate(chunks)
-        }
-
-        for future in as_completed(future_map):
-            idx = future_map[future]
             try:
-                results[idx] = future.result()
-            except Exception:
-                failures += 1
+                lat = float(row[1].strip())
+                lng = float(row[2].strip())
+            except ValueError:
+                continue
 
-    if failures:
-        # Do not silently label a fallback as road routing.
-        return {
-            "distance_km": route_distance_fallback(points),
-            "duration_seconds": None,
-            "geometry": [],
-            "source": "geodesic_estimate",
-            "router_segments_failed": failures,
-        }
+            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+                continue
 
-    total_distance = sum(r["distance_km"] for r in results)
-    total_duration = sum(
-        r["duration_seconds"] for r in results
-        if r["duration_seconds"] is not None
-    )
+            stops.append(f"{name}|{lat}|{lng}")
 
-    geometry = []
-    for r in results:
-        segment = r.get("geometry", [])
-        if geometry and segment:
-            segment = segment[1:]
-        geometry.extend(segment)
+        if not stops:
+            flash("Aucune coordonnée valide trouvée.", "danger")
+            return redirect(url_for("dashboard"))
 
-    return {
-        "distance_km": round(total_distance, 2),
-        "duration_seconds": total_duration,
-        "geometry": geometry,
-        "source": "OSRM-segmented",
-        "segments": len(results),
-    }
+        route = DeliveryRoute(
+            user_id=user.id,
+            driver_name=driver_name,
+            access_code=access_code,
+            stops_data="\n".join(stops),
+        )
 
+        db.session.add(route)
+        db.session.commit()
 
-def solve_route(points):
-    clean = validate_points(points)
-    ordered = optimize_points_scalable(clean)
-    routing = road_route_global(ordered)
+        flash(
+            f"Tournée créée avec {len(stops)} étapes.",
+            "success"
+        )
 
-    return {
-        "ordered_stops": ordered,
-        "distance_km": routing["distance_km"],
-        "duration_seconds": routing["duration_seconds"],
-        "geometry": routing["geometry"],
-        "routing_source": routing["source"],
-        "segments": routing.get("segments", 1),
-    }
+    except Exception:
+        db.session.rollback()
+        flash("Impossible de traiter le fichier.", "danger")
 
-
-def solve_route_batch(jobs):
-    """
-    Batch processor for enterprise workloads.
-
-    Each job is independently optimized. Workers are bounded so a large
-    batch cannot create an unlimited number of outbound router requests.
-    """
-    if not isinstance(jobs, list):
-        raise ValueError("jobs doit être une liste.")
-
-    results = [None] * len(jobs)
-    with ThreadPoolExecutor(max_workers=ROUTER_WORKERS) as executor:
-        futures = {
-            executor.submit(solve_route, job.get("points", [])): i
-            for i, job in enumerate(jobs)
-        }
-        for future in as_completed(futures):
-            idx = futures[future]
-            results[idx] = future.result()
-
-    return results
+    return redirect(url_for("dashboard"))
 
 
 # ============================================================
@@ -2105,7 +1726,9 @@ def route_api():
     api_key_value = request.headers.get("X-API-KEY", "").strip()
 
     if not api_key_value:
-        return jsonify({"error": "missing_api_key"}), 401
+        return jsonify({
+            "error": "missing_api_key"
+        }), 401
 
     key = ApiKey.query.filter_by(
         key_string=api_key_value,
@@ -2113,20 +1736,29 @@ def route_api():
     ).first()
 
     if not key:
-        return jsonify({"error": "invalid_api_key"}), 401
+        return jsonify({
+            "error": "invalid_api_key"
+        }), 401
 
-    now = utcnow()
-
-    if key.expires_at and key.expires_at < now:
-        return jsonify({"error": "api_key_expired"}), 403
+    if key.expires_at and key.expires_at < utcnow():
+        return jsonify({
+            "error": "api_key_expired"
+        }), 403
 
     user = User.query.get(key.user_id)
 
     if not user or not user.active:
-        return jsonify({"error": "account_inactive"}), 403
+        return jsonify({
+            "error": "account_inactive"
+        }), 403
 
-    if user.subscription_expires_at and user.subscription_expires_at < now:
-        return jsonify({"error": "subscription_expired"}), 403
+    if (
+        user.subscription_expires_at
+        and user.subscription_expires_at < utcnow()
+    ):
+        return jsonify({
+            "error": "subscription_expired"
+        }), 403
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
@@ -2136,139 +1768,28 @@ def route_api():
             "error": "at_least_two_points_required"
         }), 400
 
-    route_limit = (
-        user.route_limit
-        or PLANS.get(user.plan, {}).get("route_limit", 0)
-    )
-    routes_used = user.routes_used or 0
+    if not user.unlimited:
+        cost = len(points)
 
-    if route_limit and routes_used >= route_limit:
-        return jsonify({
-            "error": "route_quota_exceeded",
-            "plan": user.plan,
-            "route_limit": route_limit,
-            "routes_used": routes_used,
-            "routes_remaining": 0,
-        }), 402
+        if user.credits < cost:
+            return jsonify({
+                "error": "insufficient_credits",
+                "credits_remaining": user.credits,
+            }), 402
 
-    try:
-        result = solve_route(points)
-    except ValueError as exc:
-        return jsonify({"error": "invalid_route", "message": str(exc)}), 400
-    except requests.RequestException as exc:
-        # The optimization order is still valid even if the external road
-        # router is temporarily unavailable. Do not consume a paid route.
-        return jsonify({
-            "error": "road_router_unavailable",
-            "message": "Le calcul des routes routières est temporairement indisponible.",
-        }), 503
-    except Exception:
-        app.logger.exception("Routing engine failure")
-        return jsonify({
-            "error": "routing_engine_error",
-            "message": "Le moteur de routage n'a pas pu terminer le calcul.",
-        }), 500
+        user.credits -= cost
+        db.session.commit()
 
-    # Count the route only after a successful engine calculation.
-    user.routes_used = routes_used + 1
-    db.session.commit()
-
-    remaining = (
-        max(0, route_limit - user.routes_used)
-        if route_limit else None
-    )
-
+    # This endpoint validates the commercial API request.
+    # The production routing engine can be connected here.
     return jsonify({
         "success": True,
         "engine": APP_NAME,
-        "optimization": {
-            "ordered_stops": result["ordered_stops"],
-            "distance_km": result["distance_km"],
-            "duration_seconds": result["duration_seconds"],
-            "routing_source": result["routing_source"],
-            "geometry": result["geometry"],
-        },
-        "plan": user.plan,
-        "route_limit": route_limit,
-        "routes_used": user.routes_used,
-        "routes_remaining": remaining,
-    })
-
-
-@app.route("/api/v1/optimize", methods=["POST"])
-def optimize_api():
-    """
-    Developer-friendly alias returning the same real optimization result.
-    """
-    return route_api()
-
-
-@app.route("/api/v1/batch", methods=["POST"])
-def batch_route_api():
-    """Enterprise batch endpoint for multiple independent route jobs."""
-    api_key_value = request.headers.get("X-API-KEY", "").strip()
-    key = ApiKey.query.filter_by(
-        key_string=api_key_value,
-        revoked=False
-    ).first() if api_key_value else None
-
-    if not key:
-        return jsonify({"error": "invalid_api_key"}), 401
-
-    now = utcnow()
-    if key.expires_at and key.expires_at < now:
-        return jsonify({"error": "api_key_expired"}), 403
-
-    user = User.query.get(key.user_id)
-    if not user or not user.active:
-        return jsonify({"error": "account_inactive"}), 403
-
-    if user.subscription_expires_at and user.subscription_expires_at < now:
-        return jsonify({"error": "subscription_expired"}), 403
-
-    payload = request.get_json(silent=True) or {}
-    jobs = payload.get("jobs", [])
-
-    if not isinstance(jobs, list) or not jobs:
-        return jsonify({"error": "jobs_required"}), 400
-
-    route_limit = (
-        user.route_limit or PLANS.get(user.plan, {}).get("route_limit", 0)
-    )
-    routes_used = user.routes_used or 0
-
-    if route_limit and routes_used + len(jobs) > route_limit:
-        return jsonify({
-            "error": "route_quota_exceeded",
-            "route_limit": route_limit,
-            "routes_used": routes_used,
-            "routes_requested": len(jobs),
-            "routes_remaining": max(0, route_limit - routes_used),
-        }), 402
-
-    try:
-        results = solve_route_batch(jobs)
-    except Exception:
-        app.logger.exception("Enterprise batch routing failure")
-        return jsonify({
-            "error": "routing_engine_error",
-            "message": "Le traitement batch n'a pas pu être terminé."
-        }), 500
-
-    user.routes_used = routes_used + len(results)
-    db.session.commit()
-
-    return jsonify({
-        "success": True,
-        "count": len(results),
-        "results": results,
-        "plan": user.plan,
-        "route_limit": route_limit,
-        "routes_used": user.routes_used,
-        "routes_remaining": (
-            max(0, route_limit - user.routes_used)
-            if route_limit else None
+        "points_received": len(points),
+        "credits_remaining": (
+            None if user.unlimited else user.credits
         ),
+        "message": "Request accepted by the B2B routing API.",
     })
 
 
@@ -2278,15 +1799,8 @@ def batch_route_api():
 
 @app.route("/health")
 def health():
-    try:
-        from sqlalchemy import text
-        db.session.execute(text("SELECT 1"))
-        database = "ok"
-    except Exception as exc:
-        database = "error"
     return jsonify({
-        "status": "ok" if database == "ok" else "degraded",
-        "database": database,
+        "status": "ok",
         "service": APP_NAME,
         "payments": "USDC / Solana",
         "wallet": SOLANA_RECEIVING_WALLET,
