@@ -193,7 +193,6 @@ class DeliveryRoute(db.Model):
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
 
-    # Le code d'accès est désormais unique uniquement *par utilisateur*
     __table_args__ = (
         db.UniqueConstraint('user_id', 'access_code', name='uq_user_access_code'),
     )
@@ -273,6 +272,14 @@ def calculate_price(plan, duration_days):
     if plan not in PLANS or duration_days not in DURATIONS:
         raise ValueError("Paramètres invalides.")
     return round(PLANS[plan]["monthly_price"] * DURATIONS[duration_days], 2)
+
+def parse_coordinate(val):
+    """Nettoie et convertit une coordonnée GPS (gère les virgules et les points)."""
+    try:
+        val_str = str(val).strip().replace(',', '.')
+        return float(val_str)
+    except (ValueError, TypeError):
+        return None
 
 def optimize_stops_order(stops):
     if len(stops) <= 2:
@@ -744,6 +751,11 @@ def create_driver_route():
     if not user:
         return redirect(url_for("login_form"))
 
+    # Vérification de l'expiration de l'abonnement
+    if user.subscription_expires_at and user.subscription_expires_at < utcnow():
+        flash("Votre abonnement a expiré. Veuillez le renouveler pour créer de nouvelles tournées.", "danger")
+        return redirect(url_for("plans"))
+
     route_name = request.form.get("route_name", "Tournée").strip()
     driver_name = request.form.get("driver_name", "").strip()
     access_code = request.form.get("access_code", "").strip()
@@ -759,21 +771,21 @@ def create_driver_route():
         stream = io.TextIOWrapper(file.stream, encoding='utf-8-sig', errors='replace')
         for row in csv.reader(stream):
             if len(row) >= 4:
-                try:
-                    stops.append({"name": row[0].strip(), "address": row[1].strip(), "lat": float(row[2]), "lng": float(row[3])})
-                except ValueError:
-                    pass
+                lat = parse_coordinate(row[2])
+                lng = parse_coordinate(row[3])
+                if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
+                    stops.append({"name": row[0].strip(), "address": row[1].strip(), "lat": lat, "lng": lng})
     elif manual:
         for line in manual.splitlines():
             parts = [x.strip() for x in line.split("|")]
             if len(parts) >= 4:
-                try:
-                    stops.append({"name": parts[0], "address": parts[1], "lat": float(parts[2]), "lng": float(parts[3])})
-                except ValueError:
-                    pass
+                lat = parse_coordinate(parts[2])
+                lng = parse_coordinate(parts[3])
+                if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
+                    stops.append({"name": parts[0], "address": parts[1], "lat": lat, "lng": lng})
 
     if not stops:
-        flash("Aucune étape valide détectée.", "danger")
+        flash("Aucune étape valide détectée (vérifiez le format et les coordonnées GPS).", "danger")
         return redirect(url_for("import_space"))
 
     # Application de l'algorithme d'optimisation VRP
@@ -793,7 +805,6 @@ def create_driver_route():
         optimized=True
     )
     
-    # Sécurisation contre le doublon de code d'accès par utilisateur
     try:
         db.session.add(route)
         user.tours_used += 1
@@ -972,6 +983,9 @@ def driver_space():
     <div class="card">
         <h2>Tournée : {route.route_name}</h2>
         <p><strong>Livreur :</strong> {route.driver_name} | <strong>Entreprise :</strong> {route.company.company_name}</p>
+        <div style="margin: 15px 0;">
+            <a class="btn btn-secondary" href="/driver-print?code={urllib.parse.quote(route.access_code)}" target="_blank">🖨️ Imprimer la fiche de route</a>
+        </div>
         <div id="map"></div>
     </div>
     <div class="card">
@@ -992,6 +1006,71 @@ def driver_space():
     </script>
     """
     return page(body, title="Tournée Livreur", map_needed=True)
+
+
+@app.route("/driver-print")
+def driver_print():
+    code = request.args.get("code")
+    route = DeliveryRoute.query.filter_by(access_code=code).first() if code else None
+    if not route:
+        return "Code d'accès invalide ou introuvable.", 404
+
+    stops = json.loads(route.stops_data or "[]")
+    rows = ""
+    for i, p in enumerate(stops, 1):
+        rows += f"""
+        <tr>
+            <td style="text-align:center; font-weight:bold;">{i}</td>
+            <td><strong>{p.get('name')}</strong><br><span style="color:#555;">{p.get('address')}</span></td>
+            <td style="text-align:center; width:60px;">[ &nbsp; ]</td>
+        </tr>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <title>Fiche de Route - {route.route_name}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; color: #000; margin: 20px; }}
+            h2, p {{ margin: 5px 0; }}
+            .header {{ border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            th, td {{ border: 1px solid #000; padding: 10px; text-align: left; font-size: 14px; }}
+            th {{ background-color: #eee; }}
+            @media print {{
+                .no-print {{ display: none; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h2>FICHE DE ROUTE : {route.route_name}</h2>
+            <p><strong>Entreprise :</strong> {route.company.company_name} | <strong>Livreur :</strong> {route.driver_name}</p>
+            <p><strong>Date d'impression :</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} (UTC)</p>
+        </div>
+        <button class="no-print" onclick="window.print()" style="padding: 10px 20px; font-size: 16px; cursor: pointer; margin-bottom: 15px; background: #2563eb; color: #fff; border: none; border-radius: 5px;">Imprimer</button>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 40px; text-align:center;">#</th>
+                    <th>Client & Adresse (Ordre Optimal)</th>
+                    <th style="text-align:center;">Statut</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows or '<tr><td colspan="3">Aucune étape trouvée.</td></tr>'}
+            </tbody>
+        </table>
+        <script>
+            // Déclenchement automatique de la fenêtre d'impression à l'ouverture
+            window.onload = function() {{ window.print(); }};
+        </script>
+    </body>
+    </html>
+    """
+    return html
 
 
 @app.route("/admin-panel", methods=["GET", "POST"])
@@ -1045,6 +1124,9 @@ def api_v1_route():
         return jsonify({"error": "invalid_api_key"}), 401
 
     user = User.query.get(key.user_id)
+    if user.subscription_expires_at and user.subscription_expires_at < utcnow():
+        return jsonify({"error": "subscription_expired"}), 402
+
     if user.tours_used >= user.tour_limit:
         return jsonify({"error": "quota_exceeded"}), 402
 
