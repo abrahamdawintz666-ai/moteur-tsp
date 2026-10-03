@@ -21,7 +21,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen canvas
+from reportlab.pdfgen import canvas
 
 # Optionnel : Import Google OR-Tools (avec fallback sécurisé si l'environnement ne l'a pas préinstallé)
 try:
@@ -200,7 +200,6 @@ class DeliveryRoute(db.Model):
     stops_data = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
-    # Suppression de la contrainte globale stricte sur access_code pour permettre la réutilisation souple
 
 
 class AuditLog(db.Model):
@@ -896,7 +895,6 @@ def create_driver_route():
         flash(f"Erreur lors du calcul d'optimisation : {str(e)}", "danger")
         return redirect(url_for("import_space"))
 
-    # Souplesse maximale sur le code d'accès : mise à jour de la tournée existante associée à ce code ou création d'une nouvelle
     route = DeliveryRoute.query.filter_by(user_id=user.id, access_code=access_code).first()
     if route:
         route.route_name = route_name
@@ -1256,19 +1254,19 @@ def api_v1_route():
     key_val = request.headers.get("X-API-KEY")
     key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
     if not key or (key.expires_at and key.expires_at < utcnow()):
-        return jsonify({"error": "invalid_api_key"}}, 401
+        return jsonify({"error": "invalid_api_key"}), 401  # <--- Correction ici (parenthèse fermante corrigée)
 
     user = User.query.get(key.user_id)
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        return jsonify({"error": "subscription_expired"}}, 402
+        return jsonify({"error": "subscription_expired"}), 402
 
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}}, 402
+        return jsonify({"error": "quota_exceeded"}), 402
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
     if len(points) < 2:
-        return jsonify({"error": "at_least_2_points_required"}}, 400
+        return jsonify({"error": "at_least_2_points_required"}), 400
 
     optimized = optimize_stops_order(points)
     user.tours_used += 1
