@@ -197,7 +197,7 @@ class DeliveryRoute(db.Model):
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(80), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
-    stops_summary = db.Column(db.Text, nullable=True)  # Corrigé en nullable=True pour éviter l'erreur NotNullViolation
+    stops_summary = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), default="En cours")
     optimized = db.Column(db.Boolean, default=False)
 
@@ -920,7 +920,7 @@ def create_driver_route():
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        flash(f"Une erreur inattendue est survenue : {str(e)}", "danger")
+        flash(f"Une erreur inattendue est survenue lors de l'enregistrement : {str(e)}", "danger")
         return redirect(url_for("import_space"))
 
     flash(f"Raccourci optimal calculé avec succès ({len(stops)} étapes triées).", "success")
@@ -1249,9 +1249,16 @@ def admin_logout():
     return redirect(url_for("index"))
 
 
-@app.route("/api/v1/route", methods=["POST"])
+# ROUTE API SÉCURISÉE AMÉLIORÉE (Support GET & POST robuste)
+@app.route("/api/v1/route", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def api_v1_route():
+    if request.method == "GET":
+        return jsonify({
+            "service": "GlobalRoute AI API",
+            "usage": "Envoyez une requête POST avec le header X-API-KEY et un payload JSON contenant 'points'."
+        }), 200
+
     key_val = request.headers.get("X-API-KEY")
     key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
     if not key or (key.expires_at and key.expires_at < utcnow()):
@@ -1266,7 +1273,7 @@ def api_v1_route():
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
-    if len(points) < 2:
+    if not isinstance(points, list) or len(points) < 2:
         return jsonify({"error": "at_least_2_points_required"}), 400
 
     optimized = optimize_stops_order(points)
