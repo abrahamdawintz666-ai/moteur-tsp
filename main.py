@@ -45,18 +45,18 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 # dedicated RPC provider, but no secret is needed for this basic setup.
 SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
-# Subscription catalogue.
+# Subscription catalogue (Tarifs mis à jour : 99 USDC et 300 USDC).
 PLANS = {
     "standard": {
         "name": "Standard",
-        "monthly_price": 15.00,
+        "monthly_price": 99.00,
         "tour_limit": 500,
         "credit_limit": 500,
         "unlimited": False,
     },
     "pro": {
         "name": "Pro",
-        "monthly_price": 29.00,
+        "monthly_price": 300.00,
         "tour_limit": 2500,
         "credit_limit": 2500,
         "unlimited": False,
@@ -113,8 +113,6 @@ class User(db.Model):
     subscription_started_at = db.Column(db.DateTime, nullable=True)
     subscription_expires_at = db.Column(db.DateTime, nullable=True)
 
-    # Legacy fields are kept for database compatibility, but the customer-facing
-    # product now uses tours rather than credits.
     credits = db.Column(db.Integer, default=0)
     unlimited = db.Column(db.Boolean, default=False)
     tour_limit = db.Column(db.Integer, default=500)
@@ -165,8 +163,6 @@ class PaymentOrder(db.Model):
     order_code = db.Column(
         db.String(80), unique=True, nullable=False, index=True
     )
-
-    # A unique Solana reference is generated for every order.
     reference = db.Column(
         db.String(64), unique=True, nullable=False, index=True
     )
@@ -181,7 +177,6 @@ class PaymentOrder(db.Model):
     network = db.Column(db.String(30), default="Solana")
 
     status = db.Column(db.String(20), default="pending")
-
     transaction_signature = db.Column(
         db.String(160), unique=True, nullable=True
     )
@@ -217,7 +212,6 @@ class AuditLog(db.Model):
 
 
 def _column_type_sql(column):
-    """Return a portable SQL type for the lightweight startup migration."""
     try:
         return column.type.compile(dialect=db.engine.dialect)
     except Exception:
@@ -225,15 +219,6 @@ def _column_type_sql(column):
 
 
 def migrate_existing_database():
-    """
-    Add columns introduced by newer versions without deleting existing data.
-
-    db.create_all() creates missing tables, but it deliberately does not alter
-    tables that already exist. The previous GlobalRoute database therefore
-    could keep the old `users` schema and make /admin-panel fail when the new
-    code selected credits/unlimited/active. This small migration closes that
-    gap for the current one-file deployment.
-    """
     from sqlalchemy import inspect, text
 
     inspector = inspect(db.engine)
@@ -258,22 +243,16 @@ def migrate_existing_database():
                 continue
 
             type_sql = _column_type_sql(column)
-
-            # New columns are deliberately nullable during migration. This
-            # lets old customer rows survive even when no historical value
-            # exists. Application-level defaults handle new records.
             sql = (
                 f'ALTER TABLE "{table_name}" '
                 f'ADD COLUMN "{column.name}" {type_sql}'
             )
-
             db.session.execute(text(sql))
 
         db.session.commit()
 
 
 with app.app_context():
-    # Creates new tables and then upgrades older existing tables in place.
     db.create_all()
     migrate_existing_database()
 
@@ -288,7 +267,6 @@ ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 def base58_encode(raw: bytes) -> str:
     number = int.from_bytes(raw, "big")
     result = ""
-
     while number:
         number, remainder = divmod(number, 58)
         result = ALPHABET[remainder] + result
@@ -299,12 +277,10 @@ def base58_encode(raw: bytes) -> str:
             leading_zeroes += 1
         else:
             break
-
     return "1" * leading_zeroes + (result or "")
 
 
 def generate_reference():
-    # 32 random bytes encode to a valid Solana-style public-key string.
     return base58_encode(secrets.token_bytes(32))
 
 
@@ -319,14 +295,11 @@ def money(value):
 def calculate_price(plan, duration_days):
     if plan not in PLANS:
         raise ValueError("Plan invalide.")
-
     if duration_days not in DURATIONS:
         raise ValueError("Durée invalide.")
 
     monthly = PLANS[plan]["monthly_price"]
     multiplier = DURATIONS[duration_days]
-
-    # 30 days = 1x monthly.
     return round(monthly * multiplier, 2)
 
 
@@ -343,16 +316,12 @@ def create_api_key(user, expires_at=None):
 
 def active_api_key(user):
     now = utcnow()
-
     for key in user.api_keys:
         if key.revoked:
             continue
-
         if key.expires_at and key.expires_at < now:
             continue
-
         return key
-
     return None
 
 
@@ -364,15 +333,9 @@ def add_subscription(user, plan, duration_days):
         and user.plan == plan
     )
 
-    if (
-        user.subscription_expires_at
-        and user.subscription_expires_at > now
-        and user.plan == plan
-    ):
+    if same_active_plan:
         start = user.subscription_started_at or now
-        expiry = user.subscription_expires_at + timedelta(
-            days=duration_days
-        )
+        expiry = user.subscription_expires_at + timedelta(days=duration_days)
     else:
         start = now
         expiry = now + timedelta(days=duration_days)
@@ -381,21 +344,16 @@ def add_subscription(user, plan, duration_days):
     user.subscription_started_at = start
     user.subscription_expires_at = expiry
 
-    # Customer-facing quota is measured in complete tours, not individual
-    # coordinates/credits. A new subscription adds its tour allowance;
-    # switching plans starts a fresh allowance.
     if same_active_plan:
         user.tour_limit = int(user.tour_limit or 0) + int(PLANS[plan]["tour_limit"])
     else:
         user.tour_limit = int(PLANS[plan]["tour_limit"])
         user.tours_used = 0
 
-    # Keep legacy columns synchronized for older database rows/code paths.
     user.unlimited = False
     user.credits = user.tour_limit
 
     key = active_api_key(user)
-
     if key:
         key.expires_at = expiry
         key.revoked = False
@@ -430,35 +388,17 @@ def rpc_call(method, params):
 
 
 def find_signature_by_reference(reference):
-    result = rpc_call(
-        "getSignaturesForAddress",
-        [reference, {"limit": 20}]
-    )
-
+    result = rpc_call("getSignaturesForAddress", [reference, {"limit": 20}])
     if not result:
         return None
-
     for item in result:
         if not item.get("err"):
             return item.get("signature")
-
     return None
 
 
 def verify_usdc_payment(order):
-    """
-    Verify the payment directly on Solana.
-
-    The transaction must:
-      - contain this order's unique reference;
-      - be successful;
-      - contain the expected USDC mint;
-      - credit the merchant wallet;
-      - contain at least the exact expected amount.
-    """
-
     signature = find_signature_by_reference(order.reference)
-
     if not signature:
         return False, None, "Paiement non trouvé pour le moment."
 
@@ -482,9 +422,7 @@ def verify_usdc_payment(order):
 
     meta = tx.get("meta") or {}
     post_balances = meta.get("postTokenBalances") or []
-
     expected_raw = int(round(order.amount_usdc * 1_000_000))
-
     received_raw = 0
 
     for balance in post_balances:
@@ -497,7 +435,6 @@ def verify_usdc_payment(order):
             received_raw += amount_raw
 
     pre_balances = meta.get("preTokenBalances") or []
-
     pre_raw = 0
 
     for balance in pre_balances:
@@ -529,8 +466,6 @@ def activate_paid_order(order, signature):
     if not user:
         raise RuntimeError("Client introuvable.")
 
-    # Idempotency protection:
-    # one order can only be credited once.
     existing = PaymentOrder.query.filter_by(
         transaction_signature=signature
     ).first()
@@ -538,11 +473,7 @@ def activate_paid_order(order, signature):
     if existing and existing.id != order.id:
         raise RuntimeError("Cette transaction est déjà utilisée.")
 
-    expiry = add_subscription(
-        user,
-        order.plan,
-        order.duration_days
-    )
+    expiry = add_subscription(user, order.plan, order.duration_days)
 
     order.status = "paid"
     order.transaction_signature = signature
@@ -561,7 +492,6 @@ def activate_paid_order(order, signature):
             ),
         )
     )
-
     db.session.commit()
 
 
@@ -577,7 +507,7 @@ def admin_required():
 
 
 # ============================================================
-# CSS / HTML
+# CSS / HTML TEMPLATES
 # ============================================================
 
 BASE_STYLE = """
@@ -767,12 +697,6 @@ footer {
     font-size:11px;
     padding:30px;
 }
-@media(max-width:760px) {
-    header { align-items:flex-start; flex-direction:column; }
-    .grid { grid-template-columns:1fr; }
-    .container { padding:15px 10px; }
-    table { display:block; overflow-x:auto; white-space:nowrap; }
-}
 """
 
 HTML_TEMPLATE = """
@@ -854,7 +778,7 @@ def page(body, title=APP_NAME, map_needed=False):
 
 
 # ============================================================
-# PUBLIC
+# PUBLIC ROUTES
 # ============================================================
 
 @app.route("/")
@@ -1008,7 +932,7 @@ def logout():
 
 
 # ============================================================
-# DASHBOARD
+# DASHBOARD & IMPORT SPACE
 # ============================================================
 
 @app.route("/dashboard")
@@ -1021,7 +945,6 @@ def dashboard():
     expiry = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
     key_text = key.key_string if key else "Aucune clé active"
 
-    # Backward-compatible defaults for customers created by an older version.
     if user.tour_limit is None:
         user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
         user.tours_used = int(user.tours_used or 0)
@@ -1061,7 +984,7 @@ def dashboard():
 
     <div class="card">
         <h3>🚚 Importer / créer une tournée</h3>
-        <p class="muted">L’espace Importer utilise exactement les champs attendus par le Dashboard : nom de tournée, livreur, code d’accès et étapes au format nom, adresse, latitude, longitude.</p>
+        <p class="muted">Utilisez l'espace d'importation pour charger vos tournées et étapes.</p>
         <a class="btn btn-green" href="/import-space">Ouvrir l’espace Importer</a>
         <a class="btn btn-secondary" href="/logout">↪ Déconnexion</a>
     </div>
@@ -1104,7 +1027,7 @@ def import_space():
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
             <div>
                 <h2>Importer une tournée</h2>
-                <p class="muted">Ce formulaire est volontairement identique aux données attendues par le Dashboard et par l’espace livreur.</p>
+                <p class="muted">Importez un fichier CSV ou saisissez vos étapes directement.</p>
             </div>
             <a class="btn btn-red" href="/logout">⏻ Déconnexion</a>
         </div>
@@ -1129,16 +1052,6 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
 
             <div id="csv-import-status" class="alert" style="display:none;margin-top:10px;"></div>
 
-            <div class="payment-box" style="margin-top:14px;">
-                <strong>Import instantané</strong><br>
-                Dès que vous choisissez un CSV, son contenu est lu immédiatement et
-                placé directement dans l'espace d'écriture ci-dessus.
-                <br><br>
-                <strong>Format exact attendu</strong><br>
-                CSV : <span class="mono">nom,adresse,latitude,longitude</span><br>
-                Dans l'espace d'écriture : <span class="mono">Nom | Adresse | Latitude | Longitude</span>
-            </div>
-
             <script>
             (() => {
                 const input = document.getElementById("csv-file-input");
@@ -1152,62 +1065,28 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                     if (!file) return;
 
                     const reader = new FileReader();
-
                     reader.onload = (event) => {
                         const raw = String(event.target.result || "");
                         const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
                         const output = [];
 
-                        // Détecte automatiquement le séparateur (, ou ;) sur la première ligne non vide
                         let separator = ",";
                         for (const l of lines) {
-                            if (l.includes(";")) {
-                                separator = ";";
-                                break;
-                            } else if (l.includes(",")) {
-                                separator = ",";
-                                break;
-                            }
+                            if (l.includes(";")) { separator = ";"; break; }
+                            else if (l.includes(",")) { separator = ","; break; }
                         }
 
                         for (const line of lines) {
                             if (!line.trim()) continue;
-
                             const cells = [];
                             let cell = "";
                             let quoted = false;
 
                             for (let i = 0; i < line.length; i++) {
                                 const ch = line[i];
-
                                 if (ch === '"') {
-                                    if (quoted && line[i + 1] === '"') {
-                                        cell += '"';
-                                        i++;
-                                    } else {
-                                        quoted = !quoted;
-                                    }
-                                } else if (ch === separator && !quoted) {
-                                    cells.path ? null : cells.push(cell.trim());
-                                    cells.push(cell.trim());
-                                    cell = "";
-                                } else {
-                                    cell += ch;
-                                }
-                            }
-                            // Correction pour push propre sans doublon
-                            cells.length = 0;
-                            cell = "";
-                            quoted = false;
-                            for (let i = 0; i < line.length; i++) {
-                                const ch = line[i];
-                                if (ch === '"') {
-                                    if (quoted && line[i + 1] === '"') {
-                                        cell += '"';
-                                        i++;
-                                    } else {
-                                        quoted = !quoted;
-                                    }
+                                    if (quoted && line[i + 1] === '"') { cell += '"'; i++; }
+                                    else { quoted = !quoted; }
                                 } else if (ch === separator && !quoted) {
                                     cells.push(cell.trim());
                                     cell = "";
@@ -1218,46 +1097,26 @@ Client ABC | 15 Rue Lamartinière, Port-au-Prince | 18.54 | -72.33"></textarea>
                             cells.push(cell.trim());
 
                             if (cells.length < 2) continue;
-
                             const name = cells[0] || "";
                             const address = cells[1] || "";
                             const lat = cells[2] || "18.54";
                             const lng = cells[3] || "-72.33";
 
-                            // Ignore l'en-tête éventuel.
-                            if (
-                                name.toLowerCase() === "nom" ||
-                                name.toLowerCase() === "name" ||
-                                name.toLowerCase() === "client"
-                            ) {
-                                continue;
-                            }
-
+                            if (["nom", "name", "client"].includes(name.toLowerCase())) continue;
                             output.push(`${name} | ${address} | ${lat} | ${lng}`);
                         }
 
                         if (output.length === 0) {
-                            // Si le fichier texte simple contient directement des lignes au format | ou autre
                             for (const line of lines) {
                                 if (line.trim()) output.push(line.trim());
                             }
                         }
 
                         editor.value = output.join("\n");
-                        editor.dispatchEvent(new Event("input", {bubbles:true}));
-
                         status.style.display = "block";
                         status.className = "alert alert-success";
-                        status.textContent = `Succès ! ${output.length} étape(s) chargée(s) instantanément dans le champ d'écriture ci-dessous.`;
-                        editor.focus();
+                        status.textContent = `Succès ! ${output.length} étape(s) chargée(s).`;
                     };
-
-                    reader.onerror = () => {
-                        status.style.display = "block";
-                        status.className = "alert alert-danger";
-                        status.textContent = "Impossible de lire le fichier.";
-                    };
-
                     reader.readAsText(file, "UTF-8");
                 });
             })();
@@ -1289,26 +1148,36 @@ def plans():
         <div class="plan-card">
             <span class="plan-badge">STANDARD</span>
             <h2>Standard</h2>
-            <div class="plan-price">15 USDC <small>/ 30 jours</small></div>
+            <div class="plan-price">99 USDC <small>/ 30 jours</small></div>
             <p><strong>500 tournées</strong></p>
             <ul><li>Carte interactive</li><li>Espace livreur</li><li>CSV / saisie manuelle</li><li>Fiche imprimable</li><li>Clé API</li></ul>
             <form method="POST" action="/create-payment">
                 <input type="hidden" name="plan" value="standard">
                 <label>Durée</label>
-                <select name="duration_days"><option value="30">30 jours — 15 USDC</option><option value="90">90 jours — 40.50 USDC</option><option value="180">180 jours — 75 USDC</option><option value="365">365 jours — 135 USDC</option></select>
+                <select name="duration_days">
+                    <option value="30">30 jours — 99.00 USDC</option>
+                    <option value="90">90 jours — 267.30 USDC</option>
+                    <option value="180">180 jours — 495.00 USDC</option>
+                    <option value="365">365 jours — 891.00 USDC</option>
+                </select>
                 <button class="btn btn-block" type="submit">Choisir Standard</button>
             </form>
         </div>
         <div class="plan-card featured">
             <span class="plan-badge">PRO</span>
             <h2>Pro</h2>
-            <div class="plan-price">29 USDC <small>/ 30 jours</small></div>
+            <div class="plan-price">300 USDC <small>/ 30 jours</small></div>
             <p><strong>2 500 tournées</strong></p>
             <ul><li>Tout le Standard</li><li>Quota 2 500 tournées</li><li>API B2B</li><li>Statistiques</li><li>Gestion avancée des livreurs</li></ul>
             <form method="POST" action="/create-payment">
                 <input type="hidden" name="plan" value="pro">
                 <label>Durée</label>
-                <select name="duration_days"><option value="30">30 jours — 29 USDC</option><option value="90">90 jours — 78.30 USDC</option><option value="180">180 jours — 145 USDC</option><option value="365">365 jours — 261 USDC</option></select>
+                <select name="duration_days">
+                    <option value="30">30 jours — 300.00 USDC</option>
+                    <option value="90">90 jours — 810.00 USDC</option>
+                    <option value="180">180 jours — 1500.00 USDC</option>
+                    <option value="365">365 jours — 2700.00 USDC</option>
+                </select>
                 <button class="btn btn-green btn-block" type="submit">Choisir Pro</button>
             </form>
         </div>
@@ -1324,7 +1193,6 @@ def plans():
 @app.route("/create-payment", methods=["POST"])
 def create_payment():
     user = require_user()
-
     if not user:
         return redirect(url_for("login_form"))
 
@@ -1356,8 +1224,6 @@ def create_payment():
     db.session.add(order)
     db.session.commit()
 
-    # Solana Pay transfer request.
-    # USDC uses 6 decimals, but Solana Pay accepts the human amount.
     params = {
         "amount": str(amount),
         "spl-token": USDC_MINT,
@@ -1385,122 +1251,66 @@ def create_payment():
         </div>
 
         <h3>Payer avec ton portefeuille Solana</h3>
+        <a class="btn btn-green btn-block" href="{solana_uri}">Payer {amount:.2f} USDC</a>
 
-        <p>
-            Ouvre le lien ci-dessous dans un portefeuille compatible
-            Solana Pay.
-        </p>
-
-        <a class="btn btn-green btn-block"
-           href="{solana_uri}">
-           Payer {amount:.2f} USDC
-        </a>
-
-        <p class="muted">
-            Si ton portefeuille ne reconnaît pas le lien, utilise
-            l'adresse publique ci-dessous et envoie exactement le montant.
-        </p>
-
-        <div class="payment-box mono">
+        <div class="payment-box mono" style="margin-top:15px;">
             {SOLANA_RECEIVING_WALLET}
         </div>
 
         <h3>Référence de commande</h3>
         <div class="payment-box mono">{reference}</div>
 
-        <button class="btn btn-block"
-                onclick="checkPayment()">
-            Vérifier le paiement
-        </button>
-
-        <div id="status" class="alert" style="margin-top:12px;">
-            En attente du paiement...
-        </div>
+        <button class="btn btn-block" onclick="checkPayment()">Vérifier le paiement</button>
+        <div id="status" class="alert" style="margin-top:12px;">En attente du paiement...</div>
     </div>
 
     <script>
     let timer = null;
-
     async function checkPayment() {{
-        const response = await fetch(
-            "/api/payment-status/{order.id}"
-        );
-
+        const response = await fetch("/api/payment-status/{order.id}");
         const data = await response.json();
-
         const box = document.getElementById("status");
         box.textContent = data.message;
-
         if (data.paid) {{
             box.className = "alert alert-success";
             clearInterval(timer);
-
-            setTimeout(() => {{
-                window.location.href = "/dashboard";
-            }}, 1200);
+            setTimeout(() => {{ window.location.href = "/dashboard"; }}, 1200);
         }} else {{
             box.className = "alert";
         }}
     }}
-
     checkPayment();
     timer = setInterval(checkPayment, 7000);
     </script>
     """
-
     return page(body, title="Paiement USDC")
 
 
 @app.route("/api/payment-status/<int:order_id>")
 def payment_status(order_id):
     user = require_user()
-
     if not user:
         return jsonify({"paid": False, "message": "Connexion requise."}), 401
 
     order = PaymentOrder.query.get_or_404(order_id)
-
     if order.user_id != user.id:
         return jsonify({"paid": False, "message": "Accès refusé."}), 403
 
     if order.status == "paid":
-        return jsonify({
-            "paid": True,
-            "message": "Paiement déjà confirmé."
-        })
+        return jsonify({"paid": True, "message": "Paiement déjà confirmé."})
 
     try:
         valid, signature, message = verify_usdc_payment(order)
-
         if valid:
             activate_paid_order(order, signature)
-
-            return jsonify({
-                "paid": True,
-                "message": (
-                    "Paiement confirmé. "
-                    "Votre abonnement et votre quota de tournées sont actifs."
-                ),
-            })
-
-        return jsonify({
-            "paid": False,
-            "message": message,
-        })
-
-    except Exception as exc:
-        # Do not expose internal secrets or stack traces to the customer.
-        return jsonify({
-            "paid": False,
-            "message": (
-                "Vérification temporairement indisponible. "
-                "Réessayez dans quelques secondes."
-            ),
-        })
+            return jsonify({"paid": True, "message": "Paiement confirmé."})
+        return jsonify({"paid": False, "message": message})
+    except Exception:
+        return jsonify({"paid": False, "message": "Vérification temporairement indisponible."})
 
 
 # ============================================================
-# ADMIN
+# ADMIN PANEL
 # ============================================================
 
 @app.route("/admin-panel", methods=["GET", "POST"])
@@ -1508,11 +1318,9 @@ def admin_panel():
     if not admin_required():
         if request.method == "POST":
             password = request.form.get("admin_password", "")
-
             if password == ADMIN_SECRET_PASSWORD:
                 session["is_admin"] = True
                 return redirect(url_for("admin_panel"))
-
             flash("Mot de passe administrateur incorrect.", "danger")
 
         body = """
@@ -1521,48 +1329,31 @@ def admin_panel():
             <form method="POST">
                 <label>Mot de passe admin</label>
                 <input type="password" name="admin_password" required>
-                <button class="btn btn-block" type="submit">
-                    Entrer
-                </button>
+                <button class="btn btn-block" type="submit">Entrer</button>
             </form>
         </div>
         """
         return page(body, title="Admin")
 
     users = User.query.order_by(User.created_at.desc()).all()
-    orders = PaymentOrder.query.order_by(
-        PaymentOrder.created_at.desc()
-    ).limit(50).all()
+    orders = PaymentOrder.query.order_by(PaymentOrder.created_at.desc()).limit(50).all()
 
     user_rows = ""
-
     for user in users:
         key = active_api_key(user)
-
-        expiry = (
-            user.subscription_expires_at.strftime("%Y-%m-%d")
-            if user.subscription_expires_at else "—"
-        )
-
+        expiry = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
         credits = "Illimité" if user.unlimited else str(user.credits)
-
         key_text = key.key_string if key else "—"
-
         user_rows += f"""
         <tr>
-            <td>
-                <strong>{user.company_name}</strong><br>
-                <span class="muted">{user.email}</span>
-            </td>
+            <td><strong>{user.company_name}</strong><br><span class="muted">{user.email}</span></td>
             <td>{user.plan.title()}</td>
             <td>{credits}</td>
             <td>{expiry}</td>
             <td class="mono">{key_text}</td>
-        </tr>
-        """
+        </tr>"""
 
     order_rows = ""
-
     for order in orders:
         order_rows += f"""
         <tr>
@@ -1573,70 +1364,18 @@ def admin_panel():
             <td>{order.amount_usdc:.2f} USDC</td>
             <td>{order.status}</td>
             <td>{order.created_at.strftime("%Y-%m-%d %H:%M")}</td>
-        </tr>
-        """
+        </tr>"""
 
     body = f"""
     <div class="card">
         <h2>Centre administrateur</h2>
-
-        <a class="btn btn-secondary"
-           href="/admin-logout">
-           Verrouiller l'admin
-        </a>
-    </div>
-
-    <div class="card">
-        <h3>Créer un testeur / client</h3>
-
-        <form method="POST" action="/admin/create-tester">
-            <label>Nom de l'entreprise</label>
-            <input name="company_name" required>
-
-            <label>E-mail</label>
-            <input type="email" name="email" required>
-
-            <label>Adresse</label>
-            <input name="address">
-
-            <label>Ville</label>
-            <input name="city">
-
-            <label>Pays</label>
-            <input name="country">
-
-            <label>Plan initial</label>
-            <select name="plan">
-                <option value="standard">Standard</option>
-                <option value="pro">Pro</option>
-            </select>
-
-            <label>Durée</label>
-            <select name="duration_days">
-                <option value="30">30 jours</option>
-                <option value="90">90 jours</option>
-                <option value="180">180 jours</option>
-                <option value="365">365 jours</option>
-            </select>
-
-            <button class="btn btn-green btn-block" type="submit">
-                Créer le testeur et générer son lien
-            </button>
-        </form>
+        <a class="btn btn-secondary" href="/admin-logout">Verrouiller l'admin</a>
     </div>
 
     <div class="card">
         <h3>Clients</h3>
         <table>
-            <thead>
-                <tr>
-                    <th>Entreprise</th>
-                    <th>Plan</th>
-                    <th>Crédits</th>
-                    <th>Expiration</th>
-                    <th>Clé API</th>
-                </tr>
-            </thead>
+            <thead><tr><th>Entreprise</th><th>Plan</th><th>Crédits</th><th>Expiration</th><th>Clé API</th></tr></thead>
             <tbody>{user_rows}</tbody>
         </table>
     </div>
@@ -1644,145 +1383,12 @@ def admin_panel():
     <div class="card">
         <h3>Paiements récents</h3>
         <table>
-            <thead>
-                <tr>
-                    <th>Commande</th>
-                    <th>Client</th>
-                    <th>Plan</th>
-                    <th>Durée</th>
-                    <th>Montant</th>
-                    <th>Statut</th>
-                    <th>Date</th>
-                </tr>
-            </thead>
+            <thead><tr><th>Commande</th><th>Client</th><th>Plan</th><th>Durée</th><th>Montant</th><th>Statut</th><th>Date</th></tr></thead>
             <tbody>{order_rows}</tbody>
         </table>
     </div>
-
-    <div class="card">
-        <h3>Réception Solana</h3>
-        <p class="muted">USDC mainnet</p>
-        <div class="payment-box mono">
-            {SOLANA_RECEIVING_WALLET}
-        </div>
-    </div>
     """
-
     return page(body, title="Admin")
-
-
-@app.route("/admin/create-tester", methods=["POST"])
-def admin_create_tester():
-    if not admin_required():
-        return redirect(url_for("admin_panel"))
-
-    company_name = request.form.get("company_name", "").strip()
-    email = request.form.get("email", "").strip().lower()
-    plan = request.form.get("plan", "standard")
-
-    try:
-        duration_days = int(
-            request.form.get("duration_days", "30")
-        )
-    except ValueError:
-        duration_days = 30
-
-    if not company_name or not email:
-        flash("Nom et e-mail obligatoires.", "danger")
-        return redirect(url_for("admin_panel"))
-
-    if plan not in PLANS or duration_days not in DURATIONS:
-        flash("Plan ou durée invalide.", "danger")
-        return redirect(url_for("admin_panel"))
-
-    if User.query.filter_by(email=email).first():
-        flash("Cet e-mail existe déjà.", "danger")
-        return redirect(url_for("admin_panel"))
-
-    # Admin-created tester gets a temporary random password.
-    temporary_password = secrets.token_urlsafe(12)
-
-    user = User(
-        company_name=company_name,
-        email=email,
-        password_hash=generate_password_hash(temporary_password),
-        address=request.form.get("address", "").strip(),
-        city=request.form.get("city", "").strip(),
-        country=request.form.get("country", "").strip(),
-        plan=plan,
-        credits=0,
-    )
-
-    db.session.add(user)
-    db.session.commit()
-
-    expiry = add_subscription(user, plan, duration_days)
-
-    invitation_token = secrets.token_urlsafe(32)
-
-    # We use a short-lived invitation record encoded in a signed
-    # server-side session-like table would be preferable in a larger app.
-    # For this one-file version, store a one-time token in AuditLog.
-    db.session.add(
-        AuditLog(
-            action="TESTER_CREATED",
-            details=(
-                f"user_id={user.id}; "
-                f"email={email}; "
-                f"token={invitation_token}; "
-                f"temporary_password={temporary_password}; "
-                f"expires={expiry.isoformat()}"
-            ),
-        )
-    )
-
-    db.session.commit()
-
-    invite_url = url_for(
-        "tester_invite",
-        token=invitation_token,
-        _external=True,
-    )
-
-    flash(
-        f"Testeur créé. Lien : {invite_url} | "
-        f"Mot de passe temporaire : {temporary_password}",
-        "success",
-    )
-
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/tester-invite/<token>")
-def tester_invite(token):
-    log = AuditLog.query.filter(
-        AuditLog.action == "TESTER_CREATED",
-        AuditLog.details.contains(f"token={token}")
-    ).order_by(AuditLog.id.desc()).first()
-
-    if not log:
-        return page(
-            '<div class="card"><h2>Lien invalide ou expiré.</h2></div>',
-            title="Invitation"
-        )
-
-    body = f"""
-    <div class="card">
-        <h2>Invitation GlobalRoute AI</h2>
-        <p>
-            Votre espace entreprise a été préparé par l'administrateur.
-        </p>
-        <p class="muted">
-            Utilisez les identifiants transmis avec ce lien pour vous
-            connecter.
-        </p>
-        <a class="btn btn-block" href="/login-form">
-            Ouvrir la connexion
-        </a>
-    </div>
-    """
-
-    return page(body, title="Invitation")
 
 
 @app.route("/admin-logout")
@@ -1792,13 +1398,11 @@ def admin_logout():
 
 
 # ============================================================
-# DRIVER
+# DRIVER SPACE & ROUTE CREATION
 # ============================================================
 
 @app.route("/driver-logout")
 def driver_logout():
-    # L’espace livreur fonctionne avec un code de tournée plutôt qu’une
-    # session entreprise. Ce bouton quitte donc proprement l’espace courant.
     session.pop("driver_route_code", None)
     return redirect(url_for("driver_login"))
 
@@ -1871,19 +1475,11 @@ def driver_space():
         <div id="stops"></div>
     </div>
 
-    <div class="card print-only">
-        <h2>GLOBALROUTE — FICHE DE ROUTE</h2>
-        <p><strong>Entreprise :</strong> {route.company.company_name}<br><strong>Livreur :</strong> {route.driver_name}<br><strong>Tournée :</strong> {route.route_name or 'Tournée'}<br><strong>Date :</strong> {datetime.utcnow().strftime('%Y-%m-%d')}</p>
-        <div id="print-stops"></div>
-        <p><strong>Distance totale :</strong> <span id="print-distance">0 km</span></p>
-        <div style="text-align:center"><img src="https://quickchart.io/qr?size=180&text={urllib.parse.quote(share_url, safe='')}" alt="QR code" width="150" height="150"></div>
-    </div>
-
     <script>
     const points = {route_json};
     const map = L.map("map").setView(points.length ? [points[0].lat, points[0].lng] : [19.7558,-72.2042], 13);
     L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{maxZoom:19, attribution:"© OpenStreetMap contributors"}}).addTo(map);
-    const bounds=[]; let total=0; let list="<ol class='stop-list'>"; let printList="<ol>";
+    const bounds=[]; let total=0; let list="<ol class='stop-list'>";
     function esc(v) {{ return String(v ?? '').replace(/[&<>\"']/g, m => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m])); }}
     function hav(a,b,c,d) {{ const R=6371, r=Math.PI/180; const x=(c-a)*r, y=(d-b)*r; const q=Math.sin(x/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(y/2)**2; return 2*R*Math.asin(Math.sqrt(q)); }}
     points.forEach((p,i)=>{{
@@ -1893,10 +1489,9 @@ def driver_space():
         const url="https://www.google.com/maps/search/?api=1&query="+p.lat+","+p.lng;
         L.marker([p.lat,p.lng]).addTo(map).bindPopup("<b>"+esc(p.name)+"</b><br>"+esc(p.address)+"<br>Lat: "+p.lat+"<br>Lng: "+p.lng);
         list += "<li><div><strong>"+esc(p.name)+"</strong><br><span class='address'>"+esc(p.address||'Adresse non renseignée')+"</span><br><span class='muted'>GPS: "+p.lat+", "+p.lng+"</span></div><a class='btn btn-small' target='_blank' href='"+url+"'>🧭 Naviguer</a></li>";
-        printList += "<li><strong>"+esc(p.name)+"</strong><br>"+esc(p.address||'Adresse non renseignée')+"<br><small>GPS: "+p.lat+", "+p.lng+"</small></li>";
     }});
-    list += "</ol>"; printList += "</ol>"; document.getElementById('stops').innerHTML=list; document.getElementById('print-stops').innerHTML=printList;
-    document.getElementById('stop-count').textContent=points.length; document.getElementById('distance-total').textContent=total.toFixed(1)+' km'; document.getElementById('print-distance').textContent=total.toFixed(1)+' km';
+    list += "</ol>"; document.getElementById('stops').innerHTML=list;
+    document.getElementById('stop-count').textContent=points.length; document.getElementById('distance-total').textContent=total.toFixed(1)+' km';
     if(bounds.length) {{ const line=L.polyline(bounds,{{weight:3,dashArray:'4 8'}}).addTo(map); map.fitBounds(line.getBounds(),{{padding:[35,35]}}); }}
     function locateDriver() {{ if(!navigator.geolocation) {{document.getElementById('location-status').textContent='Géolocalisation non disponible.';return;}} navigator.geolocation.getCurrentPosition(pos=>{{ const ll=[pos.coords.latitude,pos.coords.longitude]; L.marker(ll).addTo(map).bindPopup('📍 Votre position').openPopup(); map.setView(ll,16); document.getElementById('location-status').textContent='Position actuelle : '+ll[0].toFixed(5)+', '+ll[1].toFixed(5); }},()=>document.getElementById('location-status').textContent='Autorisation de localisation refusée ou indisponible.'); }}
     </script>
@@ -1911,7 +1506,7 @@ def create_driver_route():
         return redirect(url_for("login_form"))
 
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        flash("Votre abonnement a expiré. Choisissez un abonnement pour créer une nouvelle tournée.", "danger")
+        flash("Votre abonnement a expiré.", "danger")
         return redirect(url_for("plans"))
 
     if user.tour_limit is None:
@@ -1920,7 +1515,7 @@ def create_driver_route():
         user.tours_used = 0
 
     if user.tours_used >= user.tour_limit:
-        flash(f"Quota atteint : {user.tour_limit} tournées utilisées. Choisissez un abonnement supérieur ou renouvelez votre quota.", "danger")
+        flash("Quota atteint.", "danger")
         return redirect(url_for("plans"))
 
     route_name = request.form.get("route_name", "Tournée").strip() or "Tournée"
@@ -1932,120 +1527,89 @@ def create_driver_route():
     if not driver_name or not access_code:
         flash("Nom du livreur et code d'accès obligatoires.", "danger")
         return redirect(url_for("dashboard"))
+
     if DeliveryRoute.query.filter_by(access_code=access_code).first():
-        flash("Ce code livreur existe déjà. Choisissez-en un autre.", "danger")
+        flash("Ce code livreur existe déjà.", "danger")
         return redirect(url_for("dashboard"))
 
-    stops=[]
+    stops = []
     try:
-        # Le navigateur place maintenant le CSV directement dans manual_stops.
-        # On utilise donc cet espace d'écriture comme source principale.
         if manual:
             for line in manual.splitlines():
-                parts=[x.strip() for x in line.split('|')]
-                if len(parts)<4: continue
-                try: lat=float(parts[-2]); lng=float(parts[-1])
-                except ValueError: continue
-                if -90<=lat<=90 and -180<=lng<=180:
-                    stops.append({"name":parts[0] or f"Étape {len(stops)+1}","address":" | ".join(parts[1:-2]),"lat":lat,"lng":lng})
+                parts = [x.strip() for x in line.split('|')]
+                if len(parts) < 4: 
+                    continue
+                try: 
+                    lat = float(parts[-2])
+                    lng = float(parts[-1])
+                except ValueError: 
+                    continue
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    stops.append({"name": parts[0] or f"Étape {len(stops)+1}", "address": " | ".join(parts[1:-2]), "lat": lat, "lng": lng})
         elif file and file.filename and file.filename.lower().endswith('.csv'):
-            stream=io.TextIOWrapper(file.stream,encoding='utf-8-sig',errors='replace')
+            stream = io.TextIOWrapper(file.stream, encoding='utf-8-sig', errors='replace')
             for row in csv.reader(stream):
-                if len(row)<4: continue
-                name=row[0].strip(); address=row[1].strip()
-                try: lat=float(row[2].strip()); lng=float(row[3].strip())
-                except ValueError: continue
-                if -90<=lat<=90 and -180<=lng<=180:
-                    stops.append({"name":name or f"Étape {len(stops)+1}","address":address,"lat":lat,"lng":lng})
-        else:
-            for line in manual.splitlines():
-                parts=[x.strip() for x in line.split('|')]
-                if len(parts)<4: continue
-                try: lat=float(parts[-2]); lng=float(parts[-1])
-                except ValueError: continue
-                if -90<=lat<=90 and -180<=lng<=180: stops.append({"name":parts[0] or f"Étape {len(stops)+1}","address":" | ".join(parts[1:-2]),"lat":lat,"lng":lng})
+                if len(row) < 4: 
+                    continue
+                name = row[0].strip()
+                address = row[1].strip()
+                try: 
+                    lat = float(row[2].strip())
+                    lng = float(row[3].strip())
+                except ValueError: 
+                    continue
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    stops.append({"name": name or f"Étape {len(stops)+1}", "address": address, "lat": lat, "lng": lng})
 
         if not stops:
-            flash("Aucune étape valide trouvée. Utilisez nom, adresse, latitude et longitude.", "danger")
+            flash("Aucune étape valide trouvée.", "danger")
             return redirect(url_for("dashboard"))
 
-        route=DeliveryRoute(user_id=user.id,route_name=route_name,driver_name=driver_name,access_code=access_code,stops_data=json.dumps(stops,ensure_ascii=False),status='En cours')
+        route = DeliveryRoute(
+            user_id=user.id,
+            route_name=route_name,
+            driver_name=driver_name,
+            access_code=access_code,
+            stops_data=json.dumps(stops, ensure_ascii=False),
+            status='En cours'
+        )
         db.session.add(route)
-        user.tours_used=int(user.tours_used or 0)+1
+        user.tours_used = int(user.tours_used or 0) + 1
         db.session.commit()
-        flash(f"Tournée créée : {len(stops)} étapes. Elle est maintenant disponible dans l'espace livreur.", "success")
+        flash(f"Tournée créée : {len(stops)} étapes.", "success")
     except Exception:
         db.session.rollback()
-        flash("Impossible de créer la tournée. Vérifiez le format des données.", "danger")
+        flash("Impossible de créer la tournée. Vérifiez le format.", "danger")
+
     return redirect(url_for("dashboard"))
 
 
 # ============================================================
-# API
+# API & HEALTH
 # ============================================================
 
 @app.route("/api/v1/route", methods=["POST"])
 def route_api():
     api_key_value = request.headers.get("X-API-KEY", "").strip()
-
     if not api_key_value:
-        return jsonify({
-            "error": "missing_api_key"
-        }), 401
+        return jsonify({"error": "missing_api_key"}), 401
 
-    key = ApiKey.query.filter_by(
-        key_string=api_key_value,
-        revoked=False
-    ).first()
-
-    if not key:
-        return jsonify({
-            "error": "invalid_api_key"
-        }), 401
-
-    if key.expires_at and key.expires_at < utcnow():
-        return jsonify({
-            "error": "api_key_expired"
-        }), 403
+    key = ApiKey.query.filter_by(key_string=api_key_value, revoked=False).first()
+    if not key or (key.expires_at and key.expires_at < utcnow()):
+        return jsonify({"error": "invalid_or_expired_api_key"}), 401
 
     user = User.query.get(key.user_id)
-
     if not user or not user.active:
-        return jsonify({
-            "error": "account_inactive"
-        }), 403
-
-    if (
-        user.subscription_expires_at
-        and user.subscription_expires_at < utcnow()
-    ):
-        return jsonify({
-            "error": "subscription_expired"
-        }), 403
+        return jsonify({"error": "account_inactive"}), 403
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
-
     if not isinstance(points, list) or len(points) < 2:
-        return jsonify({
-            "error": "at_least_two_points_required"
-        }), 400
-
-    if user.tour_limit is None:
-        user.tour_limit = int(PLANS.get(user.plan, PLANS["standard"])["tour_limit"])
-    if user.tours_used is None:
-        user.tours_used = 0
+        return jsonify({"error": "at_least_two_points_required"}), 400
 
     if user.tours_used >= user.tour_limit:
-        return jsonify({
-            "error": "tour_quota_exceeded",
-            "tours_used": user.tours_used,
-            "tour_limit": user.tour_limit,
-            "tours_remaining": 0,
-        }), 402
+        return jsonify({"error": "tour_quota_exceeded"}), 402
 
-    # One successful API routing request represents one tour, regardless of
-    # the number of stops inside that tour.
     user.tours_used += 1
     db.session.commit()
 
@@ -2055,14 +1619,8 @@ def route_api():
         "points_received": len(points),
         "tours_used": user.tours_used,
         "tour_limit": user.tour_limit,
-        "tours_remaining": max(0, user.tour_limit - user.tours_used),
-        "message": "Request accepted by the B2B routing API.",
     })
 
-
-# ============================================================
-# HEALTH
-# ============================================================
 
 @app.route("/health")
 def health():
@@ -2075,14 +1633,6 @@ def health():
     })
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False
-    )
+    app.run(host="0.0.0.0", port=port, debug=False)
