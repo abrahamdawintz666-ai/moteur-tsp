@@ -152,7 +152,7 @@ class DeliveryRoute(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    route_name = db.Column(db.String(150), default="Tournée")
+    route_name = db.Column(db.Text, default="Tournée")  # CORRIGÉ : db.Text pour éviter toute troncature
     driver_name = db.Column(db.String(100), nullable=False)
     access_code = db.Column(db.String(80), unique=True, nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
