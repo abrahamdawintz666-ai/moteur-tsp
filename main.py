@@ -327,7 +327,6 @@ def local_two_opt_pass(route):
 def nearest_neighbor_guided(route):
     if len(route) <= 2:
         return route
-    # Conserve le premier point fixe (ancre / dépôt d'origine) et trie strictement le reste par proximité
     anchor = route[0]
     unvisited = list(route[1:])
     optimized = [anchor]
@@ -391,7 +390,6 @@ def process_single_shard(shard):
     try:
         if len(shard) <= 2:
             return shard
-        # SUPPRESSION TOTALE DE TOUT ALÉATOIRE (plus de random.shuffle)
         route = nearest_neighbor_guided(shard)
         route = local_two_opt_pass(route)
         certified_route = certify_route_with_ortools(route)
@@ -1172,56 +1170,55 @@ def driver_space():
     document.getElementById('stops-list').innerHTML = list;
 
     if (points.length >= 2) {{
-        // Découpage par blocs de 100 points maximum pour épouser la vraie géométrie routière OSRM sans erreur serveur
         const maxChunk = 100;
         let chunkPromises = [];
-        for (let i = 0; i < points.length; i += maxChunk) {
+        for (let i = 0; i < points.length; i += maxChunk) {{
             let chunkPoints = points.slice(i, i + maxChunk);
-            if (i > 0 && points[i-1]) {
+            if (i > 0 && points[i-1]) {{
                 chunkPoints = [points[i-1]].concat(chunkPoints);
-            }
+            }}
             const coordsString = chunkPoints.map(p => p.lng + "," + p.lat).join(';');
-            const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${{coordsString}}?overview=full&geometries=geojson`;
+            const osrmUrl = "https://router.project-osrm.org/route/v1/driving/" + coordsString + "?overview=full&geometries=geojson";
             chunkPromises.push(fetch(osrmUrl).then(res => res.json()).catch(() => null));
-        }
+        }}
 
         Promise.all(chunkPromises)
-            .then(results => {
+            .then(results => {{
                 let fullRoadCoords = [];
                 let totalDistanceMeters = 0;
                 let successCount = 0;
 
-                results.forEach(data => {
-                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                results.forEach(data => {{
+                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {{
                         totalDistanceMeters += data.routes[0].distance;
                         const roadCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        if (fullRoadCoords.length > 0) {
+                        if (fullRoadCoords.length > 0) {{
                             fullRoadCoords = fullRoadCoords.concat(roadCoords.slice(1));
-                        } else {
+                        }} else {{
                             fullRoadCoords = fullRoadCoords.concat(roadCoords);
-                        }
+                        }}
                         successCount++;
-                    }
-                });
+                    }}
+                }});
 
-                if (successCount > 0 && fullRoadCoords.length > 0) {
+                if (successCount > 0 && fullRoadCoords.length > 0) {{
                     document.getElementById('total-distance').textContent = (totalDistanceMeters / 1000).toFixed(1) + " km";
-                    L.polyline(fullRoadCoords, {
+                    L.polyline(fullRoadCoords, {{
                         color: '#2563eb',
                         weight: 6,
                         opacity: 0.9
-                    }).addTo(map);
-                } else {
+                    }}).addTo(map);
+                }} else {{
                     fallbackStraightLine();
-                }
-            })
-            .catch(err => {
+                }}
+            }})
+            .catch(err => {{
                 console.warn("Erreur OSRM globale, repli sur le tracé de secours", err);
                 fallbackStraightLine();
-            });
-    } else {
+            }});
+    }} else {{
         document.getElementById('total-distance').textContent = "0.0 km";
-    }
+    }}
 
     function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
