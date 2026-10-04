@@ -244,7 +244,6 @@ def migrate_existing_database():
         db.session.rollback()
 
 
-# INITIALISATION SÉCURISÉE (Sans aucun drop_all destructeur pour PostgreSQL)
 with app.app_context():
     db.create_all()
     migrate_existing_database()
@@ -401,10 +400,6 @@ def process_single_shard(shard):
         return sorted(shard, key=lambda p: (p['lat'], p['lng']))
 
 def optimize_stops_order(stops):
-    """
-    Découpe intelligente par lots synchronisés (évite les erreurs 500 sur Render pour 500+ villes)
-    où la fin du premier tour se raccorde parfaitement au départ du suivant.
-    """
     if len(stops) <= 15:
         return process_single_shard(stops)
     
@@ -419,7 +414,6 @@ def optimize_stops_order(stops):
         
         res = process_single_shard(shard)
         if processed_shards and res:
-            # Assure la continuité synchrone entre les lots
             res = [processed_shards[-1]] + [s for s in res if s != processed_shards[-1]]
             res = local_two_opt_pass(res)
         
@@ -1187,6 +1181,7 @@ def driver_space():
                     document.getElementById('total-distance').textContent = km + " km";
 
                     const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
+                    // Tracé de la route principale (OSRM)
                     L.polyline(roadCoords, {{
                         color: '#2563eb',
                         weight: 5,
@@ -1207,9 +1202,12 @@ def driver_space():
     function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
         if (latLngs.length > 0) {{
-            L.polyline(latLngs, {{ color: '#2563eb', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map);
+            // Tracé en pointillés du moteur pour les raccourcis / secours
+            L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }})
+             .addTo(map)
+             .bindPopup("Route de secours / Raccourci direct (Multimodal)");
         }}
-        document.getElementById('total-distance').textContent = "Calcul direct (Ligne)";
+        document.getElementById('total-distance').textContent = "Calcul direct (Ligne / Multimodal)";
     }}
 
     let trackingInterval = null;
@@ -1256,6 +1254,9 @@ def driver_space():
                     driverMarker.setLatLng([lat, lng]);
                 }}
                 map.setView([lat, lng], 16);
+
+                // Vérification de rupture de route / passage multimodal (ex: zone isolée, île, plan d'eau ou absence de route)
+                checkMultimodalTransition(lat, lng);
             }},
             (error) => {{
                 document.getElementById('gps-status').textContent = "Erreur GPS";
@@ -1263,6 +1264,49 @@ def driver_space():
             }},
             {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
         );
+    }}
+
+    // Vérification et confirmation du changement de moyen de transport (Bateau / Avion)
+    let transportConfirmed = false;
+    function checkMultimodalTransition(currLat, currLng) {{
+        if (points.length === 0) return;
+        const nextPoint = points[0]; // Prochaine étape
+        const distToNext = getDistanceFromLatLonInKm(currLat, currLng, nextPoint.lat, nextPoint.lng);
+
+        // Si l'algorithme détecte un saut ou une distance de transition importante sans réseau routier standard
+        if (distToNext > 15.0 && !transportConfirmed) {{
+            let mode = confirm("Route terrestre terminée ou rupture de voie détectée.\nSouhaitez-vous basculer sur un moyen de transport alternatif (Bateau ou Avion) pour maintenir l'ordre optimal de la tournée ?");
+            if (mode) {{
+                let choice = prompt("Entrez le mode de transport (tapez 'bateau' ou 'avion') :", "bateau");
+                if (choice) {{
+                    transportConfirmed = true;
+                    alert("Mode de transport validé : " + choice.toUpperCase() + ". Affichage de la route de secours aérienne/maritime en pointillés.");
+                    
+                    // Affichage de la route de secours (pointillés de repli multimodal)
+                    const rescueLatLon = [[currLat, currLng], [nextPoint.lat, nextPoint.lng]];
+                    L.polyline(rescueLatLon, {{ color: '#dc2626', weight: 5, dashArray: '10, 10', opacity: 0.9 }})
+                     .addTo(map)
+                     .bindPopup("Route de secours active (" + choice.toUpperCase() + ")");
+                }}
+            }}
+        }}
+    }}
+
+    function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {{
+        const R = 6371; // Rayon de la terre en km
+        const dLat = deg2rad(lat2-lat1);
+        const dLon = deg2rad(lon2-lon1);
+        const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
+            Math.sin(dLon/2) * Math.sin(dLon/2)
+        ; 
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+        return R * c;
+    }}
+
+    function deg2rad(deg) {{
+        return deg * (Math.PI/180);
     }}
     </script>
     """
@@ -1419,19 +1463,19 @@ def api_v1_route():
     key_val = request.headers.get("X-API-KEY")
     key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
     if not key or (key.expires_at and key.expires_at < utcnow()):
-        return jsonify({"error": "invalid_api_key"}), 401
+        return jsonify({"error": "invalid_api_key"}}, 401
 
     user = User.query.get(key.user_id)
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        return jsonify({"error": "subscription_expired"}), 402
+        return jsonify({"error": "subscription_expired"}}, 402
 
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}), 402
+        return jsonify({"error": "quota_exceeded"}}, 402
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
     if not isinstance(points, list) or len(points) < 2:
-        return jsonify({"error": "at_least_2_points_required"}), 400
+        return jsonify({"error": "at_least_2_points_required"}}, 400
 
     optimized = optimize_stops_order(points)
     user.tours_used += 1
