@@ -1175,34 +1175,57 @@ def driver_space():
     document.getElementById('stops-list').innerHTML = list;
 
     if (points.length >= 2) {{
-        const coordsString = points.map(p => p.lng + "," + p.lat).join(';');
-        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${{coordsString}}?overview=full&geometries=geojson`;
+        // Découpage par blocs de 100 points maximum pour éviter les erreurs de requêtes de l'API OSRM publique
+        const maxChunk = 100;
+        let chunkPromises = [];
+        for (let i = 0; i < points.length; i += maxChunk) {
+            let chunkPoints = points.slice(i, i + maxChunk);
+            // S'assurer de la continuité entre les blocs
+            if (i > 0 && points[i-1]) {
+                chunkPoints = [points[i-1]].concat(chunkPoints);
+            }
+            const coordsString = chunkPoints.map(p => p.lng + "," + p.lat).join(';');
+            const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${{coordsString}}?overview=full&geometries=geojson`;
+            chunkPromises.push(fetch(osrmUrl).then(res => res.json()).catch(() => null));
+        }
 
-        fetch(osrmUrl)
-            .then(response => response.json())
-            .then(data => {{
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {{
-                    const routeData = data.routes[0];
-                    const km = (routeData.distance / 1000).toFixed(1);
-                    document.getElementById('total-distance').textContent = km + " km";
+        Promise.all(chunkPromises)
+            .then(results => {
+                let fullRoadCoords = [];
+                let totalDistanceMeters = 0;
+                let successCount = 0;
 
-                    const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
-                    L.polyline(roadCoords, {{
+                results.forEach(data => {
+                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                        totalDistanceMeters += data.routes[0].distance;
+                        const roadCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                        if (fullRoadCoords.length > 0) {
+                            fullRoadCoords = fullRoadCoords.concat(roadCoords.slice(1));
+                        } else {
+                            fullRoadCoords = fullRoadCoords.concat(roadCoords);
+                        }
+                        successCount++;
+                    }
+                });
+
+                if (successCount > 0 && fullRoadCoords.length > 0) {
+                    document.getElementById('total-distance').textContent = (totalDistanceMeters / 1000).toFixed(1) + " km";
+                    L.polyline(fullRoadCoords, {
                         color: '#2563eb',
                         weight: 6,
                         opacity: 0.9
-                    }}).addTo(map);
-                }} else {{
+                    }).addTo(map);
+                } else {
                     fallbackStraightLine();
-                }}
-            }})
-            .catch(err => {{
-                console.warn("Erreur OSRM, repli sur le tracé", err);
+                }
+            })
+            .catch(err => {
+                console.warn("Erreur OSRM globale, repli sur le tracé de secours", err);
                 fallbackStraightLine();
-            }});
-    }} else {{
+            });
+    } else {
         document.getElementById('total-distance').textContent = "0.0 km";
-    }}
+    }
 
     function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
@@ -1420,7 +1443,6 @@ def api_v1_route():
 
     key_val = request.headers.get("X-API-KEY")
     
-    # Autoriser l'accès direct si l'utilisateur est connecté via sa session navigateur
     user = None
     if "user_id" in session:
         user = User.query.get(session["user_id"])
