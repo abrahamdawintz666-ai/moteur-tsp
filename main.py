@@ -765,7 +765,6 @@ def login():
     email = request.form.get("email", "").strip().lower()
     password = request.form.get("password", "")
     
-    # Correction SQLAlchemy 2.0 appliquée ici
     user = db.session.execute(db.select(User).filter_by(email=email)).scalar_one_or_none()
 
     if user and check_password_hash(user.password_hash, password):
@@ -1190,15 +1189,15 @@ def driver_space():
                     const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
                     L.polyline(roadCoords, {{
                         color: '#2563eb',
-                        weight: 5,
-                        opacity: 0.85
+                        weight: 6,
+                        opacity: 0.9
                     }}).addTo(map);
                 }} else {{
                     fallbackStraightLine();
                 }}
             }})
             .catch(err => {{
-                console.warn("Erreur OSRM, repli sur le tracé pointillé direct", err);
+                console.warn("Erreur OSRM, repli sur le tracé", err);
                 fallbackStraightLine();
             }});
     }} else {{
@@ -1210,9 +1209,9 @@ def driver_space():
         if (latLngs.length > 0) {{
             L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }})
              .addTo(map)
-             .bindPopup("Route de secours / Raccourci direct (Multimodal)");
+             .bindPopup("Route de secours / Raccourci direct");
         }}
-        document.getElementById('total-distance').textContent = "Calcul direct (Ligne / Multimodal)";
+        document.getElementById('total-distance').textContent = "Calcul direct";
     }}
 
     let trackingInterval = null;
@@ -1259,8 +1258,6 @@ def driver_space():
                     driverMarker.setLatLng([lat, lng]);
                 }}
                 map.setView([lat, lng], 16);
-
-                checkMultimodalTransition(lat, lng);
             }},
             (error) => {{
                 document.getElementById('gps-status').textContent = "Erreur GPS";
@@ -1268,46 +1265,6 @@ def driver_space():
             }},
             {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
         );
-    }}
-
-    let transportConfirmed = false;
-    function checkMultimodalTransition(currLat, currLng) {{
-        if (points.length === 0) return;
-        const nextPoint = points[0];
-        const distToNext = getDistanceFromLatLonInKm(currLat, currLng, nextPoint.lat, nextPoint.lng);
-
-        if (distToNext > 15.0 && !transportConfirmed) {{
-            let mode = confirm("Route terrestre terminée ou rupture de voie détectée.\\nSouhaitez-vous basculer sur un moyen de transport alternatif (Bateau ou Avion) pour maintenir l'ordre optimal de la tournée ?");
-            if (mode) {{
-                let choice = prompt("Entrez le mode de transport (tapez 'bateau' ou 'avion') :", "bateau");
-                if (choice) {{
-                    transportConfirmed = true;
-                    alert("Mode de transport validé : " + choice.toUpperCase() + ". Affichage de la route de secours aérienne/maritime en pointillés.");
-                    
-                    const rescueLatLon = [[currLat, currLng], [nextPoint.lat, nextPoint.lng]];
-                    L.polyline(rescueLatLon, {{ color: '#dc2626', weight: 5, dashArray: '10, 10', opacity: 0.9 }})
-                     .addTo(map)
-                     .bindPopup("Route de secours active (" + choice.toUpperCase() + ")");
-                }}
-            }}
-        }}
-    }}
-
-    function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {{
-        const R = 6371;
-        const dLat = deg2rad(lat2-lat1);
-        const dLon = deg2rad(lon2-lon1);
-        const a = 
-            Math.sin(dLat/2) * Math.sin(dLat/2) +
-            Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
-            Math.sin(dLon/2) * Math.sin(dLon/2)
-        ; 
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-        return R * c;
-    }}
-
-    function deg2rad(deg) {{
-        return deg * (Math.PI/180);
     }}
     </script>
     """
@@ -1462,11 +1419,18 @@ def api_v1_route():
         }), 200
 
     key_val = request.headers.get("X-API-KEY")
-    key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
-    if not key or (key.expires_at and key.expires_at < utcnow()):
-        return jsonify({"error": "invalid_api_key"}}, 401
+    
+    # Correction : Autoriser l'accès direct si l'utilisateur est connecté via sa session navigateur
+    user = None
+    if "user_id" in session:
+        user = User.query.get(session["user_id"])
+    
+    if not user:
+        key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
+        if not key or (key.expires_at and key.expires_at < utcnow()):
+            return jsonify({"error": "invalid_api_key"}), 401
+        user = User.query.get(key.user_id)
 
-    user = User.query.get(key.user_id)
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
         return jsonify({"error": "subscription_expired"}}, 402
 
