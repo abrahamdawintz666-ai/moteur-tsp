@@ -244,13 +244,14 @@ def migrate_existing_database():
         db.session.rollback()
 
 
+# INITIALISATION SÉCURISÉE (Sans aucun drop_all destructeur pour PostgreSQL)
 with app.app_context():
     db.create_all()
     migrate_existing_database()
 
 
 # ============================================================
-# MOTEUR DE ROUTAGE HYBRIDE
+# MOTEUR DE ROUTAGE HYBRIDE & SYNCHRONISATION PAR LOTS (500 VILLES)
 # ============================================================
 
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -400,15 +401,32 @@ def process_single_shard(shard):
         return sorted(shard, key=lambda p: (p['lat'], p['lng']))
 
 def optimize_stops_order(stops):
-    if len(stops) <= 10:
+    """
+    Découpe intelligente par lots synchronisés (évite les erreurs 500 sur Render pour 500+ villes)
+    où la fin du premier tour se raccorde parfaitement au départ du suivant.
+    """
+    if len(stops) <= 15:
         return process_single_shard(stops)
-    chunk_size = 300
+    
+    chunk_size = 100
     shards = [stops[i:i + chunk_size] for i in range(0, len(stops), chunk_size)]
     processed_shards = []
-    with ProcessPoolExecutor() as executor:
-        results = executor.map(process_single_shard, shards)
-        for res in results:
-            processed_shards.extend(res)
+    
+    current_origin = stops[0] if stops else None
+    for shard in shards:
+        if current_origin and current_origin not in shard:
+            shard = [current_origin] + [s for s in shard if s != current_origin]
+        
+        res = process_single_shard(shard)
+        if processed_shards and res:
+            # Assure la continuité synchrone entre les lots
+            res = [processed_shards[-1]] + [s for s in res if s != processed_shards[-1]]
+            res = local_two_opt_pass(res)
+        
+        processed_shards.extend(res if not processed_shards else res[1:])
+        if processed_shards:
+            current_origin = processed_shards[-1]
+
     return local_two_opt_pass(processed_shards)
 
 
@@ -881,11 +899,9 @@ IMPORT_FORM_HTML = """
     </div>
 </div>
 <script>
-// Injection automatique du contenu du fichier dans le textarea dès la sélection
 document.getElementById('file-input').addEventListener('change', function(event) {
     const file = event.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = function(e) {
         document.getElementById('manual-stops').value = e.target.result;
@@ -1181,7 +1197,7 @@ def driver_space():
                 }}
             }})
             .catch(err => {{
-                console.warn("Erreur de connexion aux routes réelles, repli sur le tracé direct", err);
+                console.warn("Erreur OSRM, repli sur le tracé pointillé direct", err);
                 fallbackStraightLine();
             }});
     }} else {{
@@ -1193,7 +1209,7 @@ def driver_space():
         if (latLngs.length > 0) {{
             L.polyline(latLngs, {{ color: '#2563eb', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map);
         }}
-        document.getElementById('total-distance').textContent = "Calcul indisponible";
+        document.getElementById('total-distance').textContent = "Calcul direct (Ligne)";
     }}
 
     let trackingInterval = null;
