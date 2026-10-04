@@ -36,6 +36,9 @@ except ImportError:
 
 app = Flask(__name__)
 
+# Augmentation de la limite de taille du payload HTTP (16 Mo) pour accepter les gros fichiers CSV / TXT de 500+ villes
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_SECRET_PASSWORD", "CHANGE-ME")
 
@@ -1162,7 +1165,10 @@ def driver_space():
 
     let list = "<ol>";
     points.forEach((p, i) => {{
-        L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
+        // Affichage optimisé des marqueurs pour éviter de saturer le navigateur en cas de grand nombre de points
+        if (i < 200) {{
+            L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
+        }}
         list += "<li style='margin-bottom: 8px;'><strong>#" + (i+1) + " - " + p.name + "</strong><br><span class='muted'>" + p.address + "</span> <a href='https://www.google.com/maps/dir/?api=1&destination=" + p.lat + "," + p.lng + "' target='_blank' style='margin-left: 10px; font-size: 12px;'>🧭 Naviguer (Google Maps)</a></li>";
     }});
     list += "</ol>";
