@@ -1420,7 +1420,7 @@ def api_v1_route():
 
     key_val = request.headers.get("X-API-KEY")
     
-    # Correction : Autoriser l'accès direct si l'utilisateur est connecté via sa session navigateur
+    # Autoriser l'accès direct si l'utilisateur est connecté via sa session navigateur
     user = None
     if "user_id" in session:
         user = User.query.get(session["user_id"])
@@ -1432,15 +1432,15 @@ def api_v1_route():
         user = User.query.get(key.user_id)
 
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        return jsonify({"error": "subscription_expired"}}, 402
+        return jsonify({"error": "subscription_expired"}, 402)
 
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}}, 402
+        return jsonify({"error": "quota_exceeded"}, 402)
 
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
     if not isinstance(points, list) or len(points) < 2:
-        return jsonify({"error": "at_least_2_points_required"}}, 400
+        return jsonify({"error": "at_least_2_points_required"}, 400)
 
     optimized = optimize_stops_order(points)
     user.tours_used += 1
