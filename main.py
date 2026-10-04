@@ -5,7 +5,6 @@ import json
 import secrets
 import base64
 import math
-import random
 import urllib.parse
 import urllib.request
 from concurrent.futures import ProcessPoolExecutor
@@ -328,8 +327,10 @@ def local_two_opt_pass(route):
 def nearest_neighbor_guided(route):
     if len(route) <= 2:
         return route
-    unvisited = list(route)
-    optimized = [unvisited.pop(0)]
+    # Conserve le premier point fixe (ancre / dépôt d'origine) et trie strictement le reste par proximité
+    anchor = route[0]
+    unvisited = list(route[1:])
+    optimized = [anchor]
     while unvisited:
         current = optimized[-1]
         next_stop = min(
@@ -390,12 +391,8 @@ def process_single_shard(shard):
     try:
         if len(shard) <= 2:
             return shard
-        route = list(shard)
-        anchor = route.pop(0)
-        random.shuffle(route)
-        route = [anchor] + route
-        route = local_two_opt_pass(route)
-        route = nearest_neighbor_guided(route)
+        # SUPPRESSION TOTALE DE TOUT ALÉATOIRE (plus de random.shuffle)
+        route = nearest_neighbor_guided(shard)
         route = local_two_opt_pass(route)
         certified_route = certify_route_with_ortools(route)
         return certified_route
@@ -1175,12 +1172,11 @@ def driver_space():
     document.getElementById('stops-list').innerHTML = list;
 
     if (points.length >= 2) {{
-        // Découpage par blocs de 100 points maximum pour éviter les erreurs de requêtes de l'API OSRM publique
+        // Découpage par blocs de 100 points maximum pour épouser la vraie géométrie routière OSRM sans erreur serveur
         const maxChunk = 100;
         let chunkPromises = [];
         for (let i = 0; i < points.length; i += maxChunk) {
             let chunkPoints = points.slice(i, i + maxChunk);
-            // S'assurer de la continuité entre les blocs
             if (i > 0 && points[i-1]) {
                 chunkPoints = [points[i-1]].concat(chunkPoints);
             }
