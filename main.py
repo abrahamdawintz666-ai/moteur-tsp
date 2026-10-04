@@ -764,7 +764,9 @@ def login_form():
 def login():
     email = request.form.get("email", "").strip().lower()
     password = request.form.get("password", "")
-    user = User.query.filter_by(email=email).first()
+    
+    # Correction SQLAlchemy 2.0 appliquée ici
+    user = db.session.execute(db.select(User).filter_by(email=email)).scalar_one_or_none()
 
     if user and check_password_hash(user.password_hash, password):
         session["user_id"] = user.id
@@ -1165,7 +1167,6 @@ def driver_space():
 
     let list = "<ol>";
     points.forEach((p, i) => {{
-        // Affichage optimisé des marqueurs pour éviter de saturer le navigateur en cas de grand nombre de points
         if (i < 200) {{
             L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
         }}
@@ -1187,7 +1188,6 @@ def driver_space():
                     document.getElementById('total-distance').textContent = km + " km";
 
                     const roadCoords = routeData.geometry.coordinates.map(c => [c[1], c[0]]);
-                    // Tracé de la route principale (OSRM)
                     L.polyline(roadCoords, {{
                         color: '#2563eb',
                         weight: 5,
@@ -1208,7 +1208,6 @@ def driver_space():
     function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
         if (latLngs.length > 0) {{
-            // Tracé en pointillés du moteur pour les raccourcis / secours
             L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }})
              .addTo(map)
              .bindPopup("Route de secours / Raccourci direct (Multimodal)");
@@ -1261,7 +1260,6 @@ def driver_space():
                 }}
                 map.setView([lat, lng], 16);
 
-                // Vérification de rupture de route / passage multimodal (ex: zone isolée, île, plan d'eau ou absence de route)
                 checkMultimodalTransition(lat, lng);
             }},
             (error) => {{
@@ -1272,23 +1270,20 @@ def driver_space():
         );
     }}
 
-    // Vérification et confirmation du changement de moyen de transport (Bateau / Avion)
     let transportConfirmed = false;
     function checkMultimodalTransition(currLat, currLng) {{
         if (points.length === 0) return;
-        const nextPoint = points[0]; // Prochaine étape
+        const nextPoint = points[0];
         const distToNext = getDistanceFromLatLonInKm(currLat, currLng, nextPoint.lat, nextPoint.lng);
 
-        // Si l'algorithme détecte un saut ou une distance de transition importante sans réseau routier standard
         if (distToNext > 15.0 && !transportConfirmed) {{
-            let mode = confirm("Route terrestre terminée ou rupture de voie détectée.\nSouhaitez-vous basculer sur un moyen de transport alternatif (Bateau ou Avion) pour maintenir l'ordre optimal de la tournée ?");
+            let mode = confirm("Route terrestre terminée ou rupture de voie détectée.\\nSouhaitez-vous basculer sur un moyen de transport alternatif (Bateau ou Avion) pour maintenir l'ordre optimal de la tournée ?");
             if (mode) {{
                 let choice = prompt("Entrez le mode de transport (tapez 'bateau' ou 'avion') :", "bateau");
                 if (choice) {{
                     transportConfirmed = true;
                     alert("Mode de transport validé : " + choice.toUpperCase() + ". Affichage de la route de secours aérienne/maritime en pointillés.");
                     
-                    // Affichage de la route de secours (pointillés de repli multimodal)
                     const rescueLatLon = [[currLat, currLng], [nextPoint.lat, nextPoint.lng]];
                     L.polyline(rescueLatLon, {{ color: '#dc2626', weight: 5, dashArray: '10, 10', opacity: 0.9 }})
                      .addTo(map)
@@ -1299,7 +1294,7 @@ def driver_space():
     }}
 
     function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {{
-        const R = 6371; // Rayon de la terre en km
+        const R = 6371;
         const dLat = deg2rad(lat2-lat1);
         const dLon = deg2rad(lon2-lon1);
         const a = 
