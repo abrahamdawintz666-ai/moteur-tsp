@@ -219,7 +219,17 @@ class ApiKey(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=True)
     revoked = db.Column(db.Boolean, default=False)
-    key_type = db.Column(db.String(20), default="api", nullable=True)
+
+
+class AccountInvitation(db.Model):
+    __tablename__ = "account_invitations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(180), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
 
 
 class PaymentOrder(db.Model):
@@ -254,6 +264,7 @@ class DeliveryRoute(db.Model):
     optimized = db.Column(db.Boolean, default=False)
     optimization_engine = db.Column(db.String(40), default="OSRM")
     total_road_distance_m = db.Column(db.Float, nullable=True)
+    road_geometry_json = db.Column(db.Text, nullable=True)
     optimization_id = db.Column(db.String(80), nullable=True, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -281,6 +292,7 @@ def migrate_existing_database():
     models = (
         ("users", User),
         ("api_keys", ApiKey),
+        ("account_invitations", AccountInvitation),
         ("payment_orders", PaymentOrder),
         ("delivery_routes", DeliveryRoute),
         ("audit_logs", AuditLog),
@@ -499,8 +511,8 @@ def generate_driver_code():
     return "GR-" + secrets.token_urlsafe(12)
 
 
-def create_api_key(user, expires_at, revoke_existing=False, key_type="api", prefix="gr_live_"):
-    """Crée une clé API B2B forte et liée à une seule entreprise."""
+def create_api_key(user, expires_at, revoke_existing=False, prefix="gr_live_"):
+    """Create a strong B2B API key. Invitations are stored separately."""
     if revoke_existing:
         ApiKey.query.filter_by(
             user_id=user.id,
@@ -510,18 +522,19 @@ def create_api_key(user, expires_at, revoke_existing=False, key_type="api", pref
             synchronize_session=False
         )
 
-    key_str = prefix + secrets.token_urlsafe(36)
-    key = ApiKey(
-        key_string=key_str,
-        user_id=user.id,
-        expires_at=expires_at,
-        revoked=False,
-        key_type=key_type
-    )
-    db.session.add(key)
-    db.session.flush()
-    return key
-
+    for _ in range(5):
+        key_str = prefix + secrets.token_urlsafe(36)
+        if not ApiKey.query.filter_by(key_string=key_str).first():
+            key = ApiKey(
+                key_string=key_str,
+                user_id=user.id,
+                expires_at=expires_at,
+                revoked=False,
+            )
+            db.session.add(key)
+            db.session.flush()
+            return key
+    raise RuntimeError("Impossible de générer une clé API unique.")
 
 def active_api_key(user):
     now = utcnow()
@@ -980,59 +993,61 @@ def get_route_geometry(stops):
 
 def optimize_stops_order(stops):
     """
-    Main optimization engine.
+    Production routing engine using real road distances.
 
-    1. Validate data.
-    2. Build real road matrix through OSRM.
-    3. Solve with OR-Tools when available.
-    4. Otherwise use OSRM Trip for smaller routes.
-    5. NEVER use straight-line distance for final optimization.
+    - 2 points: direct OSRM road route.
+    - Up to 250 points: full OSRM road matrix + OR-Tools when available.
+    - Larger jobs: OSRM Trip is used in road-network batches when possible.
+    - No Haversine distance is used to choose the final route.
+    - No straight-line fallback is ever displayed as a route.
     """
     stops = validate_stops(stops)
+    n = len(stops)
 
-    if len(stops) <= 2:
+    if n == 2:
         geometry, distance = get_route_geometry(stops)
-        return stops, geometry, distance, "OSRM"
+        return stops, geometry, distance, "OSRM Road Route"
 
-    if HAS_ORTOOLS:
+    matrix_limit = int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "250"))
+
+    if HAS_ORTOOLS and n <= matrix_limit:
         matrix = build_osrm_table(stops)
-
-        optimized = optimize_with_ortools(
-            stops,
-            matrix
-        )
-
+        optimized = optimize_with_ortools(stops, matrix)
         if optimized:
-            geometry, distance = get_route_geometry(
-                optimized
-            )
+            geometry, distance = get_route_geometry(optimized)
+            return optimized, geometry, distance, "OSRM Road Matrix + OR-Tools"
 
-            return (
-                optimized,
-                geometry,
-                distance,
-                "OSRM + OR-Tools"
-            )
-
-    if len(stops) <= OSRM_TRIP_LIMIT:
+    if n <= OSRM_TRIP_LIMIT:
         optimized = osrm_trip_order(stops)
+        geometry, distance = get_route_geometry(optimized)
+        return optimized, geometry, distance, "OSRM Road Trip"
 
-        geometry, distance = get_route_geometry(
-            optimized
+    batch_size = max(20, min(OSRM_TRIP_LIMIT, 80))
+    optimized_all = []
+    pos = 0
+
+    while pos < n:
+        end = min(pos + batch_size, n)
+        batch = stops[pos:end]
+        if pos > 0:
+            batch = [stops[pos - 1]] + batch
+
+        if len(batch) >= 2:
+            ordered = osrm_trip_order(batch)
+            if optimized_all:
+                optimized_all.extend(ordered[1:])
+            else:
+                optimized_all.extend(ordered)
+
+        pos = end
+
+    if len(optimized_all) != n:
+        raise RuntimeError(
+            "Le moteur routier n'a pas pu reconstruire tous les points."
         )
 
-        return (
-            optimized,
-            geometry,
-            distance,
-            "OSRM Trip"
-        )
-
-    raise RuntimeError(
-        "OR-Tools n'est pas installé et la tournée dépasse "
-        f"{OSRM_TRIP_LIMIT} points. Installez OR-Tools ou "
-        "utilisez un serveur OSRM de production."
-    )
+    geometry, distance = get_route_geometry(optimized_all)
+    return optimized_all, geometry, distance, "OSRM Road Batch Heuristic"
 
 
 # ============================================================
@@ -2201,6 +2216,7 @@ def create_driver_route():
         optimized=True,
         optimization_engine=engine,
         total_road_distance_m=distance,
+        road_geometry_json=json.dumps(geometry, ensure_ascii=False),
         optimization_id=optimization_id,
         status="Optimisée",
     )
@@ -2222,7 +2238,17 @@ def create_driver_route():
         )
     )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Erreur DB après optimisation")
+        flash(
+            "La route a été calculée, mais l'enregistrement en base a échoué : "
+            + str(exc),
+            "danger"
+        )
+        return redirect(url_for("dashboard"))
 
     flash(
         f"Tournée optimisée : {len(optimized)} points · "
@@ -2266,8 +2292,11 @@ def activate_account():
     invite_key = request.form.get("invite_key", "").strip()
     password = request.form.get("password", "")
     confirm = request.form.get("password_confirm", "")
-    invitation = ApiKey.query.filter_by(key_string=invite_key, key_type="invite", revoked=False).first()
-    if not invitation or (invitation.expires_at and invitation.expires_at < utcnow()):
+    invitation = AccountInvitation.query.filter_by(
+        token=invite_key,
+        used_at=None,
+    ).first()
+    if not invitation or invitation.expires_at < utcnow():
         flash("Clé d'activation invalide ou expirée.", "danger")
         return redirect(url_for("activate_account"))
     user = User.query.get(invitation.user_id)
@@ -2284,8 +2313,7 @@ def activate_account():
         return redirect(url_for("activate_account"))
     user.password_hash = generate_password_hash(password)
     user.active = True
-    invitation.revoked = True
-    invitation.expires_at = utcnow()
+    invitation.used_at = utcnow()
     db.session.add(AuditLog(action="ACCOUNT_ACTIVATED", details=f"user={user.email}; invitation_id={invitation.id}"))
     db.session.commit()
     session.clear()
@@ -2737,6 +2765,18 @@ def driver_space():
         ensure_ascii=False
     )
 
+    try:
+        stored_geometry = json.loads(
+            route.road_geometry_json or "[]"
+        )
+    except Exception:
+        stored_geometry = []
+
+    geometry_json = json.dumps(
+        stored_geometry,
+        ensure_ascii=False
+    )
+
     distance_km = (
         route.total_road_distance_m / 1000
         if route.total_road_distance_m
@@ -2857,126 +2897,33 @@ def driver_space():
         .replaceAll("'", "&#039;");
     }}
 
-    async function drawRealRoadRoute() {{
-      if (points.length < 2) return;
+    function drawRealRoadRoute() {{
+      const road = {geometry_json};
 
-      const maxChunk = 80;
-      let allCoords = [];
-
-      try {{
-        for (
-          let start = 0;
-          start < points.length - 1;
-          start += maxChunk - 1
-        ) {{
-
-          const end = Math.min(
-            start + maxChunk,
-            points.length
-          );
-
-          const chunk = points.slice(
-            start,
-            end
-          );
-
-          const coords = chunk.map(
-            p => p.lng + "," + p.lat
-          ).join(";");
-
-          const url =
-            "https://router.project-osrm.org/"
-            + "route/v1/driving/"
-            + coords
-            + "?overview=full"
-            + "&geometries=geojson";
-
-          const response =
-            await fetch(url);
-
-          if (!response.ok) {{
-            throw new Error(
-              "OSRM HTTP " + response.status
-            );
-          }}
-
-          const data =
-            await response.json();
-
-          if (
-            data.code !== "Ok"
-            || !data.routes
-            || !data.routes.length
-          ) {{
-            throw new Error(
-              "OSRM n'a pas trouvé de route."
-            );
-          }}
-
-          const road =
-            data.routes[0]
-              .geometry
-              .coordinates
-              .map(c => [c[1], c[0]]);
-
-          if (allCoords.length) {{
-            allCoords =
-              allCoords.concat(
-                road.slice(1)
-              );
-          }} else {{
-            allCoords =
-              allCoords.concat(road);
-          }}
-
-          if (end === points.length) break;
-        }}
-
-        if (!allCoords.length) {{
-          throw new Error(
-            "Géométrie routière vide."
-          );
-        }}
-
-        const polyline =
-          L.polyline(
-            allCoords,
-            {{
-              color:"#2563eb",
-              weight:6,
-              opacity:.9
-            }}
-          ).addTo(map);
-
-        map.fitBounds(
-          polyline.getBounds(),
-          {{padding:[30,30]}}
-        );
-
-      }} catch(error) {{
-        console.error(error);
-
-        document.getElementById(
-          "total-distance"
-        ).textContent =
-          "Route indisponible";
-
-        const warning =
-          document.createElement("div");
-
-        warning.className =
-          "alert alert-danger";
-
+      if (!road.length) {{
+        const warning = document.createElement("div");
+        warning.className = "alert alert-danger";
         warning.textContent =
-          "Le réseau routier OSRM n'a pas pu "
-          + "être chargé. Aucune ligne droite "
-          + "de secours n'est affichée.";
-
-        document.getElementById(
-          "map"
-        ).before(warning);
+          "La géométrie routière n'est pas disponible. Aucune ligne droite de secours n'est affichée.";
+        document.getElementById("map").before(warning);
+        return;
       }}
+
+      const polyline = L.polyline(
+        road,
+        {{
+          color:"#2563eb",
+          weight:6,
+          opacity:.9
+        }}
+      ).addTo(map);
+
+      map.fitBounds(
+        polyline.getBounds(),
+        {{padding:[30,30]}}
+      );
     }}
+
 
     drawRealRoadRoute();
 
@@ -3253,99 +3200,79 @@ def admin_create_invitation():
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
 
-    company = normalize_text(
-        request.form.get("company_name"), 150
-    )
-    email = normalize_text(
-        request.form.get("email"), 160
-    ).lower()
-    country = normalize_text(
-        request.form.get("country"), 100
-    )
+    company = normalize_text(request.form.get("company_name"), 150)
+    email = normalize_text(request.form.get("email"), 160).lower()
+    country = normalize_text(request.form.get("country"), 100)
 
     if not company or not email or "@" not in email:
-        flash(
-            "Nom d'entreprise et email professionnel valides obligatoires.",
-            "danger"
-        )
+        flash("Nom d'entreprise et email professionnel valides obligatoires.", "danger")
         return redirect(url_for("admin_panel"))
 
     try:
         user = User.query.filter_by(email=email).first()
 
         if user and user.active:
-            flash(
-                "Un compte actif existe déjà avec cet email.",
-                "danger"
-            )
+            flash("Un compte actif existe déjà avec cet email.", "danger")
             return redirect(url_for("admin_panel"))
 
-        if user:
-            user.company_name = company
-            user.country = country
-            ApiKey.query.filter_by(
-                user_id=user.id,
-                key_type="invite",
-                revoked=False
-            ).update(
-                {"revoked": True},
-                synchronize_session=False
-            )
-        else:
+        if not user:
             user = User(
                 company_name=company,
                 email=email,
-                password_hash=generate_password_hash(
-                    secrets.token_urlsafe(32)
-                ),
+                password_hash=generate_password_hash(secrets.token_urlsafe(32)),
                 role="dispatcher",
                 country=country,
-                active=False
+                active=False,
             )
             db.session.add(user)
             db.session.flush()
+        else:
+            user.company_name = company
+            user.country = country
+            user.active = False
 
-        expires = utcnow() + timedelta(days=7)
-        invitation = create_api_key(
-            user,
-            expires,
-            key_type="invite",
-            prefix="GRI-"
+        AccountInvitation.query.filter_by(
+            user_id=user.id,
+            used_at=None,
+        ).update(
+            {"used_at": utcnow()},
+            synchronize_session=False,
         )
 
-        db.session.add(
-            AuditLog(
-                action="ACCOUNT_INVITATION_CREATED",
-                details=(
-                    f"user={email}; invitation_id={invitation.id}"
-                )
-            )
+        token = None
+        for _ in range(5):
+            candidate = "GRI-" + secrets.token_urlsafe(36)
+            if not AccountInvitation.query.filter_by(token=candidate).first():
+                token = candidate
+                break
+
+        if not token:
+            raise RuntimeError("Impossible de générer une clé d'activation unique.")
+
+        invitation = AccountInvitation(
+            token=token,
+            user_id=user.id,
+            expires_at=utcnow() + timedelta(days=7),
         )
+        db.session.add(invitation)
+        db.session.flush()
+
+        db.session.add(AuditLog(
+            action="ACCOUNT_INVITATION_CREATED",
+            details=f"user={email}; invitation_id={invitation.id}"
+        ))
         db.session.commit()
 
-    except IntegrityError as exc:
-        db.session.rollback()
-        app.logger.exception("Erreur SQL lors de la création de l'invitation")
-        flash(
-            "La clé n'a pas pu être générée : la base de données contient "
-            "probablement une ancienne structure. Redéployez cette version "
-            "pour appliquer la migration automatique.",
-            "danger"
-        )
-        return redirect(url_for("admin_panel"))
     except Exception as exc:
         db.session.rollback()
         app.logger.exception("Erreur Admin lors de la génération de clé")
         flash(
-            "Erreur de génération : " + str(exc),
+            "La génération a échoué. Détail serveur : " + str(exc),
             "danger"
         )
         return redirect(url_for("admin_panel"))
 
-    activation_url = url_for(
-        "activate_account",
-        _external=True
-    )
+    activation_url = url_for("activate_account", _external=True)
 
     body = f"""
     <div class="card" style="max-width:650px;margin:0 auto">
@@ -3354,13 +3281,13 @@ def admin_create_invitation():
       <p><strong>Email :</strong> {user.email}</p>
       <label>Clé à envoyer au client</label>
       <div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">
-        {invitation.key_string}
+        {invitation.token}
       </div>
       <label>Lien d'activation</label>
       <div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">
         {activation_url}
       </div>
-      <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
+      <p class="muted">Valable 7 jours et utilisable une seule fois. Le client crée son mot de passe.</p>
       <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a>
     </div>
     """
@@ -3517,6 +3444,21 @@ def api_v1_route():
 # ============================================================
 # HEALTH
 # ============================================================
+
+@app.route("/health/routing")
+def health_routing():
+    return jsonify({
+        "status": "ok",
+        "routing_url": ROUTING_URL,
+        "profile": OSRM_PROFILE,
+        "ortools_installed": HAS_ORTOOLS,
+        "max_route_points": MAX_ROUTE_POINTS,
+        "matrix_max_points": int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "250")),
+        "trip_limit": OSRM_TRIP_LIMIT,
+        "straight_line_fallback": False,
+        "real_road_routing": True,
+    })
+
 
 @app.route("/health")
 def health():
