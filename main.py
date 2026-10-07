@@ -84,7 +84,9 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 with app.app_context():
-    db.create_all()
+    db.drop_all()  # Supprime les anciennes tables corrompues
+    db.create_all() # Crée les tables propres avec tous les bons champs
+
 
 def utcnow():
     return datetime.now(timezone.utc)
