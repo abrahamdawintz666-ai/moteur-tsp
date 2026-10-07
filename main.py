@@ -451,7 +451,8 @@ def login_form():
 def login():
     email = request.form.get("email", "").strip().lower()
     password = request.form.get("password", "")
-    user = db.session.execute(db.select(User).filter_by(email=email)).scalar_one_or_none()
+    # Utilisez .query.filter_by à la place de db.select pour éviter l'erreur 500
+    user = User.query.filter_by(email=email).first()
     if user and check_password_hash(user.password_hash, password):
         session["user_id"] = user.id
         return redirect(url_for("dashboard"))
