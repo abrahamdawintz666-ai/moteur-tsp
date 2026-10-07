@@ -219,6 +219,7 @@ class ApiKey(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=True)
     revoked = db.Column(db.Boolean, default=False)
+    key_type = db.Column(db.String(20), default="api", nullable=True)
 
 
 class PaymentOrder(db.Model):
@@ -487,16 +488,27 @@ def generate_driver_code():
     return "GR-" + secrets.token_urlsafe(12)
 
 
-def create_api_key(user, expires_at):
-    key_str = "gr_live_" + secrets.token_urlsafe(32)
+def create_api_key(user, expires_at, revoke_existing=False, key_type="api", prefix="gr_live_"):
+    """Crée une clé API B2B forte et liée à une seule entreprise."""
+    if revoke_existing:
+        ApiKey.query.filter_by(
+            user_id=user.id,
+            revoked=False
+        ).update(
+            {"revoked": True},
+            synchronize_session=False
+        )
 
+    key_str = prefix + secrets.token_urlsafe(36)
     key = ApiKey(
         key_string=key_str,
         user_id=user.id,
-        expires_at=expires_at
+        expires_at=expires_at,
+        revoked=False,
+        key_type=key_type
     )
-
     db.session.add(key)
+    db.session.flush()
     return key
 
 
@@ -551,7 +563,11 @@ def add_subscription(user, plan, duration_days):
     if key:
         key.expires_at = expiry
     else:
-        create_api_key(user, expiry)
+        create_api_key(
+            user,
+            expiry,
+            revoke_existing=True
+        )
 
     return expiry
 
@@ -1469,6 +1485,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <a href="{{ url_for('login_form') }}">↪ &nbsp;{{ t('login') }}</a>
     <a href="{{ url_for('register_form') }}">＋ &nbsp;{{ t('register') }}</a>
     {% endif %}
+    <a href="{{ url_for('activate_account') }}">🔑 &nbsp;Activer un compte</a>
     <a href="{{ url_for('admin_panel') }}">⚙ &nbsp;{{ t('admin') }}</a>
     <a href="{{ url_for('driver_login') }}">🚚 &nbsp;{{ t('driver_space') }}</a>
   </nav>
@@ -2204,6 +2221,57 @@ def create_driver_route():
 # ============================================================
 # PLANS / PAYMENTS
 # ============================================================
+
+@app.route("/activate-account", methods=["GET", "POST"])
+def activate_account():
+    if request.method == "GET":
+        return page(f"""
+        <div class="card" style="max-width:520px;margin:0 auto;">
+          <h2>Activer votre compte entreprise</h2>
+          <p class="muted">Entrez la clé reçue de l'administrateur, puis choisissez votre mot de passe.</p>
+          <form method="POST">
+            <label>Clé d'activation</label>
+            <input type="text" name="invite_key" required autocomplete="off" spellcheck="false">
+            <label>Nouveau mot de passe</label>
+            <input type="password" name="password" minlength="12" required autocomplete="new-password">
+            <label>Confirmer le mot de passe</label>
+            <input type="password" name="password_confirm" minlength="12" required autocomplete="new-password">
+            <p class="muted">12 caractères minimum : majuscule, minuscule, chiffre et caractère spécial.</p>
+            <button type="submit" class="btn btn-block">Créer le mot de passe et activer</button>
+          </form>
+        </div>
+        """, title="Activation du compte")
+
+    import re
+    invite_key = request.form.get("invite_key", "").strip()
+    password = request.form.get("password", "")
+    confirm = request.form.get("password_confirm", "")
+    invitation = ApiKey.query.filter_by(key_string=invite_key, key_type="invite", revoked=False).first()
+    if not invitation or (invitation.expires_at and invitation.expires_at < utcnow()):
+        flash("Clé d'activation invalide ou expirée.", "danger")
+        return redirect(url_for("activate_account"))
+    user = User.query.get(invitation.user_id)
+    if not user or user.active:
+        flash("Cette invitation n'est plus disponible.", "danger")
+        return redirect(url_for("login_form"))
+    strong = (len(password) >= 12 and re.search(r"[A-Z]", password) and re.search(r"[a-z]", password)
+              and re.search(r"\d", password) and re.search(r"[^A-Za-z0-9]", password))
+    if not strong:
+        flash("Mot de passe trop faible. Utilisez 12 caractères minimum avec majuscule, minuscule, chiffre et caractère spécial.", "danger")
+        return redirect(url_for("activate_account"))
+    if password != confirm:
+        flash("Les deux mots de passe ne correspondent pas.", "danger")
+        return redirect(url_for("activate_account"))
+    user.password_hash = generate_password_hash(password)
+    user.active = True
+    invitation.revoked = True
+    invitation.expires_at = utcnow()
+    db.session.add(AuditLog(action="ACCOUNT_ACTIVATED", details=f"user={user.email}; invitation_id={invitation.id}"))
+    db.session.commit()
+    session.clear()
+    session["user_id"] = user.id
+    flash("Compte activé avec succès.", "success")
+    return redirect(url_for("dashboard"))
 
 @app.route("/plans")
 def plans():
@@ -3132,191 +3200,64 @@ window.onload = function() {{
 # ============================================================
 
 @app.route("/admin-panel", methods=["GET", "POST"])
-@limiter.limit("10 per minute")
 def admin_panel():
     if request.method == "POST":
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        if (
-            ADMIN_SECRET_PASSWORD
-            and secrets.compare_digest(
-                password,
-                ADMIN_SECRET_PASSWORD
-            )
-        ):
+        if request.form.get("password") == ADMIN_SECRET_PASSWORD:
             session["is_admin"] = True
         else:
-            flash(
-                "Mot de passe admin incorrect.",
-                "danger"
-            )
-
-    if not admin_required():
-        body = """
-        <div class="card"
-             style="max-width:400px;margin:0 auto;">
-
-          <h2>Administration Globale</h2>
-
-          <form method="POST">
-
-            <label>Mot de passe Admin</label>
-
-            <input type="password"
-                   name="password"
-                   autocomplete="current-password"
-                   required>
-
-            <div style="margin-top:20px;">
-              <button type="submit"
-                      class="btn btn-block">
-                Entrer
-              </button>
-            </div>
-
-          </form>
-        </div>
-        """
-
-        return page(
-            body,
-            title="Admin"
-        )
-
-    users = User.query.all()
-
-    user_options = "".join(
-        f'<option value="{u.id}">'
-        f'{u.company_name} ({u.email})'
-        f'</option>'
-        for u in users
-    )
-
-    user_rows = "".join(
-        f"<tr>"
-        f"<td>{u.company_name}</td>"
-        f"<td>{u.email}</td>"
-        f"<td>{u.plan}</td>"
-        f"<td>{u.tours_used}/{u.tour_limit}</td>"
-        f"</tr>"
-        for u in users
-    )
-
-    body = f"""
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-
-        <h2>Panel Administrateur</h2>
-
-        <a href="{url_for('admin_logout')}"
-           class="btn btn-red"
-           style="padding:6px 12px;font-size:12px;">
-          Quitter
-        </a>
-
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>🔑 Générer une clé API</h3>
-
-      <form method="POST"
-            action="{url_for('admin_generate_key')}">
-
-        <label>Entreprise</label>
-
-        <select name="user_id">
-          {user_options}
-        </select>
-
-        <div style="margin-top:15px;">
-          <button type="submit"
-                  class="btn">
-            Générer
-          </button>
-        </div>
-
+            flash("Mot de passe admin incorrect.", "danger")
+    if not session.get("is_admin"):
+        return page(f"""<div class="card" style="max-width:400px;margin:0 auto;"><h2>Administration Globale</h2>
+        <form method="POST"><label>Mot de passe Admin</label><input type="password" name="password" required autocomplete="current-password">
+        <div style="margin-top:20px"><button type="submit" class="btn btn-block">Entrer</button></div></form></div>""", title="Admin")
+    users=User.query.order_by(User.created_at.desc()).all()
+    active_rows="".join(f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>{u.plan}</td><td>Actif</td></tr>" for u in users if u.active)
+    pending_rows="".join(f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>Invitation en attente</td></tr>" for u in users if not u.active)
+    body=f"""
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div><h2>Panel Administrateur</h2><p class="muted">Créez un compte entreprise avec son email, puis envoyez-lui sa clé.</p></div><a href="{url_for('admin_logout')}" class="btn btn-red">Quitter</a></div></div>
+    <div class="card"><h3>🏢 Nouvelle entreprise</h3>
+      <form method="POST" action="{url_for('admin_create_invitation')}">
+        <label>Nom de l'entreprise</label><input type="text" name="company_name" required maxlength="150">
+        <label>Email de l'entreprise</label><input type="email" name="email" required maxlength="160">
+        <label>Pays (optionnel)</label><input type="text" name="country" maxlength="100">
+        <div style="margin-top:15px"><button type="submit" class="btn">🔑 Générer la clé d'activation</button></div>
       </form>
     </div>
-
-    <div class="card">
-      <h3>Entreprises</h3>
-
-      <div class="table-responsive">
-        <table>
-
-          <thead>
-          <tr>
-            <th>Entreprise</th>
-            <th>Email</th>
-            <th>Plan</th>
-            <th>Tournées</th>
-          </tr>
-          </thead>
-
-          <tbody>
-          {user_rows or '<tr><td colspan="4">Aucune entreprise.</td></tr>'}
-          </tbody>
-
-        </table>
-      </div>
-    </div>
+    <div class="card"><h3>⏳ Invitations en attente</h3><div class="table-responsive"><table><thead><tr><th>Entreprise</th><th>Email</th><th>Statut</th></tr></thead><tbody>{pending_rows or '<tr><td colspan="3" class="muted">Aucune invitation.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3>Entreprises actives</h3><div class="table-responsive"><table><thead><tr><th>Entreprise</th><th>Email</th><th>Plan</th><th>Statut</th></tr></thead><tbody>{active_rows or '<tr><td colspan="4" class="muted">Aucune entreprise.</td></tr>'}</tbody></table></div></div>
     """
+    return page(body,title="Admin Panel")
 
-    return page(
-        body,
-        title="Admin Panel"
-    )
-
-
-@app.route("/admin/generate-key", methods=["POST"])
-def admin_generate_key():
-    if not admin_required():
-        return redirect(
-            url_for("admin_panel")
-        )
-
-    user_id = request.form.get("user_id")
-    user = User.query.get(user_id)
-
-    if not user:
-        flash(
-            "Entreprise introuvable.",
-            "danger"
-        )
-        return redirect(
-            url_for("admin_panel")
-        )
-
-    expiry = (
-        user.subscription_expires_at
-        if (
-            user.subscription_expires_at
-            and user.subscription_expires_at > utcnow()
-        )
-        else utcnow() + timedelta(days=30)
-    )
-
-    key = create_api_key(
-        user,
-        expiry
-    )
-
+@app.route("/admin/create-invitation", methods=["POST"])
+def admin_create_invitation():
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_panel"))
+    company=request.form.get("company_name","").strip()
+    email=request.form.get("email","").strip().lower()
+    country=request.form.get("country","").strip()
+    if not company or not email:
+        flash("Nom de l'entreprise et email obligatoires.","danger"); return redirect(url_for("admin_panel"))
+    user=User.query.filter_by(email=email).first()
+    if user and user.active:
+        flash("Un compte actif existe déjà avec cet email.","danger"); return redirect(url_for("admin_panel"))
+    if user:
+        user.company_name=company; user.country=country
+        ApiKey.query.filter_by(user_id=user.id,key_type="invite",revoked=False).update({"revoked":True},synchronize_session=False)
+    else:
+        user=User(company_name=company,email=email,password_hash=generate_password_hash(secrets.token_urlsafe(32)),role="dispatcher",country=country,active=False)
+        db.session.add(user); db.session.flush()
+    expires=utcnow()+timedelta(days=7)
+    invitation=create_api_key(user,expires,key_type="invite",prefix="GRI-")
+    db.session.add(AuditLog(action="ACCOUNT_INVITATION_CREATED",details=f"user={email}; invitation_id={invitation.id}"))
     db.session.commit()
-
-    flash(
-        f"Clé API générée : {key.key_string}",
-        "success"
-    )
-
-    return redirect(
-        url_for("admin_panel")
-    )
-
+    activation_url=url_for("activate_account",_external=True)
+    body=f"""<div class="card" style="max-width:650px;margin:0 auto"><h2>✅ Clé d'activation générée</h2>
+    <p><strong>Entreprise :</strong> {user.company_name}</p><p><strong>Email :</strong> {user.email}</p>
+    <label>Clé à envoyer au client</label><div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">{invitation.key_string}</div>
+    <label>Lien d'activation</label><div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">{activation_url}</div>
+    <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
+    <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a></div>"""
+    return page(body,title="Clé d'activation")
 
 @app.route("/admin-logout")
 def admin_logout():
@@ -3329,11 +3270,7 @@ def admin_logout():
 # ============================================================
 
 def authenticate_api_user():
-    session_user = current_user()
-
-    if session_user:
-        return session_user
-
+    """Authentifie exclusivement les appels B2B par X-API-KEY."""
     key_val = request.headers.get(
         "X-API-KEY",
         ""
@@ -3350,15 +3287,10 @@ def authenticate_api_user():
     if not key:
         return None
 
-    if (
-        key.expires_at
-        and key.expires_at < utcnow()
-    ):
+    if key.expires_at and key.expires_at < utcnow():
         return None
 
-    user = User.query.get(
-        key.user_id
-    )
+    user = User.query.get(key.user_id)
 
     if not user or not user.active:
         return None
