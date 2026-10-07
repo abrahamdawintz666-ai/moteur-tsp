@@ -1,1102 +1,3516 @@
 import os
 import io
+import csv
 import json
 import secrets
-import hashlib
-import hmac
+import base64
 import math
-import urllib.request
+import hashlib
 import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, make_response, flash
+
+from flask import (
+    Flask, render_template_string, request, redirect, url_for,
+    flash, session, jsonify, make_response, abort
+)
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
+try:
+    from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+    HAS_ORTOOLS = True
+except ImportError:
+    HAS_ORTOOLS = False
 
-APP_NAME = "AntStrike Logistics — GlobalRoute AI"
-ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_PASSWORD", "antstrike2026admin")
-SOLANA_RECEIVING_WALLET = os.getenv("SOLANA_WALLET", "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d")
-USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+# ============================================================
+# GLOBALROUTE AI — GLOBAL B2B SAAS
+# ============================================================
+# Real road routing:
+#   - OSRM driving network, never straight-line fallback
+#   - OSRM Table matrix for road distances
+#   - OR-Tools when installed for large route optimization
+#   - OSRM Trip fallback when OR-Tools is unavailable
+#
+# Data integrity:
+#   - strict coordinate validation
+#   - duplicate detection
+#   - bounded point count
+#   - no silent conversion of invalid rows
+#
+# Security:
+#   - password hashing
+#   - strong API keys
+#   - secure session configuration
+#   - server-side subscription/quota enforcement
+#   - signed/hashed driver access codes
+# ============================================================
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
-# --- CONFIGURATION DATABASE (Compatible Render PostgreSQL / SQLite local) ---
-database_url = os.getenv("DATABASE_URL", "sqlite:///antstrike_logistics.db")
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("COOKIE_SECURE", "0") == "1"
+app.config["SESSION_COOKIE_NAME"] = "globalroute_session"
 
-app.config["SQLALCHEMY_DATABASE_URI"] = database_url
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+APP_NAME = "GlobalRoute AI — Global Enterprise Logistics"
 
-db = SQLAlchemy(app)
-limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day", "50 per minute"])
+SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGkZwyTDt1v"
+SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet.solana.com")
 
-# --- MODÈLES DE LA BDD ---
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    company_name = db.Column(db.String(120), nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-    address = db.Column(db.String(200))
-    city = db.Column(db.String(100))
-    country = db.Column(db.String(100))
-    tax_id = db.Column(db.String(50))
-    role = db.Column(db.String(20), default="dispatcher")
-    plan = db.Column(db.String(20), default="free")
-    tour_limit = db.Column(db.Integer, default=5)
-    tours_used = db.Column(db.Integer, default=0)
-    subscription_expires_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    routes = db.relationship("DeliveryRoute", backref="company", lazy=True)
-    payments = db.relationship("PaymentOrder", backref="company", lazy=True)
+# OSRM public/default endpoint. On production, use your own OSRM server
+# for higher capacity and predictable limits.
+ROUTING_URL = os.getenv(
+    "ROUTING_URL", "https://router.project-osrm.org"
+).rstrip("/")
+OSRM_PROFILE = os.getenv("OSRM_PROFILE", "driving")
+OSRM_TIMEOUT = int(os.getenv("OSRM_TIMEOUT", "45"))
 
-class ApiKey(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    key_string = db.Column(db.String(64), unique=True, nullable=False)
-    expires_at = db.Column(db.DateTime)
-    revoked = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+# Keep below common public OSRM coordinate limits.
+OSRM_MATRIX_BLOCK = int(os.getenv("OSRM_MATRIX_BLOCK", "80"))
+OSRM_TRIP_LIMIT = int(os.getenv("OSRM_TRIP_LIMIT", "80"))
 
-class PaymentOrder(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    order_code = db.Column(db.String(30), unique=True, nullable=False)
-    reference = db.Column(db.String(64), unique=True, nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    plan = db.Column(db.String(20), nullable=False)
-    duration_days = db.Column(db.Integer, default=30)
-    amount_usdc = db.Column(db.Float, nullable=False)
-    status = db.Column(db.String(20), default="pending")
-    transaction_signature = db.Column(db.String(128))
-    paid_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+# Maximum accepted points for one optimization request.
+MAX_ROUTE_POINTS = int(os.getenv("MAX_ROUTE_POINTS", "1000"))
 
-class DeliveryRoute(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    route_name = db.Column(db.String(120), nullable=False)
-    driver_name = db.Column(db.String(120), nullable=False)
-    access_code = db.Column(db.String(50), nullable=False)
-    stops_data = db.Column(db.Text, nullable=False)
-    optimized = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+# Optional OR-Tools search time per optimization.
+OR_TOOLS_SECONDS = int(os.getenv("OR_TOOLS_SECONDS", "30"))
 
-class AuditLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    action = db.Column(db.String(200), nullable=False)
-    details = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+# Admin password MUST be configured in Render/environment.
+ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_SECRET_PASSWORD")
+if not ADMIN_SECRET_PASSWORD:
+    ADMIN_SECRET_PASSWORD = secrets.token_urlsafe(32)
+    print("WARNING: ADMIN_SECRET_PASSWORD is not configured.")
 
-with app.app_context():
-    db.create_all()
-
-def utcnow():
-    return datetime.now(timezone.utc)
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["200 per minute", "20 per second"],
+    storage_uri="memory://"
+)
 
 TRANSLATIONS = {
     "fr": {
-        "home_title": "Optimisation Logistique B2B & Raccourcis Intelligents",
-        "dashboard": "Tableau de Bord",
-        "import": "Importer / Tournées",
+        "home_title": "Optimisation mondiale de tournées pour entreprises B2B.",
+        "dashboard": "Tableau de bord",
+        "import": "Importer",
         "plans": "Abonnements",
-        "login": "Connexion",
-        "register": "Inscription",
         "logout": "Déconnexion",
+        "login": "Connexion",
+        "register": "Créer un compte",
         "admin": "Admin",
-        "driver_space": "Espace Livreur"
+        "driver_space": "Espace livreur",
     },
     "en": {
-        "home_title": "B2B Logistics Optimization & Smart Shortcuts",
+        "home_title": "Global route optimization for modern B2B enterprises.",
         "dashboard": "Dashboard",
-        "import": "Import / Routes",
+        "import": "Import",
         "plans": "Plans",
+        "logout": "Logout",
         "login": "Login",
         "register": "Register",
-        "logout": "Logout",
         "admin": "Admin",
-        "driver_space": "Driver Space"
+        "driver_space": "Driver Space",
     },
     "es": {
-        "home_title": "Optimización Logística B2B y Atajos Inteligentes",
+        "home_title": "Optimización global de rutas para empresas B2B.",
         "dashboard": "Panel",
-        "import": "Importar / Rutas",
+        "import": "Importar",
         "plans": "Planes",
-        "login": "Iniciar Sesión",
+        "logout": "Cerrar sesión",
+        "login": "Iniciar sesión",
         "register": "Registrarse",
-        "logout": "Cerrar Sesión",
         "admin": "Admin",
-        "driver_space": "Espacio Conductor"
-    }
+        "driver_space": "Espacio repartidor",
+    },
 }
 
-def t(key):
-    lang = session.get("lang", "fr")
-    return TRANSLATIONS.get(lang, TRANSLATIONS["fr"]).get(key, key)
+PLANS = {
+    "standard": {
+        "name": "Standard",
+        "monthly_price": 99.00,
+        "tour_limit": 500,
+        "point_limit": 500,
+    },
+    "pro": {
+        "name": "Pro",
+        "monthly_price": 300.00,
+        "tour_limit": 2500,
+        "point_limit": 1000,
+    },
+}
 
-def parse_coordinate(val):
-    try:
-        val_str = str(val).strip().replace(',', '.')
-        return float(val_str)
-    except Exception:
-        return None
+DURATIONS = {30: 1.0, 90: 2.7, 180: 5.0, 365: 9.0}
 
-def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c
 
-def nearest_neighbor_guided(points):
-    if not points:
-        return []
-    unvisited = list(points)
-    current = unvisited.pop(0)
-    ordered = [current]
-    while unvisited:
-        next_point = min(unvisited, key=lambda p: calculate_distance(current['lat'], current['lng'], p['lat'], p['lng']))
-        unvisited.remove(next_point)
-        ordered.append(next_point)
-        current = next_point
-    return ordered
+# ============================================================
+# DATABASE
+# ============================================================
 
-def local_two_opt_pass(route):
-    best = list(route)
-    improved = True
-    while improved:
-        improved = False
-        for i in range(1, len(best) - 2):
-            for j in range(i + 1, len(best)):
-                if j - i == 1:
-                    continue
-                new_route = best[:i] + best[i:j][::-1] + best[j:]
-                old_dist = sum(calculate_distance(best[k]['lat'], best[k]['lng'], best[k+1]['lat'], best[k+1]['lng']) for k in range(len(best)-1))
-                new_dist = sum(calculate_distance(new_route[k]['lat'], new_route[k]['lng'], new_route[k+1]['lat'], new_route[k+1]['lng']) for k in range(len(new_route)-1))
-                if new_dist < old_dist:
-                    best = new_route
-                    improved = True
-    return best
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace(
+            "postgres://", "postgresql+psycopg2://", 1
+        )
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace(
+            "postgresql://", "postgresql+psycopg2://", 1
+        )
+else:
+    database_url = "sqlite:///globalroute.db"
 
-def optimize_stops_order(points):
-    if len(points) <= 3:
-        return points
-    nn = nearest_neighbor_guided(points)
-    optimized = local_two_opt_pass(nn)
-    return optimized
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
 
-def calculate_price(plan, duration_days):
-    base_monthly = 99.0 if plan == "standard" else 300.0 if plan == "pro" else 0.0
-    amount = (base_monthly / 30.0) * duration_days
-    if duration_days >= 90:
-        amount *= 0.9
-    return round(amount, 2)
+
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    company_name = db.Column(db.String(150), nullable=False)
+    email = db.Column(db.String(160), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(30), default="dispatcher")
+    language = db.Column(db.String(10), default="fr")
+    address = db.Column(db.String(250), default="")
+    city = db.Column(db.String(100), default="")
+    country = db.Column(db.String(100), default="")
+    tax_id = db.Column(db.String(50), default="")
+    plan = db.Column(db.String(30), default="standard")
+    subscription_started_at = db.Column(db.DateTime, nullable=True)
+    subscription_expires_at = db.Column(db.DateTime, nullable=True)
+    credits = db.Column(db.Integer, default=0)
+    unlimited = db.Column(db.Boolean, default=False)
+    tour_limit = db.Column(db.Integer, default=500)
+    tours_used = db.Column(db.Integer, default=0)
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    api_keys = db.relationship(
+        "ApiKey", backref="owner", lazy=True,
+        cascade="all, delete-orphan"
+    )
+    deliveries = db.relationship(
+        "DeliveryRoute", backref="company", lazy=True,
+        cascade="all, delete-orphan"
+    )
+    payments = db.relationship(
+        "PaymentOrder", backref="customer", lazy=True,
+        cascade="all, delete-orphan"
+    )
+
+
+class ApiKey(db.Model):
+    __tablename__ = "api_keys"
+
+    id = db.Column(db.Integer, primary_key=True)
+    key_string = db.Column(db.String(255), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=True)
+    revoked = db.Column(db.Boolean, default=False)
+
+
+class PaymentOrder(db.Model):
+    __tablename__ = "payment_orders"
+
+    id = db.Column(db.Integer, primary_key=True)
+    order_code = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    reference = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    plan = db.Column(db.String(30), nullable=False)
+    duration_days = db.Column(db.Integer, nullable=False)
+    amount_usdc = db.Column(db.Float, nullable=False)
+    currency = db.Column(db.String(10), default="USDC")
+    status = db.Column(db.String(20), default="pending")
+    transaction_signature = db.Column(db.String(160), unique=True, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    paid_at = db.Column(db.DateTime, nullable=True)
+
+
+class DeliveryRoute(db.Model):
+    __tablename__ = "delivery_routes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    route_name = db.Column(db.Text, default="Tournée")
+    driver_name = db.Column(db.String(100), nullable=False)
+    access_code = db.Column(db.String(120), nullable=False, index=True)
+    access_code_hash = db.Column(db.String(255), nullable=True)
+    stops_data = db.Column(db.Text, nullable=False)
+    stops_summary = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), default="En cours")
+    optimized = db.Column(db.Boolean, default=False)
+    optimization_engine = db.Column(db.String(40), default="OSRM")
+    total_road_distance_m = db.Column(db.Float, nullable=True)
+    optimization_id = db.Column(db.String(80), nullable=True, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AuditLog(db.Model):
+    __tablename__ = "audit_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    action = db.Column(db.String(120), nullable=False)
+    details = db.Column(db.Text, default="")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+def migrate_existing_database():
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+
+    models = (
+        ("users", User),
+        ("api_keys", ApiKey),
+        ("payment_orders", PaymentOrder),
+        ("delivery_routes", DeliveryRoute),
+        ("audit_logs", AuditLog),
+    )
+
+    for table_name, model in models:
+        if table_name not in existing_tables:
+            continue
+
+        existing_columns = {
+            col["name"] for col in inspector.get_columns(table_name)
+        }
+
+        for column in model.__table__.columns:
+            if column.name in existing_columns or column.primary_key:
+                continue
+
+            try:
+                type_sql = column.type.compile(
+                    dialect=db.engine.dialect
+                )
+            except Exception:
+                type_sql = str(column.type)
+
+            sql = (
+                f'ALTER TABLE "{table_name}" '
+                f'ADD COLUMN "{column.name}" {type_sql}'
+            )
+
+            try:
+                db.session.execute(text(sql))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+
+with app.app_context():
+    db.create_all()
+    migrate_existing_database()
+
+
+# ============================================================
+# GENERAL UTILITIES
+# ============================================================
+
+ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def base58_encode(raw: bytes) -> str:
+    number = int.from_bytes(raw, "big")
+    result = ""
+
+    while number:
+        number, remainder = divmod(number, 58)
+        result = ALPHABET[remainder] + result
+
+    leading_zeroes = sum(1 for byte in raw if byte == 0)
+    return "1" * leading_zeroes + (result or "")
+
 
 def generate_reference():
-    return secrets.token_hex(16)
+    return base58_encode(secrets.token_bytes(32))
 
-def verify_usdc_payment(order):
-    if os.getenv("FLASK_ENV") == "development" or order.amount_usdc == 0:
-        return True, "DEV_MOCK_SIGNATURE_" + secrets.token_hex(8), "Siksè (Mock)"
-    return False, None, "Tèk ap tann konfimasyon sou rezo Solana a..."
 
-def activate_paid_order(order, signature):
-    order.status = "paid"
-    order.transaction_signature = signature
-    order.paid_at = utcnow()
-    user = User.query.get(order.user_id)
-    user.plan = order.plan
-    if order.plan == "standard":
-        user.tour_limit = 500
-    elif order.plan == "pro":
-        user.tour_limit = 2500
-    user.tours_used = 0
-    base_time = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > utcnow() else utcnow()
-    user.subscription_expires_at = base_time + timedelta(days=order.duration_days)
-    db.session.commit()
+def utcnow():
+    return datetime.utcnow()
 
-def active_api_key(user):
-    key = ApiKey.query.filter_by(user_id=user.id, revoked=False).first()
-    if not key:
-        key = ApiKey(user_id=user.id, key_string=secrets.token_hex(32), expires_at=utcnow() + timedelta(days=365))
-        db.session.add(key)
-        db.session.commit()
-    return key
 
-def create_api_key(user, expiry):
-    key = ApiKey(user_id=user.id, key_string=secrets.token_hex(32), expires_at=expiry)
+def get_current_lang():
+    lang = session.get("lang", "fr")
+    return lang if lang in TRANSLATIONS else "fr"
+
+
+def t(key):
+    lang = get_current_lang()
+    return TRANSLATIONS.get(
+        lang, TRANSLATIONS["fr"]
+    ).get(key, key)
+
+
+def calculate_price(plan, duration_days):
+    if plan not in PLANS or duration_days not in DURATIONS:
+        raise ValueError("Paramètres invalides.")
+
+    return round(
+        PLANS[plan]["monthly_price"] *
+        DURATIONS[duration_days],
+        2
+    )
+
+
+def parse_coordinate(value):
+    try:
+        value = str(value).strip().replace(",", ".")
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_text(value, max_length=500):
+    value = str(value or "").strip()
+    return value[:max_length]
+
+
+def validate_stop(point, index):
+    if not isinstance(point, dict):
+        raise ValueError(f"Point #{index + 1}: format invalide.")
+
+    lat = parse_coordinate(point.get("lat"))
+    lng = parse_coordinate(
+        point.get("lng", point.get("lon"))
+    )
+
+    if lat is None or lng is None:
+        raise ValueError(
+            f"Point #{index + 1}: latitude/longitude manquante."
+        )
+
+    if not (-90 <= lat <= 90):
+        raise ValueError(
+            f"Point #{index + 1}: latitude hors limites."
+        )
+
+    if not (-180 <= lng <= 180):
+        raise ValueError(
+            f"Point #{index + 1}: longitude hors limites."
+        )
+
+    name = normalize_text(point.get("name"), 150)
+    address = normalize_text(point.get("address"), 500)
+
+    if not name:
+        name = f"Point {index + 1}"
+
+    return {
+        "name": name,
+        "address": address,
+        "lat": lat,
+        "lng": lng,
+    }
+
+
+def validate_stops(stops, max_points=MAX_ROUTE_POINTS):
+    if not isinstance(stops, list):
+        raise ValueError("Les étapes doivent être une liste.")
+
+    if len(stops) < 2:
+        raise ValueError("Au moins 2 points sont nécessaires.")
+
+    if len(stops) > max_points:
+        raise ValueError(
+            f"Maximum autorisé : {max_points} points "
+            f"par optimisation."
+        )
+
+    clean = []
+    seen = set()
+    duplicates = []
+
+    for i, point in enumerate(stops):
+        clean_point = validate_stop(point, i)
+
+        key = (
+            round(clean_point["lat"], 7),
+            round(clean_point["lng"], 7),
+        )
+
+        if key in seen:
+            duplicates.append(i + 1)
+        else:
+            seen.add(key)
+
+        clean.append(clean_point)
+
+    if duplicates:
+        raise ValueError(
+            "Coordonnées dupliquées aux lignes : "
+            + ", ".join(map(str, duplicates))
+            + ". Corrigez les doublons avant optimisation."
+        )
+
+    return clean
+
+
+def hash_access_code(value):
+    return generate_password_hash(
+        value,
+        method="pbkdf2:sha256:600000"
+    )
+
+
+def check_access_code(route, supplied):
+    if not supplied:
+        return False
+
+    if route.access_code_hash:
+        return check_password_hash(
+            route.access_code_hash,
+            supplied
+        )
+
+    # Compatibilité avec les anciennes tournées.
+    return secrets.compare_digest(
+        str(route.access_code or ""),
+        str(supplied)
+    )
+
+
+def generate_driver_code():
+    return "GR-" + secrets.token_urlsafe(12)
+
+
+def create_api_key(user, expires_at):
+    key_str = "gr_live_" + secrets.token_urlsafe(32)
+
+    key = ApiKey(
+        key_string=key_str,
+        user_id=user.id,
+        expires_at=expires_at
+    )
+
     db.session.add(key)
     return key
 
+
+def active_api_key(user):
+    now = utcnow()
+
+    for key in user.api_keys:
+        if (
+            not key.revoked
+            and (
+                not key.expires_at
+                or key.expires_at >= now
+            )
+        ):
+            return key
+
+    return None
+
+
+def add_subscription(user, plan, duration_days):
+    now = utcnow()
+
+    same_plan = bool(
+        user.subscription_expires_at
+        and user.subscription_expires_at > now
+        and user.plan == plan
+    )
+
+    if same_plan:
+        expiry = (
+            user.subscription_expires_at
+            + timedelta(days=duration_days)
+        )
+
+        user.tour_limit = (
+            int(user.tour_limit or 0)
+            + int(PLANS[plan]["tour_limit"])
+        )
+
+    else:
+        expiry = now + timedelta(days=duration_days)
+
+        user.plan = plan
+        user.subscription_started_at = now
+        user.subscription_expires_at = expiry
+        user.tour_limit = int(PLANS[plan]["tour_limit"])
+        user.tours_used = 0
+        user.credits = user.tour_limit
+
+    key = active_api_key(user)
+
+    if key:
+        key.expires_at = expiry
+    else:
+        create_api_key(user, expiry)
+
+    return expiry
+
+
+# ============================================================
+# OSRM REAL ROAD ENGINE
+# ============================================================
+
+def osrm_request(service, stops, params=None):
+    """
+    Call OSRM.
+
+    IMPORTANT:
+    This function never falls back to Haversine or a straight line.
+    """
+    if not stops:
+        raise RuntimeError("Aucun point à envoyer à OSRM.")
+
+    coordinates = ";".join(
+        f"{float(p['lng'])},{float(p['lat'])}"
+        for p in stops
+    )
+
+    query = urllib.parse.urlencode(params or {})
+
+    url = (
+        f"{ROUTING_URL}/"
+        f"{service}/v1/{OSRM_PROFILE}/"
+        f"{coordinates}"
+    )
+
+    if query:
+        url += "?" + query
+
+    request_obj = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "GlobalRoute-AI/1.0"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request_obj,
+            timeout=OSRM_TIMEOUT
+        ) as response:
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Connexion OSRM impossible : {exc}"
+        )
+
+    if data.get("code") != "Ok":
+        raise RuntimeError(
+            "OSRM : "
+            + str(
+                data.get(
+                    "message",
+                    data.get("code", "erreur inconnue")
+                )
+            )
+        )
+
+    return data
+
+
+def build_osrm_table(stops):
+    """
+    Builds a road-distance matrix in meters.
+
+    OSRM Table is called in blocks so hundreds of points can be
+    processed without a huge single HTTP request.
+    """
+    n = len(stops)
+    matrix = [
+        [None for _ in range(n)]
+        for _ in range(n)
+    ]
+
+    block = max(10, min(OSRM_MATRIX_BLOCK, 80))
+
+    for source_start in range(0, n, block):
+        source_end = min(source_start + block, n)
+        source_indices = list(
+            range(source_start, source_end)
+        )
+
+        for dest_start in range(0, n, block):
+            dest_end = min(dest_start + block, n)
+            dest_indices = list(
+                range(dest_start, dest_end)
+            )
+
+            # All points must be in the coordinate list.
+            combined_indices = list(
+                dict.fromkeys(
+                    source_indices + dest_indices
+                )
+            )
+
+            local_stops = [
+                stops[i]
+                for i in combined_indices
+            ]
+
+            source_positions = [
+                combined_indices.index(i)
+                for i in source_indices
+            ]
+
+            destination_positions = [
+                combined_indices.index(i)
+                for i in dest_indices
+            ]
+
+            data = osrm_request(
+                "table",
+                local_stops,
+                {
+                    "sources": ";".join(
+                        map(str, source_positions)
+                    ),
+                    "destinations": ";".join(
+                        map(str, destination_positions)
+                    ),
+                    "annotations": "distance,duration",
+                }
+            )
+
+            distances = data.get("distances") or []
+
+            for si, row in enumerate(distances):
+                global_i = source_indices[si]
+
+                for di, value in enumerate(row):
+                    global_j = dest_indices[di]
+                    matrix[global_i][global_j] = value
+
+    for i in range(n):
+        matrix[i][i] = 0
+
+    missing = [
+        (i, j)
+        for i in range(n)
+        for j in range(n)
+        if matrix[i][j] is None
+    ]
+
+    if missing:
+        raise RuntimeError(
+            f"OSRM n'a pas fourni {len(missing)} "
+            "distances routières."
+        )
+
+    return [
+        [int(round(float(x))) for x in row]
+        for row in matrix
+    ]
+
+
+def optimize_with_ortools(stops, distance_matrix):
+    """
+    TSP/route optimization using the real OSRM road-distance matrix.
+
+    First and last stops are fixed:
+        start = first input point
+        destination = last input point
+    """
+    if not HAS_ORTOOLS:
+        return None
+
+    n = len(stops)
+
+    if n <= 2:
+        return list(stops)
+
+    manager = pywrapcp.RoutingIndexManager(
+        n,
+        1,
+        [0],
+        [n - 1]
+    )
+
+    routing = pywrapcp.RoutingModel(manager)
+
+    def distance_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+
+        value = distance_matrix[from_node][to_node]
+
+        if value is None:
+            return 10**12
+
+        return int(value)
+
+    transit_callback_index = routing.RegisterTransitCallback(
+        distance_callback
+    )
+
+    routing.SetArcCostEvaluatorOfAllVehicles(
+        transit_callback_index
+    )
+
+    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+
+    search_parameters.first_solution_strategy = (
+        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    )
+
+    search_parameters.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
+
+    search_parameters.time_limit.seconds = OR_TOOLS_SECONDS
+
+    solution = routing.SolveWithParameters(
+        search_parameters
+    )
+
+    if not solution:
+        return None
+
+    ordered = []
+    index = routing.Start(0)
+
+    while not routing.IsEnd(index):
+        node = manager.IndexToNode(index)
+        ordered.append(stops[node])
+        index = solution.Value(
+            routing.NextVar(index)
+        )
+
+    ordered.append(
+        stops[manager.IndexToNode(index)]
+    )
+
+    if len(ordered) != n:
+        return None
+
+    return ordered
+
+
+def osrm_trip_order(stops):
+    """
+    OSRM Trip is used when OR-Tools is not installed or for
+    smaller jobs. It is road-network based, not Haversine based.
+    """
+    if len(stops) <= 2:
+        return list(stops)
+
+    if len(stops) > OSRM_TRIP_LIMIT:
+        raise RuntimeError(
+            "La tournée est trop grande pour le mode OSRM Trip direct."
+        )
+
+    data = osrm_request(
+        "trip",
+        stops,
+        {
+            "roundtrip": "false",
+            "source": "first",
+            "destination": "last",
+            "steps": "false",
+            "overview": "false",
+        }
+    )
+
+    trips = data.get("trips") or []
+
+    if not trips:
+        raise RuntimeError(
+            "OSRM n'a trouvé aucune tournée routière."
+        )
+
+    waypoints = data.get("waypoints") or []
+
+    if len(waypoints) != len(stops):
+        raise RuntimeError(
+            "OSRM n'a pas retourné tous les points."
+        )
+
+    ordered = [None] * len(stops)
+
+    for original_index, waypoint in enumerate(waypoints):
+        waypoint_index = waypoint.get("waypoint_index")
+
+        if (
+            waypoint_index is not None
+            and 0 <= waypoint_index < len(stops)
+        ):
+            ordered[waypoint_index] = stops[original_index]
+
+    ordered = [
+        point for point in ordered
+        if point is not None
+    ]
+
+    if len(ordered) != len(stops):
+        raise RuntimeError(
+            "Impossible de reconstruire l'ordre OSRM."
+        )
+
+    return ordered
+
+
+def get_route_geometry(stops):
+    """
+    Gets the real road geometry for the final optimized order.
+
+    Large routes are split into consecutive chunks, with the
+    boundary point repeated so the road geometry remains continuous.
+    """
+    if len(stops) < 2:
+        return [], 0.0
+
+    geometries = []
+    total_distance = 0.0
+
+    # Public OSRM endpoints can have coordinate limits.
+    chunk_size = max(10, min(OSRM_TRIP_LIMIT, 80))
+
+    for start in range(
+        0,
+        len(stops) - 1,
+        chunk_size - 1
+    ):
+        end = min(
+            start + chunk_size,
+            len(stops)
+        )
+
+        chunk = stops[start:end]
+
+        if len(chunk) < 2:
+            continue
+
+        data = osrm_request(
+            "route",
+            chunk,
+            {
+                "overview": "full",
+                "geometries": "geojson",
+                "steps": "false",
+            }
+        )
+
+        routes = data.get("routes") or []
+
+        if not routes:
+            raise RuntimeError(
+                "OSRM n'a pas retourné la géométrie routière."
+            )
+
+        route = routes[0]
+
+        total_distance += float(
+            route.get("distance", 0)
+        )
+
+        geometry = (
+            route.get("geometry", {})
+            .get("coordinates", [])
+        )
+
+        if geometries and geometry:
+            geometries.extend(geometry[1:])
+        else:
+            geometries.extend(geometry)
+
+        if end == len(stops):
+            break
+
+    if not geometries:
+        raise RuntimeError(
+            "OSRM n'a fourni aucune géométrie routière."
+        )
+
+    # GeoJSON = [lng, lat]. Leaflet wants [lat, lng].
+    leaflet_geometry = [
+        [float(coord[1]), float(coord[0])]
+        for coord in geometries
+        if len(coord) >= 2
+    ]
+
+    return leaflet_geometry, total_distance
+
+
+def optimize_stops_order(stops):
+    """
+    Main optimization engine.
+
+    1. Validate data.
+    2. Build real road matrix through OSRM.
+    3. Solve with OR-Tools when available.
+    4. Otherwise use OSRM Trip for smaller routes.
+    5. NEVER use straight-line distance for final optimization.
+    """
+    stops = validate_stops(stops)
+
+    if len(stops) <= 2:
+        geometry, distance = get_route_geometry(stops)
+        return stops, geometry, distance, "OSRM"
+
+    if HAS_ORTOOLS:
+        matrix = build_osrm_table(stops)
+
+        optimized = optimize_with_ortools(
+            stops,
+            matrix
+        )
+
+        if optimized:
+            geometry, distance = get_route_geometry(
+                optimized
+            )
+
+            return (
+                optimized,
+                geometry,
+                distance,
+                "OSRM + OR-Tools"
+            )
+
+    if len(stops) <= OSRM_TRIP_LIMIT:
+        optimized = osrm_trip_order(stops)
+
+        geometry, distance = get_route_geometry(
+            optimized
+        )
+
+        return (
+            optimized,
+            geometry,
+            distance,
+            "OSRM Trip"
+        )
+
+    raise RuntimeError(
+        "OR-Tools n'est pas installé et la tournée dépasse "
+        f"{OSRM_TRIP_LIMIT} points. Installez OR-Tools ou "
+        "utilisez un serveur OSRM de production."
+    )
+
+
+# ============================================================
+# SOLANA PAYMENTS
+# ============================================================
+
+def rpc_call(method, params):
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        SOLANA_RPC_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "GlobalRoute-AI/1.0",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(
+        req,
+        timeout=20
+    ) as response:
+        data = json.loads(
+            response.read().decode("utf-8")
+        )
+
+    if "error" in data:
+        raise RuntimeError(str(data["error"]))
+
+    return data.get("result")
+
+
+def find_signature_by_reference(reference):
+    result = rpc_call(
+        "getSignaturesForAddress",
+        [reference, {"limit": 20}]
+    )
+
+    if not result:
+        return None
+
+    for item in result:
+        if not item.get("err"):
+            return item.get("signature")
+
+    return None
+
+
+def verify_usdc_payment(order):
+    signature = find_signature_by_reference(
+        order.reference
+    )
+
+    if not signature:
+        return (
+            False,
+            None,
+            "Paiement non trouvé sur la blockchain."
+        )
+
+    existing_order = PaymentOrder.query.filter_by(
+        transaction_signature=signature
+    ).first()
+
+    if (
+        existing_order
+        and existing_order.id != order.id
+    ):
+        return (
+            False,
+            signature,
+            "Cette transaction est déjà utilisée."
+        )
+
+    tx = rpc_call(
+        "getTransaction",
+        [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 0,
+            },
+        ]
+    )
+
+    if not tx or (
+        tx.get("meta")
+        and tx["meta"].get("err") is not None
+    ):
+        return (
+            False,
+            None,
+            "Transaction Solana invalide."
+        )
+
+    meta = tx.get("meta") or {}
+
+    expected_raw = int(
+        round(order.amount_usdc * 1_000_000)
+    )
+
+    received_raw = sum(
+        int(
+            balance.get(
+                "uiTokenAmount", {}
+            ).get("amount", "0")
+        )
+        for balance in (
+            meta.get("postTokenBalances") or []
+        )
+        if (
+            balance.get("mint") == USDC_MINT
+            and balance.get("owner")
+            == SOLANA_RECEIVING_WALLET
+        )
+    )
+
+    pre_raw = sum(
+        int(
+            balance.get(
+                "uiTokenAmount", {}
+            ).get("amount", "0")
+        )
+        for balance in (
+            meta.get("preTokenBalances") or []
+        )
+        if (
+            balance.get("mint") == USDC_MINT
+            and balance.get("owner")
+            == SOLANA_RECEIVING_WALLET
+        )
+    )
+
+    if received_raw - pre_raw < expected_raw:
+        return (
+            False,
+            signature,
+            f"Montant USDC insuffisant. "
+            f"Attendu : {order.amount_usdc} USDC."
+        )
+
+    return True, signature, "Paiement vérifié."
+
+
+def activate_paid_order(order, signature):
+    if order.status == "paid":
+        return
+
+    user = User.query.get(order.user_id)
+
+    if not user:
+        raise RuntimeError("Utilisateur introuvable.")
+
+    add_subscription(
+        user,
+        order.plan,
+        order.duration_days
+    )
+
+    order.status = "paid"
+    order.transaction_signature = signature
+    order.paid_at = utcnow()
+
+    db.session.add(
+        AuditLog(
+            action="PAYMENT_CONFIRMED",
+            details=(
+                f"order={order.order_code}; "
+                f"user={user.email}; "
+                f"sig={signature}"
+            )
+        )
+    )
+
+    db.session.commit()
+
+
+# ============================================================
+# SECURITY / AUTH HELPERS
+# ============================================================
+
+def current_user():
+    user_id = session.get("user_id")
+
+    if not user_id:
+        return None
+
+    user = User.query.get(user_id)
+
+    if not user or not user.active:
+        session.pop("user_id", None)
+        return None
+
+    return user
+
+
+def strong_password(password):
+    if len(password) < 12:
+        return False
+
+    checks = [
+        any(c.islower() for c in password),
+        any(c.isupper() for c in password),
+        any(c.isdigit() for c in password),
+        any(not c.isalnum() for c in password),
+    ]
+
+    return all(checks)
+
+
+def admin_required():
+    return bool(session.get("is_admin"))
+
+
+# ============================================================
+# DESIGN
+# ============================================================
+
 BASE_STYLE = """
 :root {
-  --navy:#0f172a; --blue:#2563eb; --blue2:#1d4ed8; --green:#059669; --red:#dc2626;
-  --bg:#f8fafc; --card:#ffffff; --text:#0f172a; --muted:#64748b; --border:#e2e8f0;
+  --navy:#0f172a;
+  --blue:#2563eb;
+  --blue2:#1d4ed8;
+  --green:#059669;
+  --red:#dc2626;
+  --bg:#f8fafc;
+  --card:#ffffff;
+  --text:#0f172a;
+  --muted:#64748b;
+  --border:#e2e8f0;
 }
 * { box-sizing:border-box; }
-html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow-x: hidden; }
-header { background:var(--navy); color:white; padding:12px 20px; display:flex; align-items:center; gap:15px; position:relative; }
-header h1 { margin:0; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.lang-selector { background:rgba(255,255,255,.1); color:white; border:1px solid rgba(255,255,255,.2); border-radius:6px; padding:6px; font-size:12px; }
-.menu-toggle { width:40px; height:40px; border:1px solid rgba(255,255,255,.2); border-radius:8px; background:rgba(255,255,255,.1); color:white; font-size:20px; cursor:pointer; flex-shrink: 0; }
-nav { display:none; position:absolute; top:60px; left:15px; z-index:1000; min-width:220px; padding:10px; background:var(--navy); border:1px solid rgba(255,255,255,.15); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.3); flex-direction:column; gap:6px; }
+html,body {
+  margin:0;
+  padding:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  overflow-x:hidden;
+}
+header {
+  background:var(--navy);
+  color:white;
+  padding:12px 20px;
+  display:flex;
+  align-items:center;
+  gap:15px;
+  position:relative;
+}
+header h1 {
+  margin:0;
+  font-size:18px;
+  flex:1;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.lang-selector {
+  background:rgba(255,255,255,.1);
+  color:white;
+  border:1px solid rgba(255,255,255,.2);
+  border-radius:6px;
+  padding:6px;
+  font-size:12px;
+}
+.menu-toggle {
+  width:40px;
+  height:40px;
+  border:1px solid rgba(255,255,255,.2);
+  border-radius:8px;
+  background:rgba(255,255,255,.1);
+  color:white;
+  font-size:20px;
+  cursor:pointer;
+}
+nav {
+  display:none;
+  position:absolute;
+  top:60px;
+  left:15px;
+  z-index:1000;
+  min-width:220px;
+  padding:10px;
+  background:var(--navy);
+  border:1px solid rgba(255,255,255,.15);
+  border-radius:12px;
+  box-shadow:0 10px 30px rgba(0,0,0,.3);
+  flex-direction:column;
+  gap:6px;
+}
 nav.open { display:flex; }
-nav a { color:#e2e8f0; text-decoration:none; font-size:13px; padding:10px; border-radius:8px; }
+nav a {
+  color:#e2e8f0;
+  text-decoration:none;
+  font-size:13px;
+  padding:10px;
+  border-radius:8px;
+}
 nav a:hover { background:rgba(255,255,255,.1); }
-.container { width:100%; max-width:1150px; margin:0 auto; padding:16px; overflow-x: hidden; }
-.card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:18px; margin-bottom:20px; box-shadow:0 4px 15px rgba(0,0,0,.03); word-break:break-word; }
+.container {
+  width:100%;
+  max-width:1150px;
+  margin:0 auto;
+  padding:16px;
+}
+.card {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:18px;
+  margin-bottom:20px;
+  box-shadow:0 4px 15px rgba(0,0,0,.03);
+  word-break:break-word;
+}
 .hero { text-align:center; padding:30px 15px; }
-.btn { display:inline-block; border:0; border-radius:8px; padding:12px 16px; font-weight:600; text-decoration:none; cursor:pointer; background:var(--blue); color:white; text-align:center; font-size:14px; }
+.btn {
+  display:inline-block;
+  border:0;
+  border-radius:8px;
+  padding:12px 16px;
+  font-weight:600;
+  text-decoration:none;
+  cursor:pointer;
+  background:var(--blue);
+  color:white;
+  text-align:center;
+  font-size:14px;
+}
 .btn:hover { background:var(--blue2); }
 .btn-secondary { background:#e2e8f0; color:var(--navy); }
 .btn-green { background:var(--green); color:white; }
 .btn-red { background:var(--red); color:white; }
 .btn-block { width:100%; display:block; }
-label { display:block; margin:12px 0 6px; font-size:13px; font-weight:700; }
-input, select, textarea { width:100%; max-width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:11px; font-size:14px; background:white; }
-.table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 10px; }
-table { width:100%; border-collapse:collapse; font-size:13px; white-space: nowrap; }
-th, td { border-bottom:1px solid var(--border); padding:12px 10px; text-align:left; }
+label {
+  display:block;
+  margin:12px 0 6px;
+  font-size:13px;
+  font-weight:700;
+}
+input,select,textarea {
+  width:100%;
+  max-width:100%;
+  border:1px solid #cbd5e1;
+  border-radius:8px;
+  padding:11px;
+  font-size:14px;
+  background:white;
+}
+.table-responsive {
+  width:100%;
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+}
+table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:13px;
+  white-space:nowrap;
+}
+th,td {
+  border-bottom:1px solid var(--border);
+  padding:12px 10px;
+  text-align:left;
+}
 th { background:#f1f5f9; }
-.alert { padding:12px; border-radius:8px; margin-bottom:15px; font-size:13px; }
+.alert {
+  padding:12px;
+  border-radius:8px;
+  margin-bottom:15px;
+  font-size:13px;
+}
 .alert-success { background:#dcfce7; color:#166534; }
 .alert-danger { background:#fee2e2; color:#991b1b; }
-.grid { display:grid; grid-template-columns:repeat(3,1fr); gap:15px; }
-.stat { background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:15px; }
-.stat strong { display:block; font-size:20px; margin-top:4px; word-break:break-all; }
+.grid {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:15px;
+}
+.stat {
+  background:#f8fafc;
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:15px;
+}
+.stat strong {
+  display:block;
+  font-size:20px;
+  margin-top:4px;
+  word-break:break-all;
+}
 .muted { color:var(--muted); font-size:12px; }
-.mono { font-family:monospace; word-break:break-all; }
-#map { width:100%; height:400px; border-radius:10px; margin-top:15px; z-index: 1; }
-.plan-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:20px; }
-.plan-card { background:white; border:1px solid var(--border); border-radius:14px; padding:20px; }
-.plan-card.featured { border:2px solid var(--blue); }
+.mono {
+  font-family:monospace;
+  word-break:break-all;
+}
+#map {
+  width:100%;
+  height:500px;
+  border-radius:10px;
+  margin-top:15px;
+  z-index:1;
+}
+.plan-grid {
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:20px;
+}
+.plan-card {
+  background:white;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:20px;
+}
+.plan-card.featured {
+  border:2px solid var(--blue);
+}
+.badge {
+  display:inline-block;
+  padding:5px 8px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:700;
+  background:#dbeafe;
+  color:#1d4ed8;
+}
 @media(max-width:768px) {
-  .grid { grid-template-columns:1fr; }
-  .plan-grid { grid-template-columns:1fr; }
-  body { font-size: 14px; }
-  .container { padding: 10px; }
-  .card { padding: 14px; }
+  .grid,.plan-grid { grid-template-columns:1fr; }
+  .container { padding:10px; }
+  .card { padding:14px; }
 }
 """
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ title or APP_NAME }}</title>
 {% if map_needed %}
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 {% endif %}
-<style>{{ style|safe }}</style>
+<style>{{ style }}</style>
 </head>
 <body>
 <header>
   <button class="menu-toggle" onclick="toggleMenu()">☰</button>
   <h1>{{ APP_NAME }}</h1>
-  <select class="lang-selector" onchange="location.href='/set-lang/'+this.value">
-    <option value="fr" {% if session.get('lang','fr')=='fr' %}selected{% endif %}>Français</option>
-    <option value="en" {% if session.get('lang')=='en' %}selected{% endif %}>English</option>
-    <option value="es" {% if session.get('lang')=='es' %}selected{% endif %}>Español</option>
+  <select class="lang-selector"
+          onchange="location.href='/set-lang/' + this.value">
+    <option value="fr" {% if session.get('lang','fr') == 'fr' %}selected{% endif %}>Français</option>
+    <option value="en" {% if session.get('lang','fr') == 'en' %}selected{% endif %}>English</option>
+    <option value="es" {% if session.get('lang','fr') == 'es' %}selected{% endif %}>Español</option>
   </select>
+  <nav id="global-menu">
+    <a href="{{ url_for('index') }}">⌂ &nbsp;Accueil</a>
+    {% if session.get("user_id") %}
+    <a href="{{ url_for('dashboard') }}">▣ &nbsp;{{ t('dashboard') }}</a>
+    <a href="{{ url_for('import_space') }}">⇧ &nbsp;{{ t('import') }}</a>
+    <a href="{{ url_for('plans') }}">◈ &nbsp;{{ t('plans') }}</a>
+    <a href="{{ url_for('logout') }}">⏻ &nbsp;{{ t('logout') }}</a>
+    {% else %}
+    <a href="{{ url_for('login_form') }}">↪ &nbsp;{{ t('login') }}</a>
+    <a href="{{ url_for('register_form') }}">＋ &nbsp;{{ t('register') }}</a>
+    {% endif %}
+    <a href="{{ url_for('admin_panel') }}">⚙ &nbsp;{{ t('admin') }}</a>
+    <a href="{{ url_for('driver_login') }}">🚚 &nbsp;{{ t('driver_space') }}</a>
+  </nav>
 </header>
-<nav id="global-menu">
-  <a href="{{ url_for('index') }}">⌂ &nbsp; Accueil</a>
-  {% if session.get("user_id") %}
-  <a href="{{ url_for('dashboard') }}">▣ &nbsp; {{ t('dashboard') }}</a>
-  <a href="{{ url_for('import_space') }}">⇧ &nbsp; {{ t('import') }}</a>
-  <a href="{{ url_for('plans') }}">◈ &nbsp; {{ t('plans') }}</a>
-  <a href="{{ url_for('logout') }}">⏻ &nbsp; {{ t('logout') }}</a>
-  {% else %}
-  <a href="{{ url_for('login_form') }}">↪ &nbsp; {{ t('login') }}</a>
-  <a href="{{ url_for('register_form') }}">＋ &nbsp; {{ t('register') }}</a>
-  {% endif %}
-  <a href="{{ url_for('admin_panel') }}">⚙ &nbsp; {{ t('admin') }}</a>
-  <a href="{{ url_for('driver_login') }}">🚚 &nbsp; {{ t('driver_space') }}</a>
-</nav>
 <script>
-function toggleMenu() { document.getElementById("global-menu").classList.toggle("open"); }
+function toggleMenu() {
+  document.getElementById("global-menu").classList.toggle("open");
+}
 </script>
 <div class="container">
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for cat, msg in messages %}
-      <div class="alert alert-{{ cat }}">{{ msg }}</div>
-    {% endfor %}
-  {% endwith %}
-  {{ body|safe }}
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% for cat,msg in messages %}
+<div class="alert alert-{{ 'success' if cat == 'success' else 'danger' }}">
+{{ msg }}
 </div>
-<footer style="text-align:center; padding:20px; color:var(--muted); font-size:12px; border-top: 1px solid var(--border); margin-top: 30px;">
-  <p>© 2026 AntStrike Logistics — GlobalRoute AI. Tout dwa rezève.</p>
+{% endfor %}
+{% endwith %}
+{{ body|safe }}
+</div>
+<footer style="text-align:center;padding:20px;color:#64748b;font-size:12px;">
+© 2026 GlobalRoute AI — Global Enterprise B2B Logistics
 </footer>
 </body>
 </html>
 """
 
+
 def page(body, title=APP_NAME, map_needed=False):
-    return render_template_string(HTML_TEMPLATE, body=body, title=title, style=BASE_STYLE, APP_NAME=APP_NAME, map_needed=map_needed, session=session, t=t)
+    return render_template_string(
+        HTML_TEMPLATE,
+        body=body,
+        title=title,
+        style=BASE_STYLE,
+        APP_NAME=APP_NAME,
+        map_needed=map_needed,
+        session=session,
+        t=t,
+    )
+
+
+# ============================================================
+# HOME / LANGUAGE
+# ============================================================
 
 @app.route("/set-lang/<lang>")
 def set_lang(lang):
     if lang in TRANSLATIONS:
         session["lang"] = lang
-    return redirect(request.referrer or url_for("index"))
+
+    return redirect(
+        request.referrer or url_for("index")
+    )
+
 
 @app.route("/")
 def index():
     body = f"""
     <div class="hero card">
       <h2>{t('home_title')}</h2>
-      <p class="muted">AntStrike Logistics & GlobalRoute AI fournissent l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison.</p>
-      <div style="display:flex; gap:10px; justify-content:center; margin-top:20px;">
-        <a href="{url_for('register_form')}" class="btn">Créer un compte entreprise</a>
-        <a href="{url_for('login_form')}" class="btn btn-secondary">Connexion</a>
+      <p class="muted">
+        GlobalRoute AI calcule des itinéraires sur le réseau routier réel
+        et optimise les tournées B2B à partir de données géographiques
+        validées.
+      </p>
+      <div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+        <a href="{url_for('register_form')}" class="btn">
+          Créer un compte entreprise
+        </a>
+        <a href="{url_for('login_form')}" class="btn btn-secondary">
+          Connexion
+        </a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>🛣️ Routage réel</h3>
+        <p class="muted">OSRM / Driving Network</p>
+        <p>Les itinéraires suivent les routes disponibles.</p>
+      </div>
+
+      <div class="card">
+        <h3>🌍 B2B mondial</h3>
+        <p class="muted">Multi-pays / Multi-entreprises</p>
+        <p>Architecture conçue pour des tournées internationales.</p>
+      </div>
+
+      <div class="card">
+        <h3>🔐 Enterprise</h3>
+        <p class="muted">Sécurité / API / Audit</p>
+        <p>Données isolées et accès contrôlés côté serveur.</p>
       </div>
     </div>
     """
+
     return page(body)
+
+
+# ============================================================
+# REGISTER / LOGIN
+# ============================================================
 
 @app.route("/register-form")
 def register_form():
     body = f"""
-    <div class="card" style="max-width:500px; margin:0 auto;">
+    <div class="card" style="max-width:500px;margin:0 auto;">
       <h2>Créer un compte entreprise B2B</h2>
+
       <form method="POST" action="{url_for('register')}">
         <label>Nom de l'entreprise</label>
-        <input type="text" name="company_name" required>
+        <input type="text" name="company_name" maxlength="150" required>
+
         <label>E-mail professionnel</label>
-        <input type="email" name="email" required>
-        <label>Mot de passe (8 caractères min.)</label>
-        <input type="password" name="password" required minlength="8">
+        <input type="email" name="email" maxlength="160" required>
+
+        <label>Mot de passe sécurisé</label>
+        <input
+          type="password"
+          name="password"
+          minlength="12"
+          autocomplete="new-password"
+          required
+          placeholder="12 caractères, majuscule, chiffre et symbole"
+        >
+
+        <p class="muted">
+          Minimum 12 caractères avec majuscule, minuscule,
+          chiffre et symbole.
+        </p>
+
         <label>Adresse</label>
         <input type="text" name="address">
+
         <label>Ville</label>
         <input type="text" name="city">
+
         <label>Pays</label>
         <input type="text" name="country">
-        <label>Numéro de TVA / Tax ID (Optionnel)</label>
+
+        <label>Numéro de TVA / Tax ID</label>
         <input type="text" name="tax_id">
-        <button type="submit" class="btn btn-block" style="margin-top:20px;">S'inscrire</button>
+
+        <div style="margin-top:20px;">
+          <button type="submit" class="btn btn-block">
+            Créer le compte
+          </button>
+        </div>
       </form>
     </div>
     """
+
     return page(body)
 
+
 @app.route("/register", methods=["POST"])
+@limiter.limit("5 per minute")
 def register():
-    company = request.form.get("company_name", "").strip()
-    email = request.form.get("email", "").strip().lower()
+    company = normalize_text(
+        request.form.get("company_name"),
+        150
+    )
+
+    email = normalize_text(
+        request.form.get("email"),
+        160
+    ).lower()
+
     password = request.form.get("password", "")
-    if not company or not email or len(password) < 8:
-        flash("Champs incomplets ou mot de passe trop court.", "danger")
+
+    if not company or not email:
+        flash(
+            "Nom d'entreprise et e-mail requis.",
+            "danger"
+        )
         return redirect(url_for("register_form"))
+
+    if not strong_password(password):
+        flash(
+            "Mot de passe insuffisant : minimum 12 caractères "
+            "avec majuscule, minuscule, chiffre et symbole.",
+            "danger"
+        )
+        return redirect(url_for("register_form"))
+
     if User.query.filter_by(email=email).first():
-        flash("Cet e-mail est déjà associé à un compte.", "danger")
+        flash(
+            "Cet e-mail est déjà associé à un compte.",
+            "danger"
+        )
         return redirect(url_for("register_form"))
-    
+
     user = User(
         company_name=company,
         email=email,
-        password_hash=generate_password_hash(password),
-        address=request.form.get("address", "").strip(),
-        city=request.form.get("city", "").strip(),
-        country=request.form.get("country", "").strip(),
-        tax_id=request.form.get("tax_id", "").strip(),
-        role="dispatcher"
+        password_hash=generate_password_hash(
+            password,
+            method="pbkdf2:sha256:600000"
+        ),
+        address=normalize_text(
+            request.form.get("address"), 250
+        ),
+        city=normalize_text(
+            request.form.get("city"), 100
+        ),
+        country=normalize_text(
+            request.form.get("country"), 100
+        ),
+        tax_id=normalize_text(
+            request.form.get("tax_id"), 50
+        ),
+        role="dispatcher",
     )
+
     db.session.add(user)
     db.session.commit()
+
+    session.clear()
     session["user_id"] = user.id
-    flash("Compte créé avec succès. Veuillez choisir un abonnement.", "success")
+    session["lang"] = "fr"
+
+    flash(
+        "Compte créé avec succès. Choisissez votre abonnement.",
+        "success"
+    )
+
     return redirect(url_for("plans"))
+
 
 @app.route("/login-form")
 def login_form():
     body = f"""
-    <div class="card" style="max-width:400px; margin:0 auto;">
+    <div class="card" style="max-width:400px;margin:0 auto;">
       <h2>Connexion Entreprise</h2>
+
       <form method="POST" action="{url_for('login')}">
         <label>E-mail</label>
-        <input type="email" name="email" required>
+        <input type="email" name="email" autocomplete="email" required>
+
         <label>Mot de passe</label>
-        <input type="password" name="password" required>
-        <button type="submit" class="btn btn-block" style="margin-top:20px;">Connexion</button>
+        <input type="password" name="password"
+               autocomplete="current-password" required>
+
+        <div style="margin-top:20px;">
+          <button type="submit" class="btn btn-block">
+            Connexion
+          </button>
+        </div>
       </form>
     </div>
     """
+
     return page(body)
 
+
 @app.route("/login", methods=["POST"])
+@limiter.limit("10 per minute")
 def login():
-    email = request.form.get("email", "").strip().lower()
+    email = normalize_text(
+        request.form.get("email"),
+        160
+    ).lower()
+
     password = request.form.get("password", "")
-    user = User.query.filter_by(email=email).first()
-    if user and check_password_hash(user.password_hash, password):
+
+    user = db.session.execute(
+        db.select(User).filter_by(email=email)
+    ).scalar_one_or_none()
+
+    if user and user.active and check_password_hash(
+        user.password_hash,
+        password
+    ):
+        session.clear()
         session["user_id"] = user.id
+        session["lang"] = user.language or "fr"
+
         return redirect(url_for("dashboard"))
-    flash("Identifiants incorrects.", "danger")
+
+    flash(
+        "Identifiants incorrects.",
+        "danger"
+    )
+
     return redirect(url_for("login_form"))
+
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("index"))
 
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
 @app.route("/dashboard")
 def dashboard():
-    user_id = session.get("user_id")
-    if not user_id:
-        return redirect(url_for("login_form"))
-    user = User.query.get(user_id)
+    user = current_user()
+
     if not user:
-        session.clear()
         return redirect(url_for("login_form"))
-        
+
     key = active_api_key(user)
-    key_text = key.key_string if key else "Aucune clé active"
-    
-    if user.subscription_expires_at:
-        try:
-            expiry = user.subscription_expires_at.strftime("%Y-%m-%d")
-        except Exception:
-            expiry = "—"
-    else:
-        expiry = "—"
-        
-    remaining = max(0, int(user.tour_limit or 0) - int(user.tours_used or 0))
-    
-    routes = DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.id.desc()).limit(30).all()
+
+    key_text = (
+        key.key_string
+        if key
+        else "Aucune clé API active"
+    )
+
+    expiry = (
+        user.subscription_expires_at.strftime("%Y-%m-%d")
+        if user.subscription_expires_at
+        else "—"
+    )
+
+    remaining = max(
+        0,
+        int(user.tour_limit or 0)
+        - int(user.tours_used or 0)
+    )
+
+    routes = (
+        DeliveryRoute.query
+        .filter_by(user_id=user.id)
+        .order_by(DeliveryRoute.id.desc())
+        .limit(30)
+        .all()
+    )
+
     route_rows = ""
-    for r in routes:
+
+    for route in routes:
         try:
-            stops = json.loads(r.stops_data or "[]")
-            c = len(stops)
+            stops = json.loads(
+                route.stops_data or "[]"
+            )
+            count = len(stops)
         except Exception:
-            c = 0
-        opt_badge = '<span style="color:var(--green)">⚡ Raccourci optimal</span>' if r.optimized else 'Standard'
+            count = 0
+
         route_rows += f"""
         <tr>
-          <td>{r.route_name}</td>
-          <td>{r.driver_name}</td>
-          <td>{c} étapes</td>
-          <td>{opt_badge}</td>
-          <td><a href="{url_for('driver_space', code=r.access_code)}" class="btn" style="padding:6px 12px; font-size:12px;">Ouvrir</a></td>
-        </tr>
-        """
-        
-    payments = PaymentOrder.query.filter_by(user_id=user.id).order_by(PaymentOrder.created_at.desc()).all()
-    payment_rows = ""
-    for p in payments:
-        pdf_btn = f'<a href="{url_for("download_invoice", order_id=p.id)}" class="btn btn-secondary" style="padding:4px 8px; font-size:11px;">📄 PDF</a>' if p.status == "paid" else ""
-        payment_rows += f"""
-        <tr>
-          <td class="mono">{p.order_code}</td>
-          <td>{p.plan.title() if p.plan else 'Free'}</td>
-          <td>{p.amount_usdc} USDC</td>
-          <td>{p.status}</td>
-          <td>{pdf_btn}</td>
+          <td>{route.route_name}</td>
+          <td>{route.driver_name}</td>
+          <td>{count}</td>
+          <td>{route.optimization_engine}</td>
+          <td>
+            <a href="{url_for('driver_space', code=route.access_code)}"
+               class="btn"
+               style="padding:6px 10px;font-size:12px;">
+              Ouvrir
+            </a>
+          </td>
         </tr>
         """
 
     body = f"""
     <div class="card">
       <h2>{user.company_name}</h2>
-      <p class="muted">Email : {user.email} | TVA : {user.tax_id or 'Non renseigné'}</p>
+      <p class="muted">
+        {user.email}
+        · {user.city or '—'}
+        · {user.country or '—'}
+      </p>
+
       <div class="grid" style="margin-top:20px;">
-        <div class="stat"><strong>Abonnement</strong>{(user.plan or 'free').title()}</div>
-        <div class="stat"><strong>Tournées utilisées</strong>{user.tours_used or 0} / {user.tour_limit or 0}</div>
-        <div class="stat"><strong>Restantes</strong>{remaining} (Expiration : {expiry})</div>
+        <div class="stat">
+          <span>Abonnement</span>
+          <strong>{user.plan.title()}</strong>
+        </div>
+
+        <div class="stat">
+          <span>Tournées</span>
+          <strong>{user.tours_used}/{user.tour_limit}</strong>
+        </div>
+
+        <div class="stat">
+          <span>Restantes</span>
+          <strong>{remaining}</strong>
+        </div>
       </div>
+
+      <p class="muted" style="margin-top:15px;">
+        Expiration : {expiry}
+      </p>
     </div>
 
     <div class="card">
-      <h3>🚀 Gestion des tournées</h3>
-      <p class="muted">Importez votre fichier pour calculer instantanément la route la plus courte, rapide et sûre.</p>
-      <a href="{url_for('import_space')}" class="btn">Importer / Créer une tournée</a>
+      <h3>🚀 Optimisation routière</h3>
+      <p class="muted">
+        Importez des coordonnées propres. Le moteur valide les données,
+        construit les distances routières OSRM et recherche un ordre
+        optimisé sur le réseau routier.
+      </p>
+
+      <a href="{url_for('import_space')}" class="btn">
+        Importer / Créer une tournée
+      </a>
     </div>
 
     <div class="card">
       <h3>📋 Historique des tournées</h3>
+
       <div class="table-responsive">
         <table>
           <thead>
-            <tr><th>Tournée</th><th>Livreur</th><th>Étapes</th><th>Optimisation</th><th>Action</th></tr>
+            <tr>
+              <th>Tournée</th>
+              <th>Livreur</th>
+              <th>Points</th>
+              <th>Moteur</th>
+              <th>Action</th>
+            </tr>
           </thead>
+
           <tbody>
-            {route_rows or '<tr><td colspan="5" class="muted">Aucune tournée.</td></tr>'}
+            {route_rows or '<tr><td colspan="5" style="text-align:center;" class="muted">Aucune tournée.</td></tr>'}
           </tbody>
         </table>
       </div>
     </div>
 
     <div class="card">
-      <h3>💳 Factures & Paiements</h3>
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr><th>Commande</th><th>Plan</th><th>Montant</th><th>Statut</th><th>Facture</th></tr>
-          </thead>
-          <tbody>
-            {payment_rows or '<tr><td colspan="5" class="muted">Aucun paiement.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      <h3>🔑 API B2B</h3>
+      <p class="muted">
+        POST /api/v1/route avec X-API-KEY.
+      </p>
 
-    <div class="card">
-      <h3>🔑 Clé API B2B & Accès JSON</h3>
-      <p class="muted">Utilisez cet endpoint pour intégrer les calculs directement via JSON : <code>POST /api/v1/route</code> avec le header <code>X-API-KEY: [Votre Clé]</code></p>
-      <input type="text" readonly value="{key_text}" class="mono" onclick="this.select()">
+      <div class="mono"
+           style="background:#f1f5f9;padding:10px;border-radius:6px;">
+        {key_text}
+      </div>
     </div>
     """
-    return page(body, title="Dashboard B2B")
+
+    return page(
+        body,
+        title="Dashboard B2B"
+    )
+
+
+# ============================================================
+# IMPORT
+# ============================================================
+
+@app.route("/import-space")
+def import_space():
+    if not current_user():
+        return redirect(url_for("login_form"))
+
+    return render_template_string(
+        IMPORT_FORM_HTML,
+        style=BASE_STYLE,
+        APP_NAME=APP_NAME
+    )
+
 
 IMPORT_FORM_HTML = """<!DOCTYPE html>
 <html lang="fr">
-<head><meta charset="UTF-8"><title>Importer</title><style>{{ style|safe }}</style></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlobalRoute AI — Import</title>
+<style>{{ style }}</style>
+</head>
+
 <body>
-<div class="container" style="max-width:700px; margin-top:30px;">
-  <div class="card">
-    <h2>Trouver le raccourci optimal</h2>
-    <p class="muted">Sélectionnez un fichier ou remplissez la saisie manuelle ci-dessous.</p>
-    <form method="POST" action="/create-driver-route">
-      <label>Nom de la tournée</label>
-      <input type="text" name="route_name" required value="Tournée Principale">
-      
-      <label>Nom du livreur</label>
-      <input type="text" name="driver_name" required placeholder="Ex: Jean Paul">
-      
-      <label>Code d'accès du livreur (Réutilisable)</label>
-      <input type="text" name="access_code" required value="driver123">
-      
-      <label>Sélectionner un fichier (.csv ou .txt)</label>
-      <input type="file" id="file-input" accept=".csv, .txt">
-      
-      <label>Ou Saisie manuelle (Nom | Adresse | Lat | Lng)</label>
-      <textarea id="manual-stops" name="manual_stops" rows="8" placeholder="Client A | Rue Principale, Ville | 18.539 | -72.335\nClient B | Rue Secondaire, Ville | 18.542 | -72.338" required></textarea>
-      
-      <div style="display:flex; gap:10px; margin-top:20px;">
-        <button type="submit" class="btn" style="flex:1;">Calculer le raccourci et créer</button>
-        <a href="/dashboard" class="btn btn-secondary">Retour</a>
-      </div>
-    </form>
-  </div>
+<div class="container" style="max-width:760px;margin-top:30px;">
+
+<div class="card">
+<h2>🛣️ Optimisation routière réelle</h2>
+
+<p class="muted">
+Format : Nom | Adresse | Latitude | Longitude
+</p>
+
+<form method="POST" action="/create-driver-route">
+
+<label>Nom de la tournée</label>
+<input type="text" name="route_name"
+       value="Tournée Principale"
+       maxlength="200" required>
+
+<label>Nom du livreur</label>
+<input type="text" name="driver_name"
+       maxlength="100" required>
+
+<label>Code d'accès du livreur</label>
+<input type="text" name="access_code"
+       value=""
+       placeholder="Laisser vide pour générer automatiquement">
+
+<label>Fichier CSV / TXT</label>
+<input type="file"
+       id="file-input"
+       accept=".csv,.txt">
+
+<label>Données</label>
+<textarea id="manual-stops"
+          name="manual_stops"
+          rows="16"
+          placeholder="Client A | Paris | 48.8566 | 2.3522
+Client B | Lyon | 45.7640 | 4.8357"
+          required></textarea>
+
+<div class="card"
+     style="background:#eff6ff;margin-top:15px;">
+<strong>Important</strong>
+<p class="muted">
+Les coordonnées sont vérifiées avant le calcul.
+Les doublons ou coordonnées invalides sont refusés.
+Aucune ligne droite n'est utilisée comme route de secours.
+</p>
 </div>
+
+<div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;">
+<button type="submit" class="btn">
+Optimiser sur les vraies routes
+</button>
+
+<a href="/dashboard"
+   class="btn btn-secondary">
+Retour
+</a>
+</div>
+
+</form>
+</div>
+</div>
+
 <script>
-document.getElementById('file-input').addEventListener('change', function(event) {
+document.getElementById("file-input").addEventListener(
+  "change",
+  function(event) {
     const file = event.target.files[0];
     if (!file) return;
+
     const reader = new FileReader();
+
     reader.onload = function(e) {
-        document.getElementById('manual-stops').value = e.target.result;
+      document.getElementById(
+        "manual-stops"
+      ).value = e.target.result;
     };
-    reader.readAsText(file, 'UTF-8');
-});
+
+    reader.readAsText(file, "UTF-8");
+  }
+);
 </script>
+
 </body>
 </html>
 """
 
-@app.route("/import-space")
-def import_space():
-    if not session.get("user_id"):
-        return redirect(url_for("login_form"))
-    return render_template_string(IMPORT_FORM_HTML, style=BASE_STYLE, APP_NAME=APP_NAME, session=session)
+
+def parse_manual_stops(text):
+    stops = []
+
+    for line_number, line in enumerate(
+        text.splitlines(),
+        start=1
+    ):
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # Accept | separated data.
+        parts = [
+            x.strip()
+            for x in line.split("|")
+        ]
+
+        if len(parts) < 4:
+            raise ValueError(
+                f"Ligne {line_number}: "
+                "format attendu Nom | Adresse | Lat | Lng."
+            )
+
+        stops.append({
+            "name": parts[0],
+            "address": parts[1],
+            "lat": parts[2],
+            "lng": parts[3],
+        })
+
+    return stops
+
 
 @app.route("/create-driver-route", methods=["POST"])
+@limiter.limit("10 per minute")
 def create_driver_route():
-    user = User.query.get(session.get("user_id"))
+    user = current_user()
+
     if not user:
         return redirect(url_for("login_form"))
-    if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        flash("Votre abonnement a expiré. Veuillez le renouveler pour créer de nouvelles tournées.", "danger")
+
+    if (
+        user.subscription_expires_at
+        and user.subscription_expires_at < utcnow()
+    ):
+        flash(
+            "Votre abonnement a expiré.",
+            "danger"
+        )
         return redirect(url_for("plans"))
-    
-    route_name = request.form.get("route_name", "Tournée").strip()
-    driver_name = request.form.get("driver_name", "").strip()
-    access_code = request.form.get("access_code", "").strip()
-    manual = request.form.get("manual_stops", "").strip()
-    
+
     if user.tours_used >= user.tour_limit:
-        flash("Quota de tournées atteint. Veuillez mettre à niveau votre abonnement.", "danger")
+        flash(
+            "Quota de tournées atteint.",
+            "danger"
+        )
         return redirect(url_for("dashboard"))
-        
-    stops = []
-    if manual:
-        for line in manual.splitlines():
-            parts = [x.strip() for x in line.split("|")]
-            if len(parts) >= 4:
-                lat = parse_coordinate(parts[2])
-                lng = parse_coordinate(parts[3])
-                if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
-                    stops.append({"name": parts[0], "address": parts[1], "lat": lat, "lng": lng})
-                    
-    if len(stops) < 2:
-        flash("Veuillez fournir au moins 2 étapes valides avec des coordonnées correctes.", "danger")
+
+    route_name = normalize_text(
+        request.form.get("route_name"),
+        200
+    )
+
+    driver_name = normalize_text(
+        request.form.get("driver_name"),
+        100
+    )
+
+    access_code = normalize_text(
+        request.form.get("access_code"),
+        100
+    )
+
+    manual = request.form.get(
+        "manual_stops",
+        ""
+    ).strip()
+
+    if not access_code:
+        access_code = generate_driver_code()
+
+    if not manual:
+        flash(
+            "Aucune donnée de tournée.",
+            "danger"
+        )
         return redirect(url_for("import_space"))
-        
-    optimized_stops = optimize_stops_order(stops)
-    
+
+    try:
+        raw_stops = parse_manual_stops(manual)
+        stops = validate_stops(raw_stops)
+
+        if len(stops) > MAX_ROUTE_POINTS:
+            raise ValueError(
+                f"Maximum : {MAX_ROUTE_POINTS} points."
+            )
+
+        optimized, geometry, distance, engine = (
+            optimize_stops_order(stops)
+        )
+
+    except Exception as exc:
+        flash(
+            "Optimisation impossible : " + str(exc),
+            "danger"
+        )
+        return redirect(url_for("import_space"))
+
+    optimization_id = (
+        "OPT-"
+        + datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        + "-"
+        + secrets.token_hex(4).upper()
+    )
+
+    summary = json.dumps({
+        "optimization_id": optimization_id,
+        "engine": engine,
+        "points": len(optimized),
+        "road_distance_m": distance,
+        "created_at": datetime.utcnow().isoformat(),
+    })
+
     route = DeliveryRoute(
         user_id=user.id,
-        route_name=route_name,
-        driver_name=driver_name,
+        route_name=route_name or "Tournée",
+        driver_name=driver_name or "Livreur",
         access_code=access_code,
-        stops_data=json.dumps(optimized_stops, ensure_ascii=False),
-        optimized=True
+        access_code_hash=hash_access_code(access_code),
+        stops_data=json.dumps(
+            optimized,
+            ensure_ascii=False
+        ),
+        stops_summary=summary,
+        optimized=True,
+        optimization_engine=engine,
+        total_road_distance_m=distance,
+        optimization_id=optimization_id,
+        status="Optimisée",
     )
+
     user.tours_used += 1
+
     db.session.add(route)
+
+    db.session.add(
+        AuditLog(
+            action="ROUTE_OPTIMIZED",
+            details=(
+                f"user={user.email}; "
+                f"optimization={optimization_id}; "
+                f"points={len(optimized)}; "
+                f"engine={engine}; "
+                f"distance_m={distance}"
+            )
+        )
+    )
+
     db.session.commit()
-    flash("Tournée optimisée et créée avec succès !", "success")
-    return redirect(url_for("dashboard"))
+
+    flash(
+        f"Tournée optimisée : {len(optimized)} points · "
+        f"{distance / 1000:.2f} km · {engine}.",
+        "success"
+    )
+
+    return redirect(
+        url_for(
+            "driver_space",
+            code=access_code
+        )
+    )
+
+
+# ============================================================
+# PLANS / PAYMENTS
+# ============================================================
 
 @app.route("/plans")
 def plans():
+    if not current_user():
+        return redirect(url_for("login_form"))
+
     body = f"""
-    <div class="hero">
+    <div class="hero card">
       <h2>Abonnements B2B Mondiaux</h2>
-      <p class="muted">Réglez instantanément en USDC sur le réseau Solana.</p>
+      <p class="muted">
+        Paiement USDC sur Solana.
+      </p>
     </div>
+
     <div class="plan-grid">
+
       <div class="plan-card">
         <h3>Standard</h3>
-        <p style="font-size:24px; font-weight:bold;">99 USDC / mois</p>
-        <p class="muted">500 tournées incluses / mois</p>
-        <form method="POST" action="{url_for('create_payment')}">
-          <input type="hidden" name="plan" value="standard">
+        <p class="muted">99 USDC / mois</p>
+        <p>500 tournées / mois</p>
+        <p>Jusqu'à 500 points par optimisation</p>
+
+        <form method="POST"
+              action="{url_for('create_payment')}">
+
+          <input type="hidden"
+                 name="plan"
+                 value="standard">
+
           <label>Durée</label>
+
           <select name="duration_days">
-            <option value="30">30 jours (99 USDC)</option>
-            <option value="90">90 jours (267.30 USDC)</option>
+            <option value="30">
+              30 jours — 99 USDC
+            </option>
+            <option value="90">
+              90 jours — 267.30 USDC
+            </option>
           </select>
-          <button type="submit" class="btn btn-block" style="margin-top:15px;">Sélectionner</button>
+
+          <div style="margin-top:15px;">
+            <button type="submit"
+                    class="btn btn-block">
+              Sélectionner
+            </button>
+          </div>
         </form>
       </div>
+
       <div class="plan-card featured">
         <h3>Pro</h3>
-        <p style="font-size:24px; font-weight:bold;">300 USDC / mois</p>
-        <p class="muted">2 500 tournées incluses + API B2B illimitée</p>
-        <form method="POST" action="{url_for('create_payment')}">
-          <input type="hidden" name="plan" value="pro">
+        <p class="muted">300 USDC / mois</p>
+        <p>2 500 tournées / mois</p>
+        <p>Jusqu'à 1 000 points par optimisation</p>
+        <p>API B2B</p>
+
+        <form method="POST"
+              action="{url_for('create_payment')}">
+
+          <input type="hidden"
+                 name="plan"
+                 value="pro">
+
           <label>Durée</label>
+
           <select name="duration_days">
-            <option value="30">30 jours (300 USDC)</option>
-            <option value="90">90 jours (810 USDC)</option>
+            <option value="30">
+              30 jours — 300 USDC
+            </option>
+            <option value="90">
+              90 jours — 810 USDC
+            </option>
           </select>
-          <button type="submit" class="btn btn-block" style="margin-top:15px;">Sélectionner Pro</button>
+
+          <div style="margin-top:15px;">
+            <button type="submit"
+                    class="btn btn-block">
+              Sélectionner Pro
+            </button>
+          </div>
         </form>
       </div>
+
     </div>
     """
-    return page(body, title="Abonnements")
+
+    return page(
+        body,
+        title="Abonnements"
+    )
+
 
 @app.route("/create-payment", methods=["POST"])
+@limiter.limit("10 per minute")
 def create_payment():
-    user = User.query.get(session.get("user_id"))
+    user = current_user()
+
     if not user:
         return redirect(url_for("login_form"))
+
     plan = request.form.get("plan")
-    duration = int(request.form.get("duration_days", 30))
-    amount = calculate_price(plan, duration)
+
+    try:
+        duration = int(
+            request.form.get(
+                "duration_days",
+                30
+            )
+        )
+
+        amount = calculate_price(
+            plan,
+            duration
+        )
+
+    except Exception:
+        flash(
+            "Paramètres de paiement invalides.",
+            "danger"
+        )
+        return redirect(url_for("plans"))
+
     ref = generate_reference()
-    
+
     order = PaymentOrder(
-        order_code=f"GR-{secrets.token_hex(6).upper()}",
+        order_code=(
+            "GR-"
+            + secrets.token_hex(6).upper()
+        ),
         reference=ref,
         user_id=user.id,
         plan=plan,
         duration_days=duration,
         amount_usdc=amount,
-        status="pending"
+        status="pending",
     )
+
     db.session.add(order)
     db.session.commit()
-    
+
+    solana_uri = (
+        f"solana:{SOLANA_RECEIVING_WALLET}"
+        f"?amount={amount}"
+        f"&spl-token={USDC_MINT}"
+        f"&reference={ref}"
+        f"&label=GlobalRouteAI"
+    )
+
     body = f"""
-    <div class="card" style="max-width:500px; margin:0 auto; text-align:center;">
-      <h2>Paiement de la commande {order.order_code}</h2>
-      <p style="font-size:22px; font-weight:bold; color:var(--blue);">{amount} USDC</p>
-      <p class="muted mono">Wallet : {SOLANA_RECEIVING_WALLET}</p>
-      <p class="muted mono">Référence : {ref}</p>
-      <div id="status" class="alert" style="background:#f1f5f9;">En attente de confirmation sur la blockchain...</div>
-      <a href="solana:{SOLANA_RECEIVING_WALLET}?amount={amount}&spl-token={USDC_MINT}&reference={ref}&label=GlobalRouteAI" class="btn btn-green btn-block">Payer avec Phantom / Solana Wallet</a>
-      <a href="{url_for('dashboard')}" class="btn btn-secondary btn-block" style="margin-top:10px;">Retour au dashboard</a>
+    <div class="card"
+         style="max-width:500px;margin:0 auto;text-align:center;">
+
+      <h2>Paiement {order.order_code}</h2>
+
+      <p>
+        Montant :
+        <strong>{amount} USDC</strong>
+      </p>
+
+      <div class="mono"
+           style="background:#f1f5f9;padding:10px;border-radius:6px;">
+        {SOLANA_RECEIVING_WALLET}
+      </div>
+
+      <p class="muted">
+        Référence unique
+      </p>
+
+      <div class="mono"
+           style="background:#f1f5f9;padding:10px;border-radius:6px;">
+        {ref}
+      </div>
+
+      <div style="margin:20px 0;">
+        <a href="{solana_uri}"
+           class="btn btn-green">
+          Payer avec portefeuille Solana
+        </a>
+      </div>
+
+      <div id="status"
+           class="alert alert-success">
+        En attente de confirmation...
+      </div>
+
+      <a href="{url_for('dashboard')}"
+         class="btn btn-secondary">
+        Retour
+      </a>
     </div>
+
     <script>
     async function checkPay() {{
-        let res = await fetch("/api/payment-status/{order.id}");
-        let data = await res.json();
-        document.getElementById("status").textContent = data.message;
-        if(data.paid) {{
-            document.getElementById("status").className = "alert alert-success";
-            setTimeout(() => location.href="/dashboard", 1500);
+      try {{
+        const res = await fetch(
+          "/api/payment-status/{order.id}"
+        );
+
+        const data = await res.json();
+
+        document.getElementById(
+          "status"
+        ).textContent = data.message;
+
+        if (data.paid) {{
+          setTimeout(
+            () => location.href="/dashboard",
+            1200
+          );
         }}
+      }} catch(e) {{}}
     }}
+
     setInterval(checkPay, 6000);
     </script>
     """
-    return page(body, title="Paiement USDC")
+
+    return page(
+        body,
+        title="Paiement USDC"
+    )
+
 
 @app.route("/api/payment-status/<int:order_id>")
+@limiter.limit("20 per minute")
 def payment_status(order_id):
+    user = current_user()
     order = PaymentOrder.query.get_or_404(order_id)
+
+    if not user or order.user_id != user.id:
+        return jsonify({
+            "paid": False,
+            "message": "Accès refusé."
+        }), 403
+
     if order.status == "paid":
-        return jsonify({"paid": True, "message": "Déjà payé."})
-    valid, sig, msg = verify_usdc_payment(order)
-    if valid:
-        activate_paid_order(order, sig)
-        return jsonify({"paid": True, "message": "Paiement validé avec succès ! Redirection..."})
-    return jsonify({"paid": False, "message": msg})
+        return jsonify({
+            "paid": True,
+            "message": "Déjà payé."
+        })
+
+    try:
+        valid, sig, msg = verify_usdc_payment(
+            order
+        )
+
+        if valid:
+            activate_paid_order(
+                order,
+                sig
+            )
+
+            return jsonify({
+                "paid": True,
+                "message": "Paiement validé."
+            })
+
+        return jsonify({
+            "paid": False,
+            "message": msg
+        })
+
+    except Exception:
+        return jsonify({
+            "paid": False,
+            "message": "Vérification blockchain indisponible."
+        }), 503
+
 
 @app.route("/invoice/<int:order_id>")
 def download_invoice(order_id):
-    user = User.query.get(session.get("user_id"))
+    user = current_user()
     order = PaymentOrder.query.get_or_404(order_id)
-    if not user or order.user_id != user.id or order.status != "paid":
+
+    if (
+        not user
+        or order.user_id != user.id
+        or order.status != "paid"
+    ):
         return "Accès refusé", 403
-    
+
     buffer = io.BytesIO()
-    p = canvas.Canvas(buffer, pagesize=letter)
-    p.drawString(50, 750, f"FACTURE / INVOICE - {APP_NAME}")
-    p.drawString(50, 725, f"Commande : {order.order_code}")
-    p.drawString(50, 700, f"Client : {user.company_name} ({user.email})")
-    p.drawString(50, 675, f"Plan : {order.plan.title()} ({order.duration_days} jours)")
-    p.drawString(50, 650, f"Montant total : {order.amount_usdc} USDC")
-    p.drawString(50, 625, f"Date : {order.paid_at}")
-    p.drawString(50, 575, f"Transaction Solana : {order.transaction_signature}")
-    p.showPage()
-    p.save()
+
+    pdf = canvas.Canvas(
+        buffer,
+        pagesize=letter
+    )
+
+    pdf.drawString(
+        50,
+        750,
+        f"FACTURE / INVOICE - {APP_NAME}"
+    )
+
+    pdf.drawString(
+        50,
+        725,
+        f"Commande : {order.order_code}"
+    )
+
+    pdf.drawString(
+        50,
+        700,
+        f"Client : {user.company_name} ({user.email})"
+    )
+
+    pdf.drawString(
+        50,
+        675,
+        f"Plan : {order.plan.title()} "
+        f"({order.duration_days} jours)"
+    )
+
+    pdf.drawString(
+        50,
+        650,
+        f"Montant : {order.amount_usdc} USDC"
+    )
+
+    pdf.drawString(
+        50,
+        625,
+        f"Date : {order.paid_at}"
+    )
+
+    pdf.drawString(
+        50,
+        575,
+        f"Transaction : {order.transaction_signature}"
+    )
+
+    pdf.showPage()
+    pdf.save()
+
     buffer.seek(0)
-    response = make_response(buffer.read())
-    response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'attachment; filename=facture_{order.order_code}.pdf'
+
+    response = make_response(
+        buffer.read()
+    )
+
+    response.headers["Content-Type"] = (
+        "application/pdf"
+    )
+
+    response.headers["Content-Disposition"] = (
+        "attachment; "
+        f"filename=facture_{order.order_code}.pdf"
+    )
+
     return response
+
+
+# ============================================================
+# DRIVER
+# ============================================================
 
 @app.route("/driver-login")
 def driver_login():
     body = f"""
-    <div class="card" style="max-width:400px; margin:0 auto;">
+    <div class="card"
+         style="max-width:400px;margin:0 auto;">
+
       <h2>🚚 Espace Livreur</h2>
-      <form method="POST" action="{url_for('driver_space')}">
-        <label>Code d'accès de la tournée</label>
-        <input type="text" name="access_code" required placeholder="Ex: driver123">
-        <button type="submit" class="btn btn-block" style="margin-top:20px;">Accéder au raccourci</button>
+
+      <form method="POST"
+            action="{url_for('driver_space')}">
+
+        <label>Code d'accès</label>
+
+        <input type="password"
+               name="access_code"
+               autocomplete="off"
+               required>
+
+        <div style="margin-top:20px;">
+          <button type="submit"
+                  class="btn btn-block">
+            Accéder
+          </button>
+        </div>
+
       </form>
     </div>
     """
-    return page(body, title="Livreur")
+
+    return page(
+        body,
+        title="Livreur"
+    )
+
 
 @app.route("/driver-space", methods=["GET", "POST"])
+@limiter.limit("30 per minute")
 def driver_space():
-    code = request.form.get("access_code") if request.method == "POST" else request.args.get("code")
-    route = DeliveryRoute.query.filter_by(access_code=code).first() if code else None
+    code = (
+        request.form.get("access_code")
+        if request.method == "POST"
+        else request.args.get("code")
+    )
+
+    code = normalize_text(
+        code,
+        120
+    )
+
+    routes = (
+        DeliveryRoute.query
+        .filter_by(access_code=code)
+        .all()
+        if code
+        else []
+    )
+
+    route = None
+
+    for candidate in routes:
+        if check_access_code(
+            candidate,
+            code
+        ):
+            route = candidate
+            break
+
     if not route:
-        flash("Code d'accès invalide.", "danger")
-        return redirect(url_for("driver_login"))
-        
-    stops = json.loads(route.stops_data or "[]")
-    stops_json = json.dumps(stops, ensure_ascii=False).replace("</script>", "<\/script>")
-    
+        flash(
+            "Code d'accès invalide.",
+            "danger"
+        )
+        return redirect(
+            url_for("driver_login")
+        )
+
+    try:
+        stops = json.loads(
+            route.stops_data or "[]"
+        )
+        stops = validate_stops(stops)
+    except Exception:
+        return "Données de tournée invalides.", 500
+
+    stops_json = json.dumps(
+        stops,
+        ensure_ascii=False
+    )
+
+    distance_km = (
+        route.total_road_distance_m / 1000
+        if route.total_road_distance_m
+        else None
+    )
+
     body = f"""
     <div class="card">
+
       <h2>Tournée : {route.route_name}</h2>
-      <p class="muted">Livreur : {route.driver_name} | Entreprise : {route.company.company_name}</p>
+
+      <p class="muted">
+        Livreur :
+        <strong>{route.driver_name}</strong>
+        · Entreprise :
+        <strong>{route.company.company_name}</strong>
+      </p>
+
       <div class="grid" style="margin-top:15px;">
-        <div class="stat"><strong>Distance Route</strong><span id="total-distance">Calcul en cours...</span></div>
-        <div class="stat"><strong>Nombre d'étapes</strong>{len(stops)}</div>
-        <div class="stat"><strong>Statut GPS</strong><span id="gps-status" class="muted">Recherche...</span></div>
+
+        <div class="stat">
+          <span>Distance routière</span>
+          <strong>
+            {f"{distance_km:.2f} km" if distance_km is not None else "Calcul..."}
+          </strong>
+        </div>
+
+        <div class="stat">
+          <span>Étapes</span>
+          <strong>{len(stops)}</strong>
+        </div>
+
+        <div class="stat">
+          <span>Moteur</span>
+          <strong>{route.optimization_engine}</strong>
+        </div>
+
       </div>
-      <div style="display:flex; gap:10px; margin-top:15px;">
-        <button onclick="toggleTracking()" class="btn btn-green">📍 Activer mon suivi GPS en direct</button>
-        <a href="{url_for('driver_print', code=route.access_code)}" target="_blank" class="btn btn-secondary">🖨️ Imprimer la fiche</a>
+
+      <div style="margin-top:15px;display:flex;gap:10px;flex-wrap:wrap;">
+
+        <button onclick="toggleTracking()"
+                class="btn btn-green">
+          📍 Suivi GPS
+        </button>
+
+        <a href="{url_for('driver_print', code=route.access_code)}"
+           target="_blank"
+           class="btn btn-secondary">
+          🖨️ Imprimer
+        </a>
+
       </div>
+
       <div id="map"></div>
+
     </div>
-    
+
     <div class="card">
-      <h3>Étapes du raccourci optimal</h3>
+      <h3>Ordre optimisé</h3>
       <div id="stops-list"></div>
     </div>
-    
+
     <script>
     const points = {stops_json};
-    const map = L.map('map').setView(points.length ? [points[0].lat, points[0].lng] : [18.5385, -72.335], 13);
-    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19}}).addTo(map);
-    
+
+    const map = L.map("map").setView(
+      points.length
+        ? [points[0].lat, points[0].lng]
+        : [18.5385, -72.335],
+      13
+    );
+
+    L.tileLayer(
+      "https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",
+      {{maxZoom:19}}
+    ).addTo(map);
+
     let list = "<ol>";
+
     points.forEach((p, i) => {{
-        L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
-        list += "<li style='margin-bottom: 8px;'><strong>#" + (i+1) + " - " + p.name + "</strong><br><span class='muted'>" + p.address + "</span> <a href='https://www.google.com/maps/dir/?api=1&destination=" + p.lat + "," + p.lng + "' target='_blank' style='margin-left: 10px; font-size: 12px;'>🧭 Naviguer (Google Maps)</a></li>";
+      L.marker([
+        p.lat,
+        p.lng
+      ]).addTo(map)
+       .bindPopup(
+         "<b>#" + (i + 1)
+         + " " + escapeHtml(p.name)
+         + "</b><br>"
+         + escapeHtml(p.address)
+       );
+
+      list +=
+        "<li style='margin-bottom:8px;'>"
+        + "<strong>#"
+        + (i + 1)
+        + " — "
+        + escapeHtml(p.name)
+        + "</strong><br>"
+        + "<span class='muted'>"
+        + escapeHtml(p.address)
+        + "</span>"
+        + "</li>";
     }});
+
     list += "</ol>";
-    document.getElementById('stops-list').innerHTML = list;
-    
-    if (points.length >= 2) {{
-        const maxChunk = 150;
-        let chunkPromises = [];
-        for (let i = 0; i < points.length; i += maxChunk) {{
-            let chunkPoints = points.slice(i, i + maxChunk);
-            if (i > 0 && points[i-1]) {{
-                chunkPoints = [points[i-1]].concat(chunkPoints);
+
+    document.getElementById(
+      "stops-list"
+    ).innerHTML = list;
+
+    function escapeHtml(value) {{
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }}
+
+    async function drawRealRoadRoute() {{
+      if (points.length < 2) return;
+
+      const maxChunk = 80;
+      let allCoords = [];
+
+      try {{
+        for (
+          let start = 0;
+          start < points.length - 1;
+          start += maxChunk - 1
+        ) {{
+
+          const end = Math.min(
+            start + maxChunk,
+            points.length
+          );
+
+          const chunk = points.slice(
+            start,
+            end
+          );
+
+          const coords = chunk.map(
+            p => p.lng + "," + p.lat
+          ).join(";");
+
+          const url =
+            "https://router.project-osrm.org/"
+            + "route/v1/driving/"
+            + coords
+            + "?overview=full"
+            + "&geometries=geojson";
+
+          const response =
+            await fetch(url);
+
+          if (!response.ok) {{
+            throw new Error(
+              "OSRM HTTP " + response.status
+            );
+          }}
+
+          const data =
+            await response.json();
+
+          if (
+            data.code !== "Ok"
+            || !data.routes
+            || !data.routes.length
+          ) {{
+            throw new Error(
+              "OSRM n'a pas trouvé de route."
+            );
+          }}
+
+          const road =
+            data.routes[0]
+              .geometry
+              .coordinates
+              .map(c => [c[1], c[0]]);
+
+          if (allCoords.length) {{
+            allCoords =
+              allCoords.concat(
+                road.slice(1)
+              );
+          }} else {{
+            allCoords =
+              allCoords.concat(road);
+          }}
+
+          if (end === points.length) break;
+        }}
+
+        if (!allCoords.length) {{
+          throw new Error(
+            "Géométrie routière vide."
+          );
+        }}
+
+        const polyline =
+          L.polyline(
+            allCoords,
+            {{
+              color:"#2563eb",
+              weight:6,
+              opacity:.9
             }}
-            const coordsString = chunkPoints.map(p => p.lng + "," + p.lat).join(';');
-            const osrmUrl = "https://router.project-osrm.org/route/v1/driving/" + coordsString + "?overview=full&geometries=geojson";
-            chunkPromises.push(fetch(osrmUrl).then(res => res.json()).catch(() => null));
-        }}
-        
-        Promise.all(chunkPromises)
-            .then(results => {{
-                let fullRoadCoords = [];
-                let totalDistanceMeters = 0;
-                let successCount = 0;
-                results.forEach(data => {{
-                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {{
-                        totalDistanceMeters += data.routes[0].distance;
-                        const roadCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        if (fullRoadCoords.length > 0) {{
-                            fullRoadCoords = fullRoadCoords.concat(roadCoords.slice(1));
-                        }} else {{
-                            fullRoadCoords = fullRoadCoords.concat(roadCoords);
-                        }}
-                        successCount++;
-                    }}
-                }});
-                if (successCount > 0 && fullRoadCoords.length > 0) {{
-                    document.getElementById('total-distance').textContent = (totalDistanceMeters / 1000).toFixed(1) + " km";
-                    L.polyline(fullRoadCoords, {{ color: '#2563eb', weight: 6, opacity: 0.9 }}).addTo(map);
-                }} else {{
-                    fallbackStraightLine();
-                }}
-            }})
-            .catch(err => {{
-                fallbackStraightLine();
-            }});
-    }} else {{
-        document.getElementById('total-distance').textContent = "0.0 km";
+          ).addTo(map);
+
+        map.fitBounds(
+          polyline.getBounds(),
+          {{padding:[30,30]}}
+        );
+
+      }} catch(error) {{
+        console.error(error);
+
+        document.getElementById(
+          "total-distance"
+        ).textContent =
+          "Route indisponible";
+
+        const warning =
+          document.createElement("div");
+
+        warning.className =
+          "alert alert-danger";
+
+        warning.textContent =
+          "Le réseau routier OSRM n'a pas pu "
+          + "être chargé. Aucune ligne droite "
+          + "de secours n'est affichée.";
+
+        document.getElementById(
+          "map"
+        ).before(warning);
+      }}
     }}
-    
-    function fallbackStraightLine() {{
-        const latLngs = points.map(p => [p.lat, p.lng]);
-        if (latLngs.length > 0) {{
-            L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map).bindPopup("Route de secours");
-        }}
-        document.getElementById('total-distance').textContent = "Calcul direct";
-    }}
-    
+
+    drawRealRoadRoute();
+
     let trackingInterval = null;
     let driverMarker = null;
     let trackingActive = false;
+
     function toggleTracking() {{
-        const statusEl = document.getElementById('gps-status');
-        if (!trackingActive) {{
-            if (!navigator.geolocation) {{ alert("La géolocalisation n'est pas supportée."); return; }}
-            trackingActive = true;
-            statusEl.textContent = "Actif (Suivi live)";
-            statusEl.style.color = "var(--green)";
-            updateDriverPosition();
-            trackingInterval = setInterval(updateDriverPosition, 5000);
-        }} else {{
-            trackingActive = false;
-            if (trackingInterval) clearInterval(trackingInterval);
-            statusEl.textContent = "Désactivé";
-            statusEl.style.color = "var(--muted)";
-            if (driverMarker) map.removeLayer(driverMarker);
-        }}
-    }}
-    
-    function updateDriverPosition() {{
-        navigator.geolocation.getCurrentPosition(
-            (position) => {{
-                const lat = position.coords.latitude;
-                const lng = position.coords.longitude;
-                if (!driverMarker) {{
-                    driverMarker = L.marker([lat, lng]).addTo(map).bindPopup("<b>Vous êtes ici</b>");
-                }} else {{
-                    driverMarker.setLatLng([lat, lng]);
-                }}
-                map.setView([lat, lng], 16);
-            }},
-            (error) => {{
-                document.getElementById('gps-status').textContent = "Erreur GPS";
-            }},
-            {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
+      const status =
+        document.getElementById(
+          "gps-status"
         );
+
+      if (!trackingActive) {{
+
+        if (!navigator.geolocation) {{
+          alert(
+            "GPS non disponible sur cet appareil."
+          );
+          return;
+        }}
+
+        trackingActive = true;
+        updateDriverPosition();
+
+        trackingInterval =
+          setInterval(
+            updateDriverPosition,
+            5000
+          );
+
+      }} else {{
+
+        trackingActive = false;
+
+        if (trackingInterval) {{
+          clearInterval(
+            trackingInterval
+          );
+        }}
+
+        if (driverMarker) {{
+          map.removeLayer(
+            driverMarker
+          );
+        }}
+      }}
+    }}
+
+    function updateDriverPosition() {{
+      navigator.geolocation.getCurrentPosition(
+        position => {{
+
+          const lat =
+            position.coords.latitude;
+
+          const lng =
+            position.coords.longitude;
+
+          if (!driverMarker) {{
+
+            driverMarker =
+              L.marker([
+                lat,
+                lng
+              ]).addTo(map)
+               .bindPopup(
+                 "<b>Position du livreur</b>"
+               );
+
+          }} else {{
+
+            driverMarker.setLatLng([
+              lat,
+              lng
+            ]);
+
+          }}
+
+        }},
+        error => console.warn(
+          "GPS:",
+          error.message
+        ),
+        {{
+          enableHighAccuracy:true,
+          timeout:10000,
+          maximumAge:0
+        }}
+      );
     }}
     </script>
     """
-    return page(body, title="Tournée Livreur", map_needed=True)
+
+    return page(
+        body,
+        title="Tournée Livreur",
+        map_needed=True
+    )
+
 
 @app.route("/driver-print")
 def driver_print():
-    code = request.args.get("code")
-    route = DeliveryRoute.query.filter_by(access_code=code).first() if code else None
+    code = normalize_text(
+        request.args.get("code"),
+        120
+    )
+
+    routes = (
+        DeliveryRoute.query
+        .filter_by(access_code=code)
+        .all()
+    )
+
+    route = None
+
+    for candidate in routes:
+        if check_access_code(
+            candidate,
+            code
+        ):
+            route = candidate
+            break
+
     if not route:
-        return "Code d'accès invalide ou introuvable.", 404
-    stops = json.loads(route.stops_data or "[]")
+        return (
+            "Code d'accès invalide ou introuvable.",
+            404
+        )
+
+    stops = json.loads(
+        route.stops_data or "[]"
+    )
+
     rows = ""
-    for i, p in enumerate(stops, 1):
+
+    for i, point in enumerate(
+        stops,
+        1
+    ):
         rows += f"""
         <tr>
-          <td style="text-align:center; font-weight:bold;">{i}</td>
-          <td><strong>{p.get('name')}</strong><br>{p.get('address')}</td>
-          <td style="text-align:center;">[ &nbsp; ]</td>
+          <td>{i}</td>
+          <td>
+            <strong>{point.get('name')}</strong>
+            <br>
+            <span style="color:#555;font-size:12px;">
+              {point.get('address')}
+            </span>
+          </td>
+          <td>[ &nbsp; ]</td>
         </tr>
         """
+
     html = f"""<!DOCTYPE html>
-    <html lang="fr">
-    <head><meta charset="UTF-8"><title>Fiche de Route - {route.route_name}</title>
-    <style>
-    body {{ font-family: Arial, sans-serif; color: #000; margin: 20px; }}
-    h2, p {{ margin: 5px 0; }}
-    .header {{ border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
-    th, td {{ border: 1px solid #000; padding: 10px; text-align: left; font-size: 14px; }}
-    th {{ background-color: #eee; }}
-    @media print {{ .no-print {{ display: none; }} }}
-    </style>
-    </head>
-    <body>
-    <div class="header">
-      <h2>FICHE DE ROUTE (Raccourci Optimal) : {route.route_name}</h2>
-      <p>Entreprise : {route.company.company_name} | Livreur : {route.driver_name}</p>
-      <p>Date d'impression : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} (UTC)</p>
-    </div>
-    <button class="no-print" onclick="window.print()" style="padding:10px 20px; font-size:16px; margin-bottom:15px; cursor:pointer;">Imprimer</button>
-    <table>
-      <thead>
-        <tr><th style="width:50px;">#</th><th>Client & Adresse (Ordre Optimal)</th><th style="width:80px; text-align:center;">Statut</th></tr>
-      </thead>
-      <tbody>
-        {rows or '<tr><td colspan="3">Aucune étape trouvée.</td></tr>'}
-      </tbody>
-    </table>
-    </body>
-    </html>
-    """
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fiche de route</title>
+<style>
+body {{
+  font-family:Arial,sans-serif;
+  color:#000;
+  margin:20px;
+}}
+table {{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:15px;
+}}
+th,td {{
+  border:1px solid #000;
+  padding:10px;
+}}
+th {{
+  background:#eee;
+}}
+@media print {{
+  .no-print {{display:none;}}
+}}
+</style>
+</head>
+<body>
+
+<div style="border-bottom:2px solid #000;padding-bottom:10px;">
+<h2>
+FICHE DE ROUTE :
+{route.route_name}
+</h2>
+
+<p>
+Entreprise :
+<strong>{route.company.company_name}</strong>
+· Livreur :
+<strong>{route.driver_name}</strong>
+</p>
+
+<p>
+Moteur :
+<strong>{route.optimization_engine}</strong>
+</p>
+
+</div>
+
+<div class="no-print"
+     style="margin:15px 0;">
+<button onclick="window.print();">
+Imprimer
+</button>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Client & Adresse</th>
+<th>Statut</th>
+</tr>
+</thead>
+
+<tbody>
+{rows}
+</tbody>
+</table>
+
+<script>
+window.onload = function() {{
+  window.print();
+}};
+</script>
+
+</body>
+</html>
+"""
+
     return html
 
+
+# ============================================================
+# ADMIN
+# ============================================================
+
 @app.route("/admin-panel", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def admin_panel():
     if request.method == "POST":
-        if request.form.get("password") == ADMIN_SECRET_PASSWORD:
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
+        if (
+            ADMIN_SECRET_PASSWORD
+            and secrets.compare_digest(
+                password,
+                ADMIN_SECRET_PASSWORD
+            )
+        ):
             session["is_admin"] = True
         else:
-            flash("Mot de passe admin incorrect.", "danger")
-    if not session.get("is_admin"):
-        body = f"""
-        <div class="card" style="max-width:400px; margin:0 auto;">
+            flash(
+                "Mot de passe admin incorrect.",
+                "danger"
+            )
+
+    if not admin_required():
+        body = """
+        <div class="card"
+             style="max-width:400px;margin:0 auto;">
+
           <h2>Administration Globale</h2>
+
           <form method="POST">
+
             <label>Mot de passe Admin</label>
-            <input type="password" name="password" required>
-            <button type="submit" class="btn btn-block" style="margin-top:20px;">Entrer</button>
+
+            <input type="password"
+                   name="password"
+                   autocomplete="current-password"
+                   required>
+
+            <div style="margin-top:20px;">
+              <button type="submit"
+                      class="btn btn-block">
+                Entrer
+              </button>
+            </div>
+
           </form>
         </div>
         """
-        return page(body, title="Admin")
-        
+
+        return page(
+            body,
+            title="Admin"
+        )
+
     users = User.query.all()
-    user_options = "".join([f'<option value="{u.id}">{u.company_name} ({u.email})</option>' for u in users])
-    user_rows = "".join([f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>{u.plan}</td><td>{u.tours_used}/{u.tour_limit}</td></tr>" for u in users])
-    
+
+    user_options = "".join(
+        f'<option value="{u.id}">'
+        f'{u.company_name} ({u.email})'
+        f'</option>'
+        for u in users
+    )
+
+    user_rows = "".join(
+        f"<tr>"
+        f"<td>{u.company_name}</td>"
+        f"<td>{u.email}</td>"
+        f"<td>{u.plan}</td>"
+        f"<td>{u.tours_used}/{u.tour_limit}</td>"
+        f"</tr>"
+        for u in users
+    )
+
     body = f"""
     <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+
         <h2>Panel Administrateur</h2>
-        <a href="{url_for('admin_logout')}" class="btn btn-red">Quitter l'admin</a>
+
+        <a href="{url_for('admin_logout')}"
+           class="btn btn-red"
+           style="padding:6px 12px;font-size:12px;">
+          Quitter
+        </a>
+
       </div>
-      <hr style="margin:20px 0; border:0; border-top:1px solid var(--border);">
-      <h3>🔑 Générer une clé API pour une entreprise</h3>
-      <form method="POST" action="{url_for('admin_generate_key')}">
-        <label>Sélectionner l'entreprise</label>
-        <select name="user_id">{user_options}</select>
-        <button type="submit" class="btn" style="margin-top:15px;">Générer et assigner la clé API</button>
+    </div>
+
+    <div class="card">
+      <h3>🔑 Générer une clé API</h3>
+
+      <form method="POST"
+            action="{url_for('admin_generate_key')}">
+
+        <label>Entreprise</label>
+
+        <select name="user_id">
+          {user_options}
+        </select>
+
+        <div style="margin-top:15px;">
+          <button type="submit"
+                  class="btn">
+            Générer
+          </button>
+        </div>
+
       </form>
     </div>
 
     <div class="card">
-      <h3>Liste des Entreprises</h3>
+      <h3>Entreprises</h3>
+
       <div class="table-responsive">
         <table>
+
           <thead>
-            <tr><th>Entreprise</th><th>Email</th><th>Plan</th><th>Tournées</th></tr>
+          <tr>
+            <th>Entreprise</th>
+            <th>Email</th>
+            <th>Plan</th>
+            <th>Tournées</th>
+          </tr>
           </thead>
+
           <tbody>
-            {user_rows or '<tr><td colspan="4" class="muted">Aucune entreprise.</td></tr>'}
+          {user_rows or '<tr><td colspan="4">Aucune entreprise.</td></tr>'}
           </tbody>
+
         </table>
       </div>
     </div>
     """
-    return page(body, title="Admin Panel")
+
+    return page(
+        body,
+        title="Admin Panel"
+    )
+
 
 @app.route("/admin/generate-key", methods=["POST"])
 def admin_generate_key():
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_panel"))
+    if not admin_required():
+        return redirect(
+            url_for("admin_panel")
+        )
+
     user_id = request.form.get("user_id")
     user = User.query.get(user_id)
+
     if not user:
-        flash("Entreprise introuvable.", "danger")
-        return redirect(url_for("admin_panel"))
-        
-    expiry = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > utcnow() else utcnow() + timedelta(days=30)
-    create_api_key(user, expiry)
+        flash(
+            "Entreprise introuvable.",
+            "danger"
+        )
+        return redirect(
+            url_for("admin_panel")
+        )
+
+    expiry = (
+        user.subscription_expires_at
+        if (
+            user.subscription_expires_at
+            and user.subscription_expires_at > utcnow()
+        )
+        else utcnow() + timedelta(days=30)
+    )
+
+    key = create_api_key(
+        user,
+        expiry
+    )
+
     db.session.commit()
-    flash(f"Nouvelle clé API générée avec succès pour {user.company_name}.", "success")
-    return redirect(url_for("admin_panel"))
+
+    flash(
+        f"Clé API générée : {key.key_string}",
+        "success"
+    )
+
+    return redirect(
+        url_for("admin_panel")
+    )
+
 
 @app.route("/admin-logout")
 def admin_logout():
     session.pop("is_admin", None)
     return redirect(url_for("index"))
 
+
+# ============================================================
+# B2B API
+# ============================================================
+
+def authenticate_api_user():
+    session_user = current_user()
+
+    if session_user:
+        return session_user
+
+    key_val = request.headers.get(
+        "X-API-KEY",
+        ""
+    ).strip()
+
+    if not key_val:
+        return None
+
+    key = ApiKey.query.filter_by(
+        key_string=key_val,
+        revoked=False
+    ).first()
+
+    if not key:
+        return None
+
+    if (
+        key.expires_at
+        and key.expires_at < utcnow()
+    ):
+        return None
+
+    user = User.query.get(
+        key.user_id
+    )
+
+    if not user or not user.active:
+        return None
+
+    return user
+
+
 @app.route("/api/v1/route", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def api_v1_route():
     if request.method == "GET":
         return jsonify({
-            "service": "AntStrike Logistics & GlobalRoute AI API",
-            "usage": "Envoyez une requête POST avec le header X-API-KEY et un payload JSON contenant 'points'."
-        }), 200
-        
-    key_val = request.headers.get("X-API-KEY")
-    user = None
-    if "user_id" in session:
-        user = User.query.get(session["user_id"])
-    if not user and key_val:
-        key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
-        if key and (not key.expires_at or key.expires_at > utcnow()):
-            user = User.query.get(key.user_id)
-            
+            "service": APP_NAME,
+            "engine": "OSRM + OR-Tools",
+            "routing": "real road network",
+            "usage": (
+                "POST JSON {'points': [...]}"
+                " with X-API-KEY"
+            ),
+        })
+
+    user = authenticate_api_user()
+
     if not user:
-        return jsonify({"error": "unauthorized_or_invalid_api_key"}), 401
-        
-    if user.subscription_expires_at and user.subscription_expires_at < utcnow():
-        return jsonify({"error": "subscription_expired"}), 402
+        return jsonify({
+            "error": "invalid_api_key"
+        }), 401
+
+    if (
+        user.subscription_expires_at
+        and user.subscription_expires_at < utcnow()
+    ):
+        return jsonify({
+            "error": "subscription_expired"
+        }), 402
+
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}), 402
-        
-    payload = request.get_json(silent=True) or {}
-    points = payload.get("points", [])
-    if not isinstance(points, list) or len(points) < 2:
-        return jsonify({"error": "at_least_2_points_required"}), 400
-    
-    optimized = optimize_stops_order(points)
+        return jsonify({
+            "error": "quota_exceeded"
+        }), 402
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    points = payload.get(
+        "points",
+        []
+    )
+
+    try:
+        stops = validate_stops(
+            points,
+            max_points=min(
+                MAX_ROUTE_POINTS,
+                PLANS.get(
+                    user.plan,
+                    PLANS["standard"]
+                ).get(
+                    "point_limit",
+                    MAX_ROUTE_POINTS
+                )
+            )
+        )
+
+        optimized, geometry, distance, engine = (
+            optimize_stops_order(stops)
+        )
+
+    except ValueError as exc:
+        return jsonify({
+            "error": "invalid_data",
+            "message": str(exc),
+        }), 400
+
+    except Exception as exc:
+        return jsonify({
+            "error": "routing_failed",
+            "message": str(exc),
+        }), 503
+
     user.tours_used += 1
+
+    db.session.add(
+        AuditLog(
+            action="API_ROUTE_OPTIMIZED",
+            details=(
+                f"user={user.email}; "
+                f"points={len(optimized)}; "
+                f"engine={engine}"
+            )
+        )
+    )
+
     db.session.commit()
-    return jsonify({"success": True, "optimized_points": optimized, "tours_used": user.tours_used})
+
+    return jsonify({
+        "success": True,
+        "engine": engine,
+        "routing": "real_road_network",
+        "points": len(optimized),
+        "distance_m": round(
+            distance,
+            2
+        ),
+        "distance_km": round(
+            distance / 1000,
+            3
+        ),
+        "optimized_points": optimized,
+        "road_geometry": geometry,
+        "tours_used": user.tours_used,
+    })
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "service": APP_NAME, "blockchain": "Solana Mainnet", "engine": "Optimal Shortcut Engine"})
+    return jsonify({
+        "status": "healthy",
+        "service": APP_NAME,
+        "routing_engine": "OSRM",
+        "optimization_engine": (
+            "OSRM + OR-Tools"
+            if HAS_ORTOOLS
+            else "OSRM Trip"
+        ),
+        "real_road_routing": True,
+        "straight_line_fallback": False,
+        "max_route_points": MAX_ROUTE_POINTS,
+        "database": (
+            "postgresql"
+            if "postgresql" in database_url
+            else "sqlite"
+        ),
+    })
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(
+        os.getenv("PORT", "5000")
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False
+    )
