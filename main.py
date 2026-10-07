@@ -12,8 +12,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+
 
 APP_NAME = "AntStrike Logistics — GlobalRoute AI"
 ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_PASSWORD", "antstrike2026admin")
@@ -28,7 +27,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day", "50 per minute"])
 
-# --- MODÈL BAZ DONE ---
+# --- MODÈL BAZ DONE (KONPATIB AK ANSYEN DATABASE A) ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     company_name = db.Column(db.String(120), nullable=False)
@@ -43,7 +42,7 @@ class User(db.Model):
     tour_limit = db.Column(db.Integer, default=5)
     tours_used = db.Column(db.Integer, default=0)
     subscription_expires_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     routes = db.relationship("DeliveryRoute", backref="company", lazy=True)
     payments = db.relationship("PaymentOrder", backref="company", lazy=True)
 
@@ -53,7 +52,7 @@ class ApiKey(db.Model):
     key_string = db.Column(db.String(64), unique=True, nullable=False)
     expires_at = db.Column(db.DateTime)
     revoked = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class PaymentOrder(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -66,7 +65,7 @@ class PaymentOrder(db.Model):
     status = db.Column(db.String(20), default="pending")
     transaction_signature = db.Column(db.String(128))
     paid_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class DeliveryRoute(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -76,19 +75,19 @@ class DeliveryRoute(db.Model):
     access_code = db.Column(db.String(50), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
     optimized = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     action = db.Column(db.String(200), nullable=False)
     details = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 with app.app_context():
     db.create_all()
 
 def utcnow():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 TRANSLATIONS = {
     "fr": {
@@ -174,7 +173,6 @@ def local_two_opt_pass(route):
                 if new_dist < old_dist:
                     best = new_route
                     improved = True
-        break
     return best
 
 def optimize_stops_order(points):
@@ -237,7 +235,6 @@ def create_api_key(user, expiry):
     db.session.add(key)
     return key
 
-# --- ESTIL AK UI ---
 BASE_STYLE = """
 :root {
   --navy:#0f172a; --blue:#2563eb; --blue2:#1d4ed8; --green:#059669; --red:#dc2626;
@@ -808,7 +805,7 @@ def driver_space():
         return redirect(url_for("driver_login"))
         
     stops = json.loads(route.stops_data or "[]")
-    stops_json = json.dumps(stops, ensure_ascii=False)
+    stops_json = json.dumps(stops, ensure_ascii=False).replace("</script>", "<\/script>")
     
     body = f"""
     <div class="card">
@@ -974,7 +971,7 @@ def driver_print():
     <div class="header">
       <h2>FICHE DE ROUTE (Raccourci Optimal) : {route.route_name}</h2>
       <p>Entreprise : {route.company.company_name} | Livreur : {route.driver_name}</p>
-      <p>Date d'impression : {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} (UTC)</p>
+      <p>Date d'impression : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} (UTC)</p>
     </div>
     <button class="no-print" onclick="window.print()" style="padding:10px 20px; font-size:16px; margin-bottom:15px; cursor:pointer;">Imprimer</button>
     <table>
@@ -1079,11 +1076,13 @@ def api_v1_route():
     user = None
     if "user_id" in session:
         user = User.query.get(session["user_id"])
-    if not user:
+    if not user and key_val:
         key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
-        if not key or (key.expires_at and key.expires_at < utcnow()):
-            return jsonify({"error": "invalid_api_key"}), 401
-        user = User.query.get(key.user_id)
+        if key and (not key.expires_at or key.expires_at > utcnow()):
+            user = User.query.get(key.user_id)
+            
+    if not user:
+        return jsonify({"error": "unauthorized_or_invalid_api_key"}), 401
         
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
         return jsonify({"error": "subscription_expired"}), 402
