@@ -84,8 +84,8 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 with app.app_context():
-    db.drop_all()  # Supprime les anciennes tables corrompues
-    db.create_all() # Crée les tables propres avec tous les bons champs
+    db.drop_all()  # Nettoie l'ancienne base corrompue
+    db.create_all() # Recrée proprement toutes les tables avec les bons formats
 
 
 def utcnow():
@@ -519,6 +519,72 @@ def dashboard():
         <div class="stat"><strong>Tournées utilisées</strong>{user.tours_used} / {user.tour_limit}</div>
         <div class="stat"><strong>Restantes</strong>{remaining} (Expiration : {expiry})</div>
       </div>
+@app.route("/dashboard")
+def dashboard():
+    user_id = session.get("user_id")
+    if not user_id:
+        return redirect(url_for("login_form"))
+    user = User.query.get(user_id)
+    if not user:
+        session.clear()
+        return redirect(url_for("login_form"))
+        
+    key = active_api_key(user)
+    key_text = key.key_string if key else "Aucune clé active"
+    
+    # Gestion sécurisée de la date d'expiration
+    if user.subscription_expires_at:
+        try:
+            expiry = user.subscription_expires_at.strftime("%Y-%m-%d")
+        except Exception:
+            expiry = "—"
+    else:
+        expiry = "—"
+        
+    remaining = max(0, int(user.tour_limit or 0) - int(user.tours_used or 0))
+    
+    routes = DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.id.desc()).limit(30).all()
+    route_rows = ""
+    for r in routes:
+        try:
+            stops = json.loads(r.stops_data or "[]")
+            c = len(stops)
+        except Exception:
+            c = 0
+        opt_badge = '<span style="color:var(--green)">⚡ Raccourci optimal</span>' if r.optimized else 'Standard'
+        route_rows += f"""
+        <tr>
+          <td>{r.route_name}</td>
+          <td>{r.driver_name}</td>
+          <td>{c} étapes</td>
+          <td>{opt_badge}</td>
+          <td><a href="{url_for('driver_space', code=r.access_code)}" class="btn" style="padding:6px 12px; font-size:12px;">Ouvrir</a></td>
+        </tr>
+        """
+        
+    payments = PaymentOrder.query.filter_by(user_id=user.id).order_by(PaymentOrder.created_at.desc()).all()
+    payment_rows = ""
+    for p in payments:
+        pdf_btn = f'<a href="{url_for("download_invoice", order_id=p.id)}" class="btn btn-secondary" style="padding:4px 8px; font-size:11px;">📄 PDF</a>' if p.status == "paid" else ""
+        payment_rows += f"""
+        <tr>
+          <td class="mono">{p.order_code}</td>
+          <td>{p.plan.title() if p.plan else 'Free'}</td>
+          <td>{p.amount_usdc} USDC</td>
+          <td>{p.status}</td>
+          <td>{pdf_btn}</td>
+        </tr>
+        """
+
+    body = f"""
+    <div class="card">
+      <h2>{user.company_name}</h2>
+      <p class="muted">Email : {user.email} | TVA : {user.tax_id or 'Non renseigné'}</p>
+      <div class="grid" style="margin-top:20px;">
+        <div class="stat"><strong>Abonnement</strong>{(user.plan or 'free').title()}</div>
+        <div class="stat"><strong>Tournées utilisées</strong>{user.tours_used or 0} / {user.tour_limit or 0}</div>
+        <div class="stat"><strong>Restantes</strong>{remaining} (Expiration : {expiry})</div>
+      </div>
     </div>
 
     <div class="card">
@@ -562,6 +628,7 @@ def dashboard():
     </div>
     """
     return page(body, title="Dashboard B2B")
+
 
 @app.route("/import-space")
 def import_space():
