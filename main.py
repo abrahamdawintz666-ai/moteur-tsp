@@ -268,11 +268,16 @@ class AuditLog(db.Model):
 
 
 def migrate_existing_database():
+    """Safely add columns introduced by newer GlobalRoute versions.
+
+    The old version silently ignored ALTER TABLE failures. That can leave
+    columns such as api_keys.key_type missing and turn normal Admin actions
+    into HTTP 500 errors. This version reports migration failures clearly.
+    """
     from sqlalchemy import inspect, text
 
     inspector = inspect(db.engine)
     existing_tables = set(inspector.get_table_names())
-
     models = (
         ("users", User),
         ("api_keys", ApiKey),
@@ -297,24 +302,30 @@ def migrate_existing_database():
                 type_sql = column.type.compile(
                     dialect=db.engine.dialect
                 )
-            except Exception:
-                type_sql = str(column.type)
-
-            sql = (
-                f'ALTER TABLE "{table_name}" '
-                f'ADD COLUMN "{column.name}" {type_sql}'
-            )
-
-            try:
+                # New columns are nullable here so existing production rows
+                # remain valid on both SQLite and PostgreSQL.
+                sql = (
+                    f'ALTER TABLE "{table_name}" ADD COLUMN '
+                    f'"{column.name}" {type_sql}'
+                )
                 db.session.execute(text(sql))
                 db.session.commit()
-            except Exception:
+            except Exception as exc:
                 db.session.rollback()
+                # Re-inspect: another worker may have added it concurrently.
+                refreshed = inspect(db.engine)
+                names = {c["name"] for c in refreshed.get_columns(table_name)}
+                if column.name not in names:
+                    raise RuntimeError(
+                        f"Migration base de données impossible : "
+                        f"{table_name}.{column.name}: {exc}"
+                    ) from exc
 
 
 with app.app_context():
     db.create_all()
     migrate_existing_database()
+
 
 
 # ============================================================
@@ -609,17 +620,26 @@ def osrm_request(service, stops, params=None):
         }
     )
 
-    try:
-        with urllib.request.urlopen(
-            request_obj,
-            timeout=OSRM_TIMEOUT
-        ) as response:
-            data = json.loads(
-                response.read().decode("utf-8")
-            )
-    except Exception as exc:
+    last_error = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(
+                request_obj,
+                timeout=OSRM_TIMEOUT
+            ) as response:
+                data = json.loads(
+                    response.read().decode("utf-8")
+                )
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                import time
+                time.sleep(0.8 * (attempt + 1))
+    else:
         raise RuntimeError(
-            f"Connexion OSRM impossible : {exc}"
+            "Connexion au moteur routier OSRM impossible après 3 essais. "
+            f"Vérifiez ROUTING_URL dans Render. Détail : {last_error}"
         )
 
     if data.get("code") != "Ok":
@@ -3232,32 +3252,120 @@ def admin_panel():
 def admin_create_invitation():
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
-    company=request.form.get("company_name","").strip()
-    email=request.form.get("email","").strip().lower()
-    country=request.form.get("country","").strip()
-    if not company or not email:
-        flash("Nom de l'entreprise et email obligatoires.","danger"); return redirect(url_for("admin_panel"))
-    user=User.query.filter_by(email=email).first()
-    if user and user.active:
-        flash("Un compte actif existe déjà avec cet email.","danger"); return redirect(url_for("admin_panel"))
-    if user:
-        user.company_name=company; user.country=country
-        ApiKey.query.filter_by(user_id=user.id,key_type="invite",revoked=False).update({"revoked":True},synchronize_session=False)
-    else:
-        user=User(company_name=company,email=email,password_hash=generate_password_hash(secrets.token_urlsafe(32)),role="dispatcher",country=country,active=False)
-        db.session.add(user); db.session.flush()
-    expires=utcnow()+timedelta(days=7)
-    invitation=create_api_key(user,expires,key_type="invite",prefix="GRI-")
-    db.session.add(AuditLog(action="ACCOUNT_INVITATION_CREATED",details=f"user={email}; invitation_id={invitation.id}"))
-    db.session.commit()
-    activation_url=url_for("activate_account",_external=True)
-    body=f"""<div class="card" style="max-width:650px;margin:0 auto"><h2>✅ Clé d'activation générée</h2>
-    <p><strong>Entreprise :</strong> {user.company_name}</p><p><strong>Email :</strong> {user.email}</p>
-    <label>Clé à envoyer au client</label><div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">{invitation.key_string}</div>
-    <label>Lien d'activation</label><div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">{activation_url}</div>
-    <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
-    <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a></div>"""
-    return page(body,title="Clé d'activation")
+
+    company = normalize_text(
+        request.form.get("company_name"), 150
+    )
+    email = normalize_text(
+        request.form.get("email"), 160
+    ).lower()
+    country = normalize_text(
+        request.form.get("country"), 100
+    )
+
+    if not company or not email or "@" not in email:
+        flash(
+            "Nom d'entreprise et email professionnel valides obligatoires.",
+            "danger"
+        )
+        return redirect(url_for("admin_panel"))
+
+    try:
+        user = User.query.filter_by(email=email).first()
+
+        if user and user.active:
+            flash(
+                "Un compte actif existe déjà avec cet email.",
+                "danger"
+            )
+            return redirect(url_for("admin_panel"))
+
+        if user:
+            user.company_name = company
+            user.country = country
+            ApiKey.query.filter_by(
+                user_id=user.id,
+                key_type="invite",
+                revoked=False
+            ).update(
+                {"revoked": True},
+                synchronize_session=False
+            )
+        else:
+            user = User(
+                company_name=company,
+                email=email,
+                password_hash=generate_password_hash(
+                    secrets.token_urlsafe(32)
+                ),
+                role="dispatcher",
+                country=country,
+                active=False
+            )
+            db.session.add(user)
+            db.session.flush()
+
+        expires = utcnow() + timedelta(days=7)
+        invitation = create_api_key(
+            user,
+            expires,
+            key_type="invite",
+            prefix="GRI-"
+        )
+
+        db.session.add(
+            AuditLog(
+                action="ACCOUNT_INVITATION_CREATED",
+                details=(
+                    f"user={email}; invitation_id={invitation.id}"
+                )
+            )
+        )
+        db.session.commit()
+
+    except IntegrityError as exc:
+        db.session.rollback()
+        app.logger.exception("Erreur SQL lors de la création de l'invitation")
+        flash(
+            "La clé n'a pas pu être générée : la base de données contient "
+            "probablement une ancienne structure. Redéployez cette version "
+            "pour appliquer la migration automatique.",
+            "danger"
+        )
+        return redirect(url_for("admin_panel"))
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception("Erreur Admin lors de la génération de clé")
+        flash(
+            "Erreur de génération : " + str(exc),
+            "danger"
+        )
+        return redirect(url_for("admin_panel"))
+
+    activation_url = url_for(
+        "activate_account",
+        _external=True
+    )
+
+    body = f"""
+    <div class="card" style="max-width:650px;margin:0 auto">
+      <h2>✅ Clé d'activation générée</h2>
+      <p><strong>Entreprise :</strong> {user.company_name}</p>
+      <p><strong>Email :</strong> {user.email}</p>
+      <label>Clé à envoyer au client</label>
+      <div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">
+        {invitation.key_string}
+      </div>
+      <label>Lien d'activation</label>
+      <div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">
+        {activation_url}
+      </div>
+      <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
+      <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a>
+    </div>
+    """
+    return page(body, title="Clé d'activation")
+
 
 @app.route("/admin-logout")
 def admin_logout():
