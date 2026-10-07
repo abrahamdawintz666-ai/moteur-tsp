@@ -6,6 +6,9 @@ import secrets
 import base64
 import math
 import hashlib
+import smtplib
+import ssl
+from email.message import EmailMessage
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -61,6 +64,18 @@ app.config["SESSION_COOKIE_SECURE"] = os.getenv("COOKIE_SECURE", "0") == "1"
 app.config["SESSION_COOKIE_NAME"] = "globalroute_session"
 
 APP_NAME = "GlobalRoute AI — Global Enterprise Logistics"
+
+# Email / account recovery (Gmail SMTP compatible).
+# On Render, configure these as environment variables.
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+RESET_TOKEN_MINUTES = int(os.getenv("RESET_TOKEN_MINUTES", "30"))
+INVITATION_DAYS = int(os.getenv("INVITATION_DAYS", "7"))
+INVITATION_DURATION_OPTIONS = {7: "7 jours", 30: "30 jours", 90: "90 jours", 180: "180 jours", 365: "365 jours"}
 
 SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGkZwyTDt1v"
@@ -255,8 +270,21 @@ class DeliveryRoute(db.Model):
     optimized = db.Column(db.Boolean, default=False)
     optimization_engine = db.Column(db.String(40), default="OSRM")
     total_road_distance_m = db.Column(db.Float, nullable=True)
+    route_geometry_json = db.Column(db.Text, nullable=True)
     optimization_id = db.Column(db.String(80), nullable=True, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class PasswordResetToken(db.Model):
+    __tablename__ = "password_reset_tokens"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    request_ip = db.Column(db.String(64), default="")
 
 
 class AuditLog(db.Model):
@@ -277,6 +305,7 @@ def migrate_existing_database():
     models = (
         ("users", User),
         ("api_keys", ApiKey),
+        ("password_reset_tokens", PasswordResetToken),
         ("payment_orders", PaymentOrder),
         ("delivery_routes", DeliveryRoute),
         ("audit_logs", AuditLog),
@@ -657,384 +686,248 @@ def osrm_request(service, stops, params=None):
 
 
 def build_osrm_table(stops):
-    """
-    Builds a road-distance matrix in meters.
+    """Build a real-road distance matrix from OSRM.
 
-    OSRM Table is called in blocks so hundreds of points can be
-    processed without a huge single HTTP request.
+    For normal enterprise routes we use OSRM Table in bounded blocks.
+    The matrix is never based on geographic straight-line distance.
     """
     n = len(stops)
-    matrix = [
-        [None for _ in range(n)]
-        for _ in range(n)
-    ]
+    if n < 2:
+        return [[0]]
 
+    matrix = [[None] * n for _ in range(n)]
     block = max(10, min(OSRM_MATRIX_BLOCK, 80))
 
+    # A single request contains at most block sources and block destinations.
+    # This keeps requests below common public OSRM limits.
     for source_start in range(0, n, block):
-        source_end = min(source_start + block, n)
-        source_indices = list(
-            range(source_start, source_end)
-        )
-
+        source_indices = list(range(source_start, min(source_start + block, n)))
         for dest_start in range(0, n, block):
-            dest_end = min(dest_start + block, n)
-            dest_indices = list(
-                range(dest_start, dest_end)
-            )
-
-            # All points must be in the coordinate list.
-            combined_indices = list(
-                dict.fromkeys(
-                    source_indices + dest_indices
-                )
-            )
-
-            local_stops = [
-                stops[i]
-                for i in combined_indices
-            ]
-
-            source_positions = [
-                combined_indices.index(i)
-                for i in source_indices
-            ]
-
-            destination_positions = [
-                combined_indices.index(i)
-                for i in dest_indices
-            ]
-
+            dest_indices = list(range(dest_start, min(dest_start + block, n)))
+            combined = list(dict.fromkeys(source_indices + dest_indices))
+            local = [stops[i] for i in combined]
+            pos = {idx: j for j, idx in enumerate(combined)}
             data = osrm_request(
                 "table",
-                local_stops,
+                local,
                 {
-                    "sources": ";".join(
-                        map(str, source_positions)
-                    ),
-                    "destinations": ";".join(
-                        map(str, destination_positions)
-                    ),
+                    "sources": ";".join(str(pos[i]) for i in source_indices),
+                    "destinations": ";".join(str(pos[i]) for i in dest_indices),
                     "annotations": "distance,duration",
-                }
+                },
             )
-
             distances = data.get("distances") or []
-
+            if len(distances) != len(source_indices):
+                raise RuntimeError("OSRM a retourné une matrice routière incomplète.")
             for si, row in enumerate(distances):
-                global_i = source_indices[si]
-
+                if len(row) != len(dest_indices):
+                    raise RuntimeError("OSRM a retourné une ligne de matrice incomplète.")
+                gi = source_indices[si]
                 for di, value in enumerate(row):
-                    global_j = dest_indices[di]
-                    matrix[global_i][global_j] = value
+                    matrix[gi][dest_indices[di]] = value
 
     for i in range(n):
         matrix[i][i] = 0
 
-    missing = [
-        (i, j)
-        for i in range(n)
-        for j in range(n)
-        if matrix[i][j] is None
-    ]
-
+    missing = [(i, j) for i in range(n) for j in range(n) if matrix[i][j] is None]
     if missing:
-        raise RuntimeError(
-            f"OSRM n'a pas fourni {len(missing)} "
-            "distances routières."
-        )
+        raise RuntimeError(f"OSRM n'a pas fourni {len(missing)} distances routières.")
 
-    return [
-        [int(round(float(x))) for x in row]
-        for row in matrix
-    ]
+    return [[int(round(float(v))) for v in row] for row in matrix]
 
 
-def optimize_with_ortools(stops, distance_matrix):
-    """
-    TSP/route optimization using the real OSRM road-distance matrix.
-
-    First and last stops are fixed:
-        start = first input point
-        destination = last input point
-    """
-    if not HAS_ORTOOLS:
-        return None
-
-    n = len(stops)
-
-    if n <= 2:
+def optimize_with_ortools(stops, distance_matrix, time_limit=None):
+    """Optimize using the OSRM road-distance matrix."""
+    if not HAS_ORTOOLS or len(stops) <= 2:
         return list(stops)
 
-    manager = pywrapcp.RoutingIndexManager(
-        n,
-        1,
-        [0],
-        [n - 1]
-    )
-
+    n = len(stops)
+    manager = pywrapcp.RoutingIndexManager(n, 1, [0], [n - 1])
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
+        a = manager.IndexToNode(from_index)
+        b = manager.IndexToNode(to_index)
+        value = distance_matrix[a][b]
+        return int(value if value is not None else 10**12)
 
-        value = distance_matrix[from_node][to_node]
+    callback_index = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(callback_index)
 
-        if value is None:
-            return 10**12
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    params.time_limit.seconds = int(time_limit or OR_TOOLS_SECONDS)
+    params.log_search = False
 
-        return int(value)
-
-    transit_callback_index = routing.RegisterTransitCallback(
-        distance_callback
-    )
-
-    routing.SetArcCostEvaluatorOfAllVehicles(
-        transit_callback_index
-    )
-
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    )
-
-    search_parameters.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    )
-
-    search_parameters.time_limit.seconds = OR_TOOLS_SECONDS
-
-    solution = routing.SolveWithParameters(
-        search_parameters
-    )
-
+    solution = routing.SolveWithParameters(params)
     if not solution:
         return None
 
     ordered = []
     index = routing.Start(0)
-
     while not routing.IsEnd(index):
-        node = manager.IndexToNode(index)
-        ordered.append(stops[node])
-        index = solution.Value(
-            routing.NextVar(index)
-        )
-
-    ordered.append(
-        stops[manager.IndexToNode(index)]
-    )
+        ordered.append(stops[manager.IndexToNode(index)])
+        index = solution.Value(routing.NextVar(index))
+    ordered.append(stops[manager.IndexToNode(index)])
 
     if len(ordered) != n:
         return None
-
     return ordered
 
 
 def osrm_trip_order(stops):
-    """
-    OSRM Trip is used when OR-Tools is not installed or for
-    smaller jobs. It is road-network based, not Haversine based.
+    """Get a road-network-based initial order directly from OSRM Trip."""
+    if len(stops) <= 2:
+        return list(stops)
+    data = osrm_request(
+        "trip", stops,
+        {"roundtrip": "false", "source": "first", "destination": "last",
+         "steps": "false", "overview": "false"},
+    )
+    waypoints = data.get("waypoints") or []
+    if len(waypoints) != len(stops):
+        raise RuntimeError("OSRM n'a pas retourné tous les points de la tournée.")
+    ordered = [None] * len(stops)
+    for original_index, waypoint in enumerate(waypoints):
+        wi = waypoint.get("waypoint_index")
+        if isinstance(wi, int) and 0 <= wi < len(stops):
+            ordered[wi] = stops[original_index]
+    ordered = [x for x in ordered if x is not None]
+    if len(ordered) != len(stops):
+        raise RuntimeError("Impossible de reconstruire l'ordre routier OSRM.")
+    return ordered
+
+
+def scalable_road_optimization(stops):
+    """Optimize > FULL_MATRIX_MAX_POINTS without an enormous single matrix.
+
+    Each block is optimized using a real OSRM matrix. Blocks are then ordered
+    using OSRM road distances between their boundary points. This is designed
+    for 200-1000 points while keeping the request bounded.
     """
     if len(stops) <= 2:
         return list(stops)
 
-    if len(stops) > OSRM_TRIP_LIMIT:
-        raise RuntimeError(
-            "La tournée est trop grande pour le mode OSRM Trip direct."
-        )
+    chunk_size = max(40, min(OSRM_MATRIX_BLOCK, 80))
+    chunks = [stops[i:i + chunk_size] for i in range(0, len(stops), chunk_size)]
+    optimized_chunks = []
 
-    data = osrm_request(
-        "trip",
-        stops,
-        {
-            "roundtrip": "false",
-            "source": "first",
-            "destination": "last",
-            "steps": "false",
-            "overview": "false",
-        }
-    )
+    for chunk in chunks:
+        if len(chunk) <= 2:
+            optimized_chunks.append(chunk)
+            continue
+        matrix = build_osrm_table(chunk)
+        ordered = optimize_with_ortools(chunk, matrix, time_limit=max(5, min(15, OR_TOOLS_SECONDS))) if HAS_ORTOOLS else None
+        if not ordered:
+            ordered = osrm_trip_order(chunk)
+        optimized_chunks.append(ordered)
 
-    trips = data.get("trips") or []
+    # Preserve the global first and last points and choose the next block by
+    # real OSRM road distance, not by Haversine distance.
+    remaining = optimized_chunks[1:]
+    result = list(optimized_chunks[0])
+    current = result[-1]
+    final_chunk = None
+    if remaining:
+        final_chunk = remaining[-1] if remaining[-1][-1] == stops[-1] or remaining[-1][0] == stops[-1] else None
 
-    if not trips:
-        raise RuntimeError(
-            "OSRM n'a trouvé aucune tournée routière."
-        )
+    while remaining:
+        best_i = None
+        best_cost = None
+        for i, chunk in enumerate(remaining):
+            candidates = [chunk[0], chunk[-1]]
+            try:
+                data = osrm_request("route", [current, candidates[0]], {"overview":"false"})
+                cost0 = float(data["routes"][0]["distance"])
+            except Exception:
+                cost0 = float("inf")
+            if len(candidates) == 2:
+                try:
+                    data = osrm_request("route", [current, candidates[1]], {"overview":"false"})
+                    cost1 = float(data["routes"][0]["distance"])
+                except Exception:
+                    cost1 = float("inf")
+            else:
+                cost1 = cost0
+            cost = min(cost0, cost1)
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_i = i
+                best_reverse = cost1 < cost0
+        if best_i is None or best_cost == float("inf"):
+            raise RuntimeError("OSRM n'a pas permis de relier les blocs routiers.")
+        chosen = remaining.pop(best_i)
+        if best_reverse:
+            chosen = list(reversed(chosen))
+        result.extend(chosen[1:] if result[-1] == chosen[0] else chosen)
+        current = result[-1]
 
-    waypoints = data.get("waypoints") or []
-
-    if len(waypoints) != len(stops):
-        raise RuntimeError(
-            "OSRM n'a pas retourné tous les points."
-        )
-
-    ordered = [None] * len(stops)
-
-    for original_index, waypoint in enumerate(waypoints):
-        waypoint_index = waypoint.get("waypoint_index")
-
-        if (
-            waypoint_index is not None
-            and 0 <= waypoint_index < len(stops)
-        ):
-            ordered[waypoint_index] = stops[original_index]
-
-    ordered = [
-        point for point in ordered
-        if point is not None
-    ]
-
-    if len(ordered) != len(stops):
-        raise RuntimeError(
-            "Impossible de reconstruire l'ordre OSRM."
-        )
-
-    return ordered
+    # If the final point moved during block stitching, enforce the requested
+    # destination by a final road-network-aware local adjustment.
+    if result[-1] != stops[-1]:
+        idx = next((i for i, p in enumerate(result) if p is stops[-1]), None)
+        if idx is not None and idx > 0:
+            result.append(result.pop(idx))
+    return result
 
 
 def get_route_geometry(stops):
-    """
-    Gets the real road geometry for the final optimized order.
-
-    Large routes are split into consecutive chunks, with the
-    boundary point repeated so the road geometry remains continuous.
-    """
+    """Return the real OSRM road geometry for the final optimized order."""
     if len(stops) < 2:
         return [], 0.0
-
     geometries = []
     total_distance = 0.0
-
-    # Public OSRM endpoints can have coordinate limits.
     chunk_size = max(10, min(OSRM_TRIP_LIMIT, 80))
 
-    for start in range(
-        0,
-        len(stops) - 1,
-        chunk_size - 1
-    ):
-        end = min(
-            start + chunk_size,
-            len(stops)
-        )
-
+    for start in range(0, len(stops) - 1, chunk_size - 1):
+        end = min(start + chunk_size, len(stops))
         chunk = stops[start:end]
-
         if len(chunk) < 2:
             continue
-
-        data = osrm_request(
-            "route",
-            chunk,
-            {
-                "overview": "full",
-                "geometries": "geojson",
-                "steps": "false",
-            }
-        )
-
+        data = osrm_request("route", chunk, {
+            "overview": "full", "geometries": "geojson", "steps": "false"
+        })
         routes = data.get("routes") or []
-
         if not routes:
-            raise RuntimeError(
-                "OSRM n'a pas retourné la géométrie routière."
-            )
-
+            raise RuntimeError("OSRM n'a pas retourné la géométrie routière finale.")
         route = routes[0]
-
-        total_distance += float(
-            route.get("distance", 0)
-        )
-
-        geometry = (
-            route.get("geometry", {})
-            .get("coordinates", [])
-        )
-
-        if geometries and geometry:
-            geometries.extend(geometry[1:])
-        else:
-            geometries.extend(geometry)
-
+        total_distance += float(route.get("distance", 0))
+        coords = route.get("geometry", {}).get("coordinates", [])
+        geometries.extend(coords[1:] if geometries and coords else coords)
         if end == len(stops):
             break
 
     if not geometries:
-        raise RuntimeError(
-            "OSRM n'a fourni aucune géométrie routière."
-        )
-
-    # GeoJSON = [lng, lat]. Leaflet wants [lat, lng].
-    leaflet_geometry = [
-        [float(coord[1]), float(coord[0])]
-        for coord in geometries
-        if len(coord) >= 2
-    ]
-
+        raise RuntimeError("OSRM n'a fourni aucune géométrie routière.")
+    leaflet_geometry = [[float(c[1]), float(c[0])] for c in geometries if len(c) >= 2]
     return leaflet_geometry, total_distance
 
 
 def optimize_stops_order(stops):
-    """
-    Main optimization engine.
-
-    1. Validate data.
-    2. Build real road matrix through OSRM.
-    3. Solve with OR-Tools when available.
-    4. Otherwise use OSRM Trip for smaller routes.
-    5. NEVER use straight-line distance for final optimization.
-    """
+    """Main engine: OSRM supplies roads; our optimizer chooses the order."""
     stops = validate_stops(stops)
-
-    if len(stops) == 2:
+    n = len(stops)
+    if n == 2:
         geometry, distance = get_route_geometry(stops)
         if distance <= 0:
-            raise RuntimeError("OSRM a retourné une distance routière nulle pour les 2 points.")
+            raise RuntimeError("OSRM a retourné une distance routière nulle.")
         return stops, geometry, distance, "OSRM Road Route"
 
-    if HAS_ORTOOLS:
+    # Full road matrix gives the strongest optimization for normal routes.
+    full_matrix_limit = int(os.getenv("FULL_MATRIX_MAX_POINTS", "300"))
+    if HAS_ORTOOLS and n <= full_matrix_limit:
         matrix = build_osrm_table(stops)
+        optimized = optimize_with_ortools(stops, matrix)
+        if not optimized:
+            raise RuntimeError("OR-Tools n'a pas trouvé de solution routière.")
+        geometry, distance = get_route_geometry(optimized)
+        return optimized, geometry, distance, "OSRM + OR-Tools Road Matrix"
 
-        optimized = optimize_with_ortools(
-            stops,
-            matrix
-        )
-
-        if optimized:
-            geometry, distance = get_route_geometry(
-                optimized
-            )
-
-            return (
-                optimized,
-                geometry,
-                distance,
-                "OSRM + OR-Tools"
-            )
-
-    if len(stops) <= OSRM_TRIP_LIMIT:
-        optimized = osrm_trip_order(stops)
-
-        geometry, distance = get_route_geometry(
-            optimized
-        )
-
-        return (
-            optimized,
-            geometry,
-            distance,
-            "OSRM Trip"
-        )
-
-    raise RuntimeError(
-        "OR-Tools n'est pas installé et la tournée dépasse "
-        f"{OSRM_TRIP_LIMIT} points. Installez OR-Tools ou "
-        "utilisez un serveur OSRM de production."
-    )
+    # Scalable mode for large tours: still based exclusively on real OSRM roads.
+    optimized = scalable_road_optimization(stops)
+    geometry, distance = get_route_geometry(optimized)
+    return optimized, geometry, distance, "OSRM + Scalable Road Optimizer"
 
 
 # ============================================================
@@ -1252,8 +1145,137 @@ def strong_password(password):
     return all(checks)
 
 
+def public_url(endpoint, **values):
+    """Build a stable public HTTPS URL for email links."""
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL + url_for(endpoint, **values)
+    return url_for(endpoint, _external=True, **values)
+
+
+def hash_reset_token(raw_token):
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def smtp_is_configured():
+    return bool(SMTP_USER and SMTP_PASSWORD and SMTP_FROM)
+
+
+def send_email(to_email, subject, text_body, html_body=None):
+    """Send transactional email through SMTP (Gmail-compatible)."""
+    if not smtp_is_configured():
+        raise RuntimeError(
+            "SMTP non configuré. Définissez SMTP_USER, SMTP_PASSWORD et SMTP_FROM dans Render."
+        )
+
+    message = EmailMessage()
+    message["From"] = SMTP_FROM
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(text_body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.ehlo()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(message)
+
+
+def create_password_reset_token(user):
+    """Create a one-time, short-lived token; only its hash is stored."""
+    PasswordResetToken.query.filter_by(
+        user_id=user.id, used_at=None
+    ).update(
+        {"used_at": utcnow()},
+        synchronize_session=False
+    )
+    raw_token = secrets.token_urlsafe(48)
+    token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=hash_reset_token(raw_token),
+        expires_at=utcnow() + timedelta(minutes=RESET_TOKEN_MINUTES),
+        request_ip=(request.remote_addr or "")[:64]
+    )
+    db.session.add(token)
+    db.session.flush()
+    return raw_token
+
+
+def find_valid_reset_token(raw_token):
+    if not raw_token:
+        return None
+    token = PasswordResetToken.query.filter_by(
+        token_hash=hash_reset_token(raw_token), used_at=None
+    ).first()
+    if not token or token.expires_at < utcnow():
+        return None
+    return token
+
+
+def send_password_reset_email(user, raw_token):
+    link = public_url("reset_password", token=raw_token)
+    subject = "GlobalRoute AI — Réinitialisation de votre mot de passe"
+    text_body = (
+        f"Bonjour {user.company_name},\n\n"
+        "Une demande de réinitialisation du mot de passe de votre compte GlobalRoute AI a été reçue.\n\n"
+        f"Ouvrez ce lien dans les {RESET_TOKEN_MINUTES} prochaines minutes :\n{link}\n\n"
+        "Si vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.\n\n"
+        "GlobalRoute AI — Global Enterprise Logistics"
+    )
+    html_body = f"""
+    <div style=\"font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:24px;color:#0f172a\">
+      <h2>GlobalRoute AI</h2>
+      <p>Bonjour <strong>{user.company_name}</strong>,</p>
+      <p>Une demande de réinitialisation du mot de passe de votre compte a été reçue.</p>
+      <p><a href=\"{link}\" style=\"display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px\">Réinitialiser mon mot de passe</a></p>
+      <p>Ce lien expire dans <strong>{RESET_TOKEN_MINUTES} minutes</strong> et ne peut être utilisé qu'une seule fois.</p>
+      <p style=\"color:#64748b;font-size:13px\">Si vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.</p>
+    </div>
+    """
+    send_email(user.email, subject, text_body, html_body)
+
+
+def send_invitation_email(user, invitation_key):
+    link = public_url("activate_account")
+    subject = f"GlobalRoute AI — Invitation {user.company_name}"
+    text_body = (
+        f"Bonjour {user.company_name},\n\n"
+        "Votre compte entreprise GlobalRoute AI a été préparé par l'administrateur.\n\n"
+        f"Clé d'activation : {invitation_key}\n\n"
+        f"Lien d'activation : {link}\n\n"
+        f"La clé est valable {INVITATION_DAYS} jours et est utilisable une seule fois. Vous créerez votre propre mot de passe pendant l'activation.\n\n"
+        "GlobalRoute AI — Global Enterprise Logistics"
+    )
+    html_body = f"""
+    <div style=\"font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:24px;color:#0f172a\">
+      <h2>Invitation GlobalRoute AI</h2>
+      <p>Bonjour <strong>{user.company_name}</strong>,</p>
+      <p>Votre compte entreprise a été préparé par l'administrateur.</p>
+      <p>Clé d'activation :</p>
+      <div style=\"font-family:monospace;background:#0f172a;color:#fff;padding:14px;border-radius:8px;word-break:break-all\">{invitation_key}</div>
+      <p><a href=\"{link}\" style=\"display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px\">Activer mon compte</a></p>
+      <p>La clé est valable {INVITATION_DAYS} jours et utilisable une seule fois.</p>
+    </div>
+    """
+    send_email(user.email, subject, text_body, html_body)
+
+
 def admin_required():
     return bool(session.get("is_admin"))
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 # ============================================================
@@ -1502,6 +1524,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <a href="{{ url_for('dashboard') }}">▣ &nbsp;{{ t('dashboard') }}</a>
     <a href="{{ url_for('import_space') }}">⇧ &nbsp;{{ t('import') }}</a>
     <a href="{{ url_for('plans') }}">◈ &nbsp;{{ t('plans') }}</a>
+    <a href="{{ url_for('account_security') }}">🔐 &nbsp;Sécurité du compte</a>
     <a href="{{ url_for('logout') }}">⏻ &nbsp;{{ t('logout') }}</a>
     {% else %}
     <a href="{{ url_for('login_form') }}">↪ &nbsp;{{ t('login') }}</a>
@@ -1757,6 +1780,9 @@ def login_form():
           </button>
         </div>
       </form>
+      <p style="margin-top:16px;text-align:center;">
+        <a href="{url_for('forgot_password')}" >Mot de passe oublié ?</a>
+      </p>
     </div>
     """
 
@@ -1793,6 +1819,154 @@ def login():
     )
 
     return redirect(url_for("login_form"))
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+@limiter.limit("5 per 15 minutes")
+def forgot_password():
+    if request.method == "GET":
+        return page(f"""
+        <div class="card" style="max-width:500px;margin:0 auto;">
+          <h2>Réinitialiser le mot de passe</h2>
+          <p class="muted">Entrez l'e-mail professionnel du compte. Si le compte existe, un lien sécurisé sera envoyé à cette adresse.</p>
+          <form method="POST">
+            <label>E-mail professionnel</label>
+            <input type="email" name="email" autocomplete="email" required maxlength="160">
+            <button type="submit" class="btn btn-block" style="margin-top:18px;">Envoyer le lien de réinitialisation</button>
+          </form>
+        </div>
+        """, title="Mot de passe oublié")
+
+    email = normalize_text(request.form.get("email"), 160).lower()
+    user = User.query.filter_by(email=email).first()
+
+    # Always return the same public response to avoid account enumeration.
+    if user and user.active:
+        try:
+            raw_token = create_password_reset_token(user)
+            db.session.commit()
+            send_password_reset_email(user, raw_token)
+            db.session.add(AuditLog(action="PASSWORD_RESET_REQUESTED", details=f"user={user.email}; ip={request.remote_addr or ''}"))
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.exception("Password reset email failed: %s", exc)
+
+    flash("Si un compte actif correspond à cet e-mail, un lien de réinitialisation vient d'être envoyé.", "success")
+    return redirect(url_for("login_form"))
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+@limiter.limit("10 per 15 minutes")
+def reset_password(token):
+    reset_token = find_valid_reset_token(token)
+    if not reset_token:
+        return page("""
+        <div class="card" style="max-width:520px;margin:0 auto;">
+          <h2>Lien invalide ou expiré</h2>
+          <p class="muted">Pour votre sécurité, le lien de réinitialisation est limité dans le temps et utilisable une seule fois.</p>
+          <a href="/forgot-password" class="btn">Demander un nouveau lien</a>
+        </div>
+        """, title="Réinitialisation")
+
+    user = User.query.get(reset_token.user_id)
+    if not user or not user.active:
+        return page("<div class=\"card\"><h2>Compte indisponible</h2></div>", title="Réinitialisation")
+
+    if request.method == "GET":
+        return page(f"""
+        <div class="card" style="max-width:520px;margin:0 auto;">
+          <h2>Nouveau mot de passe</h2>
+          <p class="muted">Compte : {user.email}</p>
+          <form method="POST">
+            <label>Nouveau mot de passe</label>
+            <input type="password" name="password" minlength="12" autocomplete="new-password" required>
+            <label>Confirmer le mot de passe</label>
+            <input type="password" name="password_confirm" minlength="12" autocomplete="new-password" required>
+            <p class="muted">Minimum 12 caractères : majuscule, minuscule, chiffre et symbole.</p>
+            <button type="submit" class="btn btn-block" style="margin-top:16px;">Enregistrer le nouveau mot de passe</button>
+          </form>
+        </div>
+        """, title="Nouveau mot de passe")
+
+    password = request.form.get("password", "")
+    confirm = request.form.get("password_confirm", "")
+    if not strong_password(password):
+        flash("Mot de passe trop faible. Utilisez 12 caractères minimum avec majuscule, minuscule, chiffre et symbole.", "danger")
+        return redirect(url_for("reset_password", token=token))
+    if password != confirm:
+        flash("Les deux mots de passe ne correspondent pas.", "danger")
+        return redirect(url_for("reset_password", token=token))
+
+    user.password_hash = generate_password_hash(password, method="pbkdf2:sha256:600000")
+    reset_token.used_at = utcnow()
+    PasswordResetToken.query.filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.id != reset_token.id,
+        PasswordResetToken.used_at.is_(None)
+    ).update({"used_at": utcnow()}, synchronize_session=False)
+    db.session.add(AuditLog(action="PASSWORD_RESET_COMPLETED", details=f"user={user.email}; ip={request.remote_addr or ''}"))
+    db.session.commit()
+    session.clear()
+    flash("Mot de passe réinitialisé avec succès. Vous pouvez maintenant vous connecter.", "success")
+    return redirect(url_for("login_form"))
+
+
+@app.route("/account-security", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def account_security():
+    user = current_user()
+    if not user:
+        return redirect(url_for("login_form"))
+
+    if request.method == "POST":
+        current = request.form.get("current_password", "")
+        new_password = request.form.get("password", "")
+        confirm = request.form.get("password_confirm", "")
+        if not check_password_hash(user.password_hash, current):
+            flash("Votre mot de passe actuel est incorrect.", "danger")
+            return redirect(url_for("account_security"))
+        if not strong_password(new_password):
+            flash("Mot de passe trop faible. Utilisez 12 caractères minimum avec majuscule, minuscule, chiffre et symbole.", "danger")
+            return redirect(url_for("account_security"))
+        if new_password != confirm:
+            flash("Les deux nouveaux mots de passe ne correspondent pas.", "danger")
+            return redirect(url_for("account_security"))
+        if check_password_hash(user.password_hash, new_password):
+            flash("Le nouveau mot de passe doit être différent de l'ancien.", "danger")
+            return redirect(url_for("account_security"))
+        user.password_hash = generate_password_hash(new_password, method="pbkdf2:sha256:600000")
+        PasswordResetToken.query.filter_by(user_id=user.id, used_at=None).update({"used_at": utcnow()}, synchronize_session=False)
+        db.session.add(AuditLog(action="PASSWORD_CHANGED", details=f"user={user.email}; ip={request.remote_addr or ''}"))
+        db.session.commit()
+        try:
+            send_email(
+                user.email,
+                "GlobalRoute AI — Mot de passe modifié",
+                "Votre mot de passe GlobalRoute AI vient d'être modifié. Si vous n'êtes pas à l'origine de cette action, contactez immédiatement l'administrateur.",
+                "<p>Votre mot de passe GlobalRoute AI vient d'être modifié.</p><p>Si vous n'êtes pas à l'origine de cette action, contactez immédiatement l'administrateur.</p>"
+            )
+        except Exception as exc:
+            app.logger.warning("Security notification email failed: %s", exc)
+        flash("Mot de passe modifié avec succès.", "success")
+        return redirect(url_for("account_security"))
+
+    return page(f"""
+    <div class="card" style="max-width:560px;margin:0 auto;">
+      <h2>🔐 Sécurité du compte</h2>
+      <p class="muted">{user.email}</p>
+      <form method="POST">
+        <label>Mot de passe actuel</label>
+        <input type="password" name="current_password" autocomplete="current-password" required>
+        <label>Nouveau mot de passe</label>
+        <input type="password" name="password" minlength="12" autocomplete="new-password" required>
+        <label>Confirmer le nouveau mot de passe</label>
+        <input type="password" name="password_confirm" minlength="12" autocomplete="new-password" required>
+        <p class="muted">Minimum 12 caractères avec majuscule, minuscule, chiffre et symbole.</p>
+        <button type="submit" class="btn btn-block" style="margin-top:16px;">Modifier le mot de passe</button>
+      </form>
+    </div>
+    """, title="Sécurité du compte")
 
 
 @app.route("/logout")
@@ -2195,6 +2369,7 @@ def create_driver_route():
         optimized=True,
         optimization_engine=engine,
         total_road_distance_m=distance,
+        route_geometry_json=json.dumps(geometry, ensure_ascii=False),
         optimization_id=optimization_id,
         status="Optimisée",
     )
@@ -2776,7 +2951,7 @@ def driver_space():
 
         <div class="stat">
           <span>Moteur</span>
-          <strong>{route.optimization_engine}</strong>
+          <strong id="route-engine">{route.optimization_engine}</strong>
         </div>
 
       </div>
@@ -2862,128 +3037,13 @@ def driver_space():
         .replaceAll("'", "&#039;");
     }}
 
-    async function drawRealRoadRoute() {{
-      if (points.length < 2) return;
-
-      const maxChunk = 80;
-      let allCoords = [];
-
-      try {{
-        for (
-          let start = 0;
-          start < points.length - 1;
-          start += maxChunk - 1
-        ) {{
-
-          const end = Math.min(
-            start + maxChunk,
-            points.length
-          );
-
-          const chunk = points.slice(
-            start,
-            end
-          );
-
-          const coords = chunk.map(
-            p => p.lng + "," + p.lat
-          ).join(";");
-
-          const url =
-            "https://router.project-osrm.org/"
-            + "route/v1/driving/"
-            + coords
-            + "?overview=full"
-            + "&geometries=geojson";
-
-          const response =
-            await fetch(url);
-
-          if (!response.ok) {{
-            throw new Error(
-              "OSRM HTTP " + response.status
-            );
-          }}
-
-          const data =
-            await response.json();
-
-          if (
-            data.code !== "Ok"
-            || !data.routes
-            || !data.routes.length
-          ) {{
-            throw new Error(
-              "OSRM n'a pas trouvé de route."
-            );
-          }}
-
-          const road =
-            data.routes[0]
-              .geometry
-              .coordinates
-              .map(c => [c[1], c[0]]);
-
-          if (allCoords.length) {{
-            allCoords =
-              allCoords.concat(
-                road.slice(1)
-              );
-          }} else {{
-            allCoords =
-              allCoords.concat(road);
-          }}
-
-          if (end === points.length) break;
-        }}
-
-        if (!allCoords.length) {{
-          throw new Error(
-            "Géométrie routière vide."
-          );
-        }}
-
-        const polyline =
-          L.polyline(
-            allCoords,
-            {{
-              color:"#2563eb",
-              weight:6,
-              opacity:.9
-            }}
-          ).addTo(map);
-
-        map.fitBounds(
-          polyline.getBounds(),
-          {{padding:[30,30]}}
-        );
-
-      }} catch(error) {{
-        console.error(error);
-
-        document.getElementById(
-          "total-distance"
-        ).textContent =
-          "Route indisponible";
-
-        const warning =
-          document.createElement("div");
-
-        warning.className =
-          "alert alert-danger";
-
-        warning.textContent =
-          "Le réseau routier OSRM n'a pas pu "
-          + "être chargé. Aucune ligne droite "
-          + "de secours n'est affichée.";
-
-        document.getElementById(
-          "map"
-        ).before(warning);
-      }}
+    const savedGeometry = {json.dumps(json.loads(route.route_geometry_json or "[]"))};
+    if (savedGeometry.length > 1) {{
+      const polyline = L.polyline(savedGeometry, {{color:"#2563eb", weight:6, opacity:.9}}).addTo(map);
+      map.fitBounds(polyline.getBounds(), {{padding:[30,30]}});
+    }} else if (points.length > 1) {{
+      document.getElementById("route-engine").textContent = "Géométrie routière indisponible";
     }}
-
-    drawRealRoadRoute();
 
     let trackingInterval = null;
     let driverMarker = null;
@@ -3238,13 +3298,20 @@ def admin_panel():
     users=User.query.order_by(User.created_at.desc()).all()
     active_rows="".join(f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>{u.plan}</td><td>Actif</td></tr>" for u in users if u.active)
     pending_rows="".join(f"<tr><td>{u.company_name}</td><td>{u.email}</td><td>Invitation en attente</td></tr>" for u in users if not u.active)
+    invitation_options_html = "".join(f'<option value="{days}" {"selected" if days == INVITATION_DAYS else ""}>{label}</option>' for days, label in INVITATION_DURATION_OPTIONS.items())
     body=f"""
     <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div><h2>Panel Administrateur</h2><p class="muted">Créez un compte entreprise avec son email, puis envoyez-lui sa clé.</p></div><a href="{url_for('admin_logout')}" class="btn btn-red">Quitter</a></div></div>
     <div class="card"><h3>🏢 Nouvelle entreprise</h3>
+      <p class="muted">E-mail transactionnel : {"configuré" if smtp_is_configured() else "non configuré"}. Pour Gmail, utilisez un mot de passe d'application SMTP dans les variables d'environnement Render.</p>
       <form method="POST" action="{url_for('admin_create_invitation')}">
         <label>Nom de l'entreprise</label><input type="text" name="company_name" required maxlength="150">
         <label>Email de l'entreprise</label><input type="email" name="email" required maxlength="160">
         <label>Pays (optionnel)</label><input type="text" name="country" maxlength="100">
+        <label>Durée de la clé d'activation</label>
+        <select name="invitation_days" required>
+          {invitation_options_html}
+        </select>
+        <p class="muted">La clé est à usage unique et sera invalidée après activation.</p>
         <div style="margin-top:15px"><button type="submit" class="btn">🔑 Générer la clé d'activation</button></div>
       </form>
     </div>
@@ -3260,6 +3327,13 @@ def admin_create_invitation():
     company=request.form.get("company_name","").strip()
     email=request.form.get("email","").strip().lower()
     country=request.form.get("country","").strip()
+    try:
+        invitation_days=int(request.form.get("invitation_days", INVITATION_DAYS))
+    except (TypeError, ValueError):
+        invitation_days=INVITATION_DAYS
+    if invitation_days not in INVITATION_DURATION_OPTIONS:
+        flash("Durée de clé invalide.", "danger")
+        return redirect(url_for("admin_panel"))
     if not company or not email:
         flash("Nom de l'entreprise et email obligatoires.","danger"); return redirect(url_for("admin_panel"))
     user=User.query.filter_by(email=email).first()
@@ -3271,16 +3345,23 @@ def admin_create_invitation():
     else:
         user=User(company_name=company,email=email,password_hash=generate_password_hash(secrets.token_urlsafe(32)),payment_method="USDC",role="dispatcher",country=country,active=False)
         db.session.add(user); db.session.flush()
-    expires=utcnow()+timedelta(days=7)
+    expires=utcnow()+timedelta(days=invitation_days)
     invitation=create_api_key(user,expires,key_type="invite",prefix="GRI-")
     db.session.add(AuditLog(action="ACCOUNT_INVITATION_CREATED",details=f"user={email}; invitation_id={invitation.id}"))
     db.session.commit()
-    activation_url=url_for("activate_account",_external=True)
-    body=f"""<div class="card" style="max-width:650px;margin:0 auto"><h2>✅ Clé d'activation générée</h2>
+    email_status = ""
+    try:
+        send_invitation_email(user, invitation.key_string)
+        email_status = "<p class=\"alert alert-success\">✉️ La clé et le lien d'activation ont été envoyés à l'adresse e-mail de l'entreprise.</p>"
+    except Exception as exc:
+        app.logger.exception("Invitation email failed: %s", exc)
+        email_status = "<p class=\"alert alert-danger\">L'e-mail automatique n'a pas pu être envoyé. La clé ci-dessous reste disponible pour un envoi manuel. Vérifiez la configuration SMTP de Render.</p>"
+    activation_url=public_url("activate_account")
+    body=f"""<div class="card" style="max-width:650px;margin:0 auto"><h2>✅ Clé d'activation générée</h2>{email_status}
     <p><strong>Entreprise :</strong> {user.company_name}</p><p><strong>Email :</strong> {user.email}</p>
     <label>Clé à envoyer au client</label><div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">{invitation.key_string}</div>
     <label>Lien d'activation</label><div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">{activation_url}</div>
-    <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
+    <p class="muted">Valable {invitation_days} jours, jusqu’au {expires.strftime("%Y-%m-%d %H:%M UTC")}, et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
     <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a></div>"""
     return page(body,title="Clé d'activation")
 
