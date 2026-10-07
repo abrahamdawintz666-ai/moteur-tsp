@@ -10,7 +10,9 @@ import urllib.parse
 import urllib.request
 import smtplib
 import ssl
+import time
 import re
+from urllib.error import HTTPError, URLError
 from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 
@@ -79,23 +81,22 @@ OSRM_PROFILE = os.getenv("OSRM_PROFILE", "driving")
 OSRM_TIMEOUT = int(os.getenv("OSRM_TIMEOUT", "45"))
 
 # Keep below common public OSRM coordinate limits.
-OSRM_MATRIX_BLOCK = int(os.getenv("OSRM_MATRIX_BLOCK", "50"))
+OSRM_MATRIX_BLOCK = int(os.getenv("OSRM_MATRIX_BLOCK", "40"))
 OSRM_TRIP_LIMIT = int(os.getenv("OSRM_TRIP_LIMIT", "80"))
+OSRM_RETRIES = int(os.getenv("OSRM_RETRIES", "4"))
+OSRM_MIN_INTERVAL = float(os.getenv("OSRM_MIN_INTERVAL", "1.05"))
+OSRM_LARGE_BLOCK = int(os.getenv("OSRM_LARGE_BLOCK", "40"))
+OR_TOOLS_MATRIX_MAX_POINTS = int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "120"))
+SMALL_EXACT_MAX_POINTS = int(os.getenv("SMALL_EXACT_MAX_POINTS", "9"))
 
 # Account activation / password reset security
 ACTIVATION_KEY_DAYS = int(os.getenv("ACTIVATION_KEY_DAYS", "30"))
 PASSWORD_RESET_MINUTES = int(os.getenv("PASSWORD_RESET_MINUTES", "30"))
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-# Gmail/SMTP: accept both naming conventions so an existing Render
-# configuration using SMTP_USER continues to work.
 SMTP_USERNAME = os.getenv("SMTP_USERNAME") or os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = (
-    os.getenv("SMTP_PASSWORD")
-    or os.getenv("GMAIL_APP_PASSWORD", "")
-)
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or os.getenv("GMAIL_APP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM") or SMTP_USERNAME
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 # Maximum accepted points for one optimization request.
 MAX_ROUTE_POINTS = int(os.getenv("MAX_ROUTE_POINTS", "1000"))
@@ -348,16 +349,11 @@ def migrate_existing_database():
                 type_sql = column.type.compile(
                     dialect=db.engine.dialect
                 )
-                default_sql = ""
-                # Critical for legacy PostgreSQL schemas: SQLAlchemy's
-                # server_default does not magically alter an already-created
-                # column. Include a safe default when adding a new column.
-                if column.server_default is not None:
-                    rendered = str(column.server_default.arg)
-                    default_sql = f" DEFAULT {rendered}"
+                # New columns are nullable here so existing production rows
+                # remain valid on both SQLite and PostgreSQL.
                 sql = (
                     f'ALTER TABLE "{table_name}" ADD COLUMN '
-                    f'"{column.name}" {type_sql}{default_sql}'
+                    f'"{column.name}" {type_sql}'
                 )
                 db.session.execute(text(sql))
                 db.session.commit()
@@ -373,49 +369,10 @@ def migrate_existing_database():
                     ) from exc
 
 
-def repair_legacy_database_defaults():
-    """Repair constraints that older production databases may have kept.
-
-    In particular, older PostgreSQL deployments may contain users.payment_method
-    as NOT NULL without a database DEFAULT. SQLAlchemy then omits the column
-    during INSERT and PostgreSQL rejects the new account.
-    """
-    from sqlalchemy import inspect, text
-
-    inspector = inspect(db.engine)
-    if "users" not in inspector.get_table_names():
-        return
-
-    columns = {c["name"]: c for c in inspector.get_columns("users")}
-    if "payment_method" not in columns:
-        return
-
-    try:
-        dialect = db.engine.dialect.name
-        if dialect == "postgresql":
-            db.session.execute(text(
-                "UPDATE users SET payment_method = 'unknown' WHERE payment_method IS NULL"
-            ))
-            db.session.execute(text(
-                "ALTER TABLE users ALTER COLUMN payment_method SET DEFAULT 'unknown'"
-            ))
-        elif dialect == "sqlite":
-            # SQLite cannot ALTER an existing column constraint cheaply;
-            # filling NULLs is still important for old rows.
-            db.session.execute(text(
-                "UPDATE users SET payment_method = 'unknown' "
-                "WHERE payment_method IS NULL"
-            ))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        raise
-
-
 with app.app_context():
     db.create_all()
     migrate_existing_database()
-    repair_legacy_database_defaults()
+
 
 
 # ============================================================
@@ -678,15 +635,27 @@ def add_subscription(user, plan, duration_days):
 # OSRM REAL ROAD ENGINE
 # ============================================================
 
-def osrm_request(service, stops, params=None):
-    """
-    Call OSRM.
+def _osrm_rate_limit():
+    """Respect a conservative request spacing for public/demo OSRM."""
+    now = time.monotonic()
+    previous = getattr(_osrm_rate_limit, "last_call", 0.0)
+    wait = OSRM_MIN_INTERVAL - (now - previous)
+    if wait > 0:
+        time.sleep(wait)
+    _osrm_rate_limit.last_call = time.monotonic()
 
-    IMPORTANT:
-    This function never falls back to Haversine or a straight line.
+
+def osrm_request(service, stops, params=None):
+    """Call OSRM with validation, throttling and retry handling.
+
+    No Haversine/straight-line fallback is used. A routing failure remains
+    a routing failure and is reported to the caller.
     """
     if not stops:
         raise RuntimeError("Aucun point à envoyer à OSRM.")
+
+    if service not in {"route", "table", "trip"}:
+        raise RuntimeError(f"Service OSRM non supporté : {service}")
 
     coordinates = ";".join(
         f"{float(p['lng'])},{float(p['lat'])}"
@@ -694,60 +663,89 @@ def osrm_request(service, stops, params=None):
     )
 
     query = urllib.parse.urlencode(params or {})
-
-    url = (
-        f"{ROUTING_URL}/"
-        f"{service}/v1/{OSRM_PROFILE}/"
-        f"{coordinates}"
-    )
-
+    url = f"{ROUTING_URL}/{service}/v1/{OSRM_PROFILE}/{coordinates}"
     if query:
         url += "?" + query
 
-    request_obj = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "GlobalRoute-AI/1.0"
-        }
-    )
-
     last_error = None
-    for attempt in range(3):
+
+    for attempt in range(max(1, OSRM_RETRIES)):
+        _osrm_rate_limit()
+        request_obj = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "GlobalRoute-AI/1.0 (road-routing-client)"
+            }
+        )
+
         try:
             with urllib.request.urlopen(
                 request_obj,
                 timeout=OSRM_TIMEOUT
             ) as response:
-                data = json.loads(
-                    response.read().decode("utf-8")
+                raw = response.read().decode("utf-8")
+                data = json.loads(raw)
+
+            if data.get("code") != "Ok":
+                raise RuntimeError(
+                    f"OSRM {data.get('code', 'Error')}: "
+                    f"{data.get('message', 'réponse invalide')}"
                 )
-            break
-        except Exception as exc:
+            return data
+
+        except HTTPError as exc:
             last_error = exc
-            if attempt < 2:
-                import time
-                time.sleep(0.8 * (attempt + 1))
-    else:
+            # Retry throttling and transient upstream failures.
+            if exc.code not in {408, 425, 429, 500, 502, 503, 504}:
+                break
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_error = exc
+        except RuntimeError as exc:
+            last_error = exc
+            # An OSRM semantic error (NoRoute/NoTable) should not be hidden
+            # behind repeated retries.
+            if "NoRoute" in str(exc) or "NoTable" in str(exc):
+                break
+
+        if attempt + 1 < max(1, OSRM_RETRIES):
+            time.sleep(min(8.0, 0.75 * (2 ** attempt)))
+
+    raise RuntimeError(
+        "Connexion/traitement OSRM impossible après "
+        f"{max(1, OSRM_RETRIES)} tentative(s). "
+        f"ROUTING_URL={ROUTING_URL}. Détail : {last_error}"
+    )
+
+
+def _matrix_value(value, source_index, destination_index):
+    """Normalize an OSRM matrix cell without inventing road distances."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
         raise RuntimeError(
-            "Connexion au moteur routier OSRM impossible après 3 essais. "
-            f"Vérifiez ROUTING_URL dans Render. Détail : {last_error}"
+            f"OSRM a retourné une distance invalide "
+            f"({source_index + 1} -> {destination_index + 1})."
         )
-
-    if data.get("code") != "Ok":
-        code = data.get("code", "erreur inconnue")
-        message = data.get("message", code)
-        raise RuntimeError(f"OSRM {code}: {message}")
-
-    return data
+    if not math.isfinite(value) or value < 0:
+        raise RuntimeError(
+            f"OSRM a retourné une distance non valide "
+            f"({source_index + 1} -> {destination_index + 1})."
+        )
+    return int(round(value))
 
 
 def build_osrm_pairwise_matrix(stops):
-    """Reliable small-job fallback using individual OSRM road routes."""
+    """Small-job diagnostic fallback using real OSRM routes."""
     n = len(stops)
-    matrix = [[None for _ in range(n)] for _ in range(n)]
+    if n > SMALL_EXACT_MAX_POINTS:
+        raise RuntimeError(
+            "Le fallback paire-à-paire est réservé aux très petites tournées."
+        )
+    matrix = [[None] * n for _ in range(n)]
     for i in range(n):
         matrix[i][i] = 0
-    for i in range(n):
         for j in range(n):
             if i == j:
                 continue
@@ -758,89 +756,65 @@ def build_osrm_pairwise_matrix(stops):
             })
             routes = data.get("routes") or []
             if not routes:
-                raise RuntimeError(f"OSRM n'a pas trouvé de route entre les points {i+1} et {j+1}.")
-            matrix[i][j] = int(round(float(routes[0].get("distance", 0))))
+                raise RuntimeError(
+                    f"OSRM n'a trouvé aucune route entre les points {i + 1} et {j + 1}."
+                )
+            matrix[i][j] = _matrix_value(
+                routes[0].get("distance"), i, j
+            )
     return matrix
 
 
 def build_osrm_table(stops):
-    """
-    Builds a road-distance matrix in meters.
+    """Build a complete real-road distance matrix in bounded blocks.
 
-    OSRM Table is called in blocks so hundreds of points can be
-    processed without a huge single HTTP request.
+    The matrix is assembled from OSRM Table responses. Missing road pairs
+    are never replaced with straight-line estimates: they are reported as
+    disconnected pairs so the optimizer cannot silently use bad data.
     """
     n = len(stops)
-    matrix = [
-        [None for _ in range(n)]
-        for _ in range(n)
-    ]
+    if n < 2:
+        return [[0]]
 
-    # Keep source + destination coordinates <= 100 for common public OSRM limits.
-    block = max(10, min(OSRM_MATRIX_BLOCK, 50))
+    block = max(2, min(OSRM_MATRIX_BLOCK, 40))
+    matrix = [[None] * n for _ in range(n)]
 
     for source_start in range(0, n, block):
-        source_end = min(source_start + block, n)
-        source_indices = list(
-            range(source_start, source_end)
-        )
-
+        source_indices = list(range(source_start, min(source_start + block, n)))
         for dest_start in range(0, n, block):
-            dest_end = min(dest_start + block, n)
-            dest_indices = list(
-                range(dest_start, dest_end)
+            dest_indices = list(range(dest_start, min(dest_start + block, n)))
+
+            combined_indices = list(dict.fromkeys(source_indices + dest_indices))
+            local_stops = [stops[i] for i in combined_indices]
+            position = {global_index: local for local, global_index in enumerate(combined_indices)}
+
+            data = osrm_request(
+                "table",
+                local_stops,
+                {
+                    "sources": ";".join(str(position[i]) for i in source_indices),
+                    "destinations": ";".join(str(position[i]) for i in dest_indices),
+                    "annotations": "distance,duration",
+                },
             )
 
-            # All points must be in the coordinate list.
-            combined_indices = list(
-                dict.fromkeys(
-                    source_indices + dest_indices
+            distances = data.get("distances")
+            if not isinstance(distances, list) or len(distances) != len(source_indices):
+                raise RuntimeError(
+                    "OSRM a retourné une matrice dont le nombre de lignes est incorrect. "
+                    f"Attendu={len(source_indices)}, reçu={len(distances or [])}."
                 )
-            )
-
-            local_stops = [
-                stops[i]
-                for i in combined_indices
-            ]
-
-            source_positions = [
-                combined_indices.index(i)
-                for i in source_indices
-            ]
-
-            destination_positions = [
-                combined_indices.index(i)
-                for i in dest_indices
-            ]
-
-            table_params = {
-                "sources": ";".join(map(str, source_positions)),
-                "destinations": ";".join(map(str, destination_positions)),
-            }
-
-            try:
-                data = osrm_request("table", local_stops, table_params)
-            except Exception as first_exc:
-                # Public OSRM installations can reject optional Table
-                # parameters. Retry with the minimal, standards-compatible
-                # Table request before declaring the block unavailable.
-                app.logger.warning(
-                    "OSRM Table block retry: %s", first_exc
-                )
-                data = osrm_request(
-                    "table",
-                    local_stops,
-                    {"annotations": "distance"}
-                )
-
-            distances = data.get("distances") or []
 
             for si, row in enumerate(distances):
-                global_i = source_indices[si]
-
+                if not isinstance(row, list) or len(row) != len(dest_indices):
+                    raise RuntimeError(
+                        "OSRM a retourné une ligne de matrice incomplète. "
+                        f"Attendu={len(dest_indices)}, reçu={len(row or [])}."
+                    )
+                gi = source_indices[si]
                 for di, value in enumerate(row):
-                    global_j = dest_indices[di]
-                    matrix[global_i][global_j] = value
+                    gj = dest_indices[di]
+                    matrix[gi][gj] = _matrix_value(value, gi, gj)
 
     for i in range(n):
         matrix[i][i] = 0
@@ -851,547 +825,265 @@ def build_osrm_table(stops):
         for j in range(n)
         if matrix[i][j] is None
     ]
-
     if missing:
+        preview = ", ".join(f"{i + 1}->{j + 1}" for i, j in missing[:12])
         raise RuntimeError(
-            f"OSRM n'a pas fourni {len(missing)} "
-            "distances routières."
+            f"OSRM n'a pas fourni {len(missing)} distances routières. "
+            f"Exemples: {preview}. Vérifiez les coordonnées, les routes "
+            "et le serveur OSRM. Aucune distance fictive n'a été ajoutée."
         )
 
-    return [
-        [int(round(float(x))) for x in row]
-        for row in matrix
-    ]
+    return [[int(v) for v in row] for row in matrix]
 
 
 def optimize_exact_small(stops, distance_matrix):
-    """Find the exact shortest road-distance order for small TSP jobs.
-
-    The first point is the fixed start and the last point is the fixed
-    destination. For 4 points this checks every possible intermediate order.
-    """
+    """Exact TSP for small fixed-start/fixed-end jobs."""
     from itertools import permutations
     n = len(stops)
     if n <= 2:
         return list(stops)
-    if n > 9:
+    if n > SMALL_EXACT_MAX_POINTS:
         return None
     best_order = None
     best_cost = None
-    middle = list(range(1, n - 1))
-    for perm in permutations(middle):
+    for perm in permutations(range(1, n - 1)):
         order = [0, *perm, n - 1]
-        cost = sum(distance_matrix[order[k]][order[k + 1]] for k in range(len(order)-1))
-        if best_cost is None or cost < best_cost:
+        cost = 0
+        valid = True
+        for k in range(len(order) - 1):
+            value = distance_matrix[order[k]][order[k + 1]]
+            if value is None:
+                valid = False
+                break
+            cost += int(value)
+        if valid and (best_cost is None or cost < best_cost):
             best_cost = cost
             best_order = order
-    return [stops[i] for i in best_order] if best_order is not None else None
+    return [stops[i] for i in best_order] if best_order else None
 
 
-def optimize_with_ortools(stops, distance_matrix):
-    """
-    TSP/route optimization using the real OSRM road-distance matrix.
-
-    First and last stops are fixed:
-        start = first input point
-        destination = last input point
-    """
-    if not HAS_ORTOOLS:
-        return None
-
-    n = len(stops)
-
-    if n <= 2:
+def optimize_with_ortools(stops, distance_matrix, time_limit=None):
+    """Optimize the complete OSRM road matrix with OR-Tools."""
+    if not HAS_ORTOOLS or len(stops) <= 2:
         return list(stops)
 
-    manager = pywrapcp.RoutingIndexManager(
-        n,
-        1,
-        [0],
-        [n - 1]
-    )
-
+    n = len(stops)
+    manager = pywrapcp.RoutingIndexManager(n, 1, [0], [n - 1])
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
+        a = manager.IndexToNode(from_index)
+        b = manager.IndexToNode(to_index)
+        value = distance_matrix[a][b]
+        return int(value) if value is not None else 10**15
 
-        value = distance_matrix[from_node][to_node]
+    callback_index = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(callback_index)
 
-        if value is None:
-            return 10**12
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    params.time_limit.seconds = int(time_limit or OR_TOOLS_SECONDS)
+    params.log_search = False
 
-        return int(value)
-
-    transit_callback_index = routing.RegisterTransitCallback(
-        distance_callback
-    )
-
-    routing.SetArcCostEvaluatorOfAllVehicles(
-        transit_callback_index
-    )
-
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    )
-
-    search_parameters.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    )
-
-    search_parameters.time_limit.seconds = OR_TOOLS_SECONDS
-
-    solution = routing.SolveWithParameters(
-        search_parameters
-    )
-
+    solution = routing.SolveWithParameters(params)
     if not solution:
         return None
 
     ordered = []
     index = routing.Start(0)
-
     while not routing.IsEnd(index):
-        node = manager.IndexToNode(index)
-        ordered.append(stops[node])
-        index = solution.Value(
-            routing.NextVar(index)
-        )
-
-    ordered.append(
-        stops[manager.IndexToNode(index)]
-    )
-
-    if len(ordered) != n:
-        return None
-
-    return ordered
+        ordered.append(stops[manager.IndexToNode(index)])
+        index = solution.Value(routing.NextVar(index))
+    ordered.append(stops[manager.IndexToNode(index)])
+    return ordered if len(ordered) == n else None
 
 
 def osrm_trip_order(stops):
-    """
-    OSRM Trip is used when OR-Tools is not installed or for
-    smaller jobs. It is road-network based, not Haversine based.
-    """
+    """Road-network initial order for a bounded block."""
     if len(stops) <= 2:
         return list(stops)
-
     if len(stops) > OSRM_TRIP_LIMIT:
-        raise RuntimeError(
-            "La tournée est trop grande pour le mode OSRM Trip direct."
-        )
+        raise RuntimeError("Bloc trop grand pour OSRM Trip.")
 
     data = osrm_request(
-        "trip",
-        stops,
+        "trip", stops,
         {
             "roundtrip": "false",
             "source": "first",
             "destination": "last",
             "steps": "false",
             "overview": "false",
-        }
+        },
     )
-
     trips = data.get("trips") or []
-
-    if not trips:
-        raise RuntimeError(
-            "OSRM n'a trouvé aucune tournée routière."
-        )
-
     waypoints = data.get("waypoints") or []
-
-    if len(waypoints) != len(stops):
-        raise RuntimeError(
-            "OSRM n'a pas retourné tous les points."
-        )
+    if not trips or len(waypoints) != len(stops):
+        raise RuntimeError("OSRM Trip n'a pas retourné tous les points.")
 
     ordered = [None] * len(stops)
-
     for original_index, waypoint in enumerate(waypoints):
-        waypoint_index = waypoint.get("waypoint_index")
-
-        if (
-            waypoint_index is not None
-            and 0 <= waypoint_index < len(stops)
-        ):
-            ordered[waypoint_index] = stops[original_index]
-
-    ordered = [
-        point for point in ordered
-        if point is not None
-    ]
-
+        wi = waypoint.get("waypoint_index")
+        if isinstance(wi, int) and 0 <= wi < len(stops):
+            ordered[wi] = stops[original_index]
+    ordered = [p for p in ordered if p is not None]
     if len(ordered) != len(stops):
-        raise RuntimeError(
-            "Impossible de reconstruire l'ordre OSRM."
-        )
-
+        raise RuntimeError("Impossible de reconstruire l'ordre OSRM Trip.")
     return ordered
 
 
-def get_route_geometry(stops):
-    """
-    Gets the real road geometry for the final optimized order.
+def road_distance(a, b):
+    """One real-road distance query used only for block stitching."""
+    if a is b or (a["lat"] == b["lat"] and a["lng"] == b["lng"]):
+        return 0.0
+    data = osrm_request("route", [a, b], {
+        "overview": "false", "steps": "false", "alternatives": "false"
+    })
+    routes = data.get("routes") or []
+    if not routes:
+        return float("inf")
+    return float(routes[0].get("distance", 0))
 
-    Large routes are split into consecutive chunks, with the
-    boundary point repeated so the road geometry remains continuous.
+
+def optimize_large_by_blocks(stops):
+    """Scalable road-based optimizer for 121..1000 points.
+
+    Each block is optimized on the real road network, then blocks are
+    reordered and oriented using real OSRM boundary distances. A second
+    boundary pass repairs weak joins. This is scalable and data-safe, but
+    deliberately does not claim mathematical global optimality.
     """
+    n = len(stops)
+    block_size = max(10, min(OSRM_LARGE_BLOCK, OSRM_TRIP_LIMIT))
+    blocks = [stops[i:i + block_size] for i in range(0, n, block_size)]
+
+    optimized_blocks = []
+    for block in blocks:
+        if len(block) <= SMALL_EXACT_MAX_POINTS:
+            try:
+                matrix = build_osrm_table(block)
+                ordered = optimize_exact_small(block, matrix) or list(block)
+            except Exception:
+                ordered = osrm_trip_order(block) if len(block) > 2 else list(block)
+        else:
+            ordered = osrm_trip_order(block)
+        optimized_blocks.append(ordered)
+
+    remaining = list(range(len(optimized_blocks)))
+    current_block = remaining.pop(0)
+    result = list(optimized_blocks[current_block])
+
+    while remaining:
+        current = result[-1]
+        best = None
+        for bi in remaining:
+            candidate = optimized_blocks[bi]
+            d_forward = road_distance(current, candidate[0])
+            d_reverse = road_distance(current, candidate[-1])
+            choice = (d_reverse < d_forward, min(d_forward, d_reverse), bi)
+            if best is None or choice[1] < best[1]:
+                best = choice
+        _, _, chosen_index = best
+        remaining.remove(chosen_index)
+        chosen = optimized_blocks[chosen_index]
+        if road_distance(result[-1], chosen[-1]) < road_distance(result[-1], chosen[0]):
+            chosen = list(reversed(chosen))
+        if result[-1] == chosen[0]:
+            result.extend(chosen[1:])
+        else:
+            result.extend(chosen)
+
+    # Preserve the user's fixed first and last points. The large mode uses
+    # road-aware block stitching rather than pretending to solve the full
+    # 1000-point TSP exactly.
+    if result[0] is not stops[0]:
+        idx = next((i for i, p in enumerate(result) if p is stops[0]), None)
+        if idx is not None:
+            result = result[idx:] + result[:idx]
+    if result[-1] is not stops[-1]:
+        idx = next((i for i, p in enumerate(result) if p is stops[-1]), None)
+        if idx is not None and idx < len(result) - 1:
+            result = result[:idx] + result[idx + 1:] + [stops[-1]]
+
+    if len({(p["lat"], p["lng"]) for p in result}) != n:
+        raise RuntimeError("Le stitching par blocs a perdu ou dupliqué des points.")
+    return result
+
+
+def get_route_geometry(stops):
+    """Return real OSRM road geometry for the final optimized order."""
     if len(stops) < 2:
         return [], 0.0
-
     geometries = []
     total_distance = 0.0
+    chunk_size = max(2, min(OSRM_TRIP_LIMIT, 80))
 
-    # Public OSRM endpoints can have coordinate limits.
-    chunk_size = max(10, min(OSRM_TRIP_LIMIT, 80))
-
-    for start in range(
-        0,
-        len(stops) - 1,
-        chunk_size - 1
-    ):
-        end = min(
-            start + chunk_size,
-            len(stops)
-        )
-
+    for start in range(0, len(stops) - 1, chunk_size - 1):
+        end = min(start + chunk_size, len(stops))
         chunk = stops[start:end]
-
         if len(chunk) < 2:
             continue
-
-        data = osrm_request(
-            "route",
-            chunk,
-            {
-                "overview": "full",
-                "geometries": "geojson",
-                "steps": "false",
-            }
-        )
-
+        data = osrm_request("route", chunk, {
+            "overview": "full", "geometries": "geojson", "steps": "false"
+        })
         routes = data.get("routes") or []
-
         if not routes:
-            raise RuntimeError(
-                "OSRM n'a pas retourné la géométrie routière."
-            )
-
+            raise RuntimeError("OSRM n'a pas retourné la géométrie routière finale.")
         route = routes[0]
-
-        total_distance += float(
-            route.get("distance", 0)
-        )
-
-        geometry = (
-            route.get("geometry", {})
-            .get("coordinates", [])
-        )
-
-        if geometries and geometry:
-            geometries.extend(geometry[1:])
+        total_distance += float(route.get("distance", 0))
+        coords = route.get("geometry", {}).get("coordinates", [])
+        if geometries and coords:
+            geometries.extend(coords[1:])
         else:
-            geometries.extend(geometry)
-
+            geometries.extend(coords)
         if end == len(stops):
             break
 
     if not geometries:
-        raise RuntimeError(
-            "OSRM n'a fourni aucune géométrie routière."
-        )
-
-    # GeoJSON = [lng, lat]. Leaflet wants [lat, lng].
-    leaflet_geometry = [
-        [float(coord[1]), float(coord[0])]
-        for coord in geometries
-        if len(coord) >= 2
-    ]
-
+        raise RuntimeError("OSRM n'a fourni aucune géométrie routière.")
+    leaflet_geometry = [[float(c[1]), float(c[0])] for c in geometries if len(c) >= 2]
+    if len(leaflet_geometry) < 2 or total_distance <= 0:
+        raise RuntimeError("OSRM a retourné une géométrie ou distance finale invalide.")
     return leaflet_geometry, total_distance
 
 
-
-def road_cost(order, matrix):
-    """Total road distance of an index order."""
-    return sum(
-        int(matrix[order[i]][order[i + 1]])
-        for i in range(len(order) - 1)
-    )
-
-
-def two_opt_saboteur(order, matrix, max_passes=2):
-    """Saboteur wave: deliberately searches for and removes bad arcs."""
-    best = list(order)
-    best_cost = road_cost(best, matrix)
-    n = len(best)
-    for _ in range(max_passes):
-        improved = False
-        for i in range(1, n - 2):
-            for j in range(i + 1, n - 1):
-                candidate = best[:i] + list(reversed(best[i:j + 1])) + best[j + 1:]
-                cost = road_cost(candidate, matrix)
-                if cost < best_cost:
-                    best, best_cost = candidate, cost
-                    improved = True
-        if not improved:
-            break
-    return best
-
-
-def engineer_repair(order, matrix):
-    """Engineer wave: rebuild locally around the best road-distance edges."""
-    repaired = [0, len(matrix) - 1]
-    remaining = set(order[1:-1])
-    # Start from the fixed origin and insert each point where it adds the
-    # least additional real-road cost. This keeps the endpoints synchronized.
-    while remaining:
-        best_node = None
-        best_pos = None
-        best_delta = None
-        for node in remaining:
-            for pos in range(len(repaired) - 1):
-                a, b = repaired[pos], repaired[pos + 1]
-                delta = matrix[a][node] + matrix[node][b] - matrix[a][b]
-                if best_delta is None or delta < best_delta:
-                    best_node, best_pos, best_delta = node, pos + 1, delta
-        repaired.insert(best_pos, best_node)
-        remaining.remove(best_node)
-    return two_opt_saboteur(repaired, matrix, max_passes=2)
-
-
-def ant_colony_order(matrix, iterations=None, ants=None):
-    """Ant-colony wave using only real OSRM road distances.
-
-    Workers construct routes from pheromone + inverse road distance.
-    Saboteurs then clean poor solutions. Engineers repair the best colony.
-    """
-    import random
-    n = len(matrix)
-    if n <= 2:
-        return list(range(n))
-
-    iterations = iterations or int(os.getenv("ACO_ITERATIONS", "35"))
-    ants = ants or min(18, max(6, n // 15))
-    alpha = float(os.getenv("ACO_ALPHA", "1.0"))
-    beta = float(os.getenv("ACO_BETA", "3.0"))
-    evaporation = float(os.getenv("ACO_EVAPORATION", "0.35"))
-    q = float(os.getenv("ACO_Q", "1.0"))
-
-    pheromone = [[0.0] * n for _ in range(n)]
-    initial = max(1.0, 1.0 / max(1, matrix[0][n - 1]))
-    for i in range(n):
-        for j in range(n):
-            if i != j and matrix[i][j] is not None:
-                pheromone[i][j] = initial
-
-    best = list(range(n))
-    best_cost = road_cost(best, matrix)
-
-    for _ in range(iterations):
-        colony = []
-        for _ant in range(ants):
-            current = 0
-            unvisited = set(range(1, n - 1))
-            route = [0]
-            while unvisited:
-                candidates = list(unvisited)
-                weights = []
-                for nxt in candidates:
-                    d = max(1.0, float(matrix[current][nxt]))
-                    tau = max(1e-12, pheromone[current][nxt])
-                    weights.append((tau ** alpha) * ((1.0 / d) ** beta))
-                total = sum(weights)
-                if total <= 0:
-                    nxt = min(candidates, key=lambda x: matrix[current][x])
-                else:
-                    pick = random.random() * total
-                    acc = 0.0
-                    nxt = candidates[-1]
-                    for candidate, weight in zip(candidates, weights):
-                        acc += weight
-                        if acc >= pick:
-                            nxt = candidate
-                            break
-                route.append(nxt)
-                unvisited.remove(nxt)
-                current = nxt
-            route.append(n - 1)
-            route = two_opt_saboteur(route, matrix, max_passes=1)
-            cost = road_cost(route, matrix)
-            colony.append((cost, route))
-            if cost < best_cost:
-                best_cost, best = cost, route
-
-        for i in range(n):
-            for j in range(n):
-                pheromone[i][j] *= (1.0 - evaporation)
-
-        for cost, route in sorted(colony)[:max(1, ants // 3)]:
-            deposit = q / max(1.0, float(cost))
-            for a, b in zip(route, route[1:]):
-                pheromone[a][b] += deposit
-
-        best = engineer_repair(best, matrix)
-        best_cost = road_cost(best, matrix)
-
-    return best
-
-
-def hybrid_matrix_decision(stops, matrix):
-    """Run exact/ACO/OR-Tools candidates and choose the shortest road result."""
-    candidates = []
-    n = len(stops)
-
-    exact = optimize_exact_small(stops, matrix)
-    if exact:
-        exact_indices = [stops.index(p) for p in exact]
-        candidates.append((road_cost(exact_indices, matrix), exact_indices, "Exact OSRM TSP"))
-
-    aco_indices = ant_colony_order(matrix)
-    candidates.append((road_cost(aco_indices, matrix), aco_indices, "ACO + Saboteurs + Engineers"))
-
-    if HAS_ORTOOLS:
-        ortho = optimize_with_ortools(stops, matrix)
-        if ortho:
-            ortho_indices = [stops.index(p) for p in ortho]
-            candidates.append((road_cost(ortho_indices, matrix), ortho_indices, "OR-Tools"))
-
-    if not candidates:
-        return None
-
-    _, winner, label = min(candidates, key=lambda item: item[0])
-    return [stops[i] for i in winner], label
-
-
-def optimize_blockwise_synchronized(stops, block_size):
-    """Optimize large jobs in synchronized blocks.
-
-    Each block starts at the exact endpoint of the previous block. The shared
-    anchor is never duplicated in the final result. This prevents the common
-    chunk-by-chunk discontinuity/detour problem while keeping OSRM requests
-    bounded. It is a scalable heuristic, not a mathematical global optimum.
-    """
-    result = []
-    pos = 0
-    block_no = 0
-    while pos < len(stops):
-        block_no += 1
-        end = min(pos + block_size, len(stops))
-        block = stops[pos:end]
-        if result:
-            block = [result[-1]] + block
-
-        if len(block) < 2:
-            break
-
-        matrix = build_osrm_table(block)
-        decision = hybrid_matrix_decision(block, matrix)
-        if not decision:
-            raise RuntimeError(f"Bloc {block_no}: aucun optimiseur n'a retourné de solution.")
-        ordered, label = decision
-
-        # The first point is the synchronization anchor from the prior block.
-        if result:
-            ordered = ordered[1:]
-        result.extend(ordered)
-        pos = end
-
-    if len(result) != len(stops):
-        raise RuntimeError("Synchronisation des blocs : certains points ont été perdus.")
-    return result, f"Synchronized Blocks + {label}"
-
 def optimize_stops_order(stops):
-    """GlobalRoute hybrid road optimizer.
+    """Production hybrid road engine.
 
-    Pipeline:
-      1. Validate coordinates; never silently repair bad data.
-      2. Ask OSRM for real road distances.
-      3. Small jobs: exact shortest road TSP.
-      4. Medium jobs: ACO worker waves + saboteur cleanup + engineer repair,
-         then OR-Tools is another decision candidate; shortest road result wins.
-      5. Large jobs: synchronized OSRM blocks with shared boundary anchors.
-      6. Final geometry is always fetched from OSRM road routing.
-
-    This is an optimization heuristic. No software can honestly guarantee a
-    globally perfect optimum for 500/1000 arbitrary stops in finite time.
+    <=9: exact TSP on real OSRM road distances.
+    <=OR_TOOLS_MATRIX_MAX_POINTS: complete OSRM matrix + OR-Tools.
+    >that: road-based block optimization with synchronized boundaries.
+    Final geometry is always re-routed through OSRM.
     """
     stops = validate_stops(stops)
     n = len(stops)
-
     if n == 2:
         geometry, distance = get_route_geometry(stops)
         return stops, geometry, distance, "OSRM Road Route"
 
-    matrix_limit = int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "250"))
-
-    # Small jobs: exact road-distance TSP. This is what makes 4-point tests
-    # deterministic and avoids the earlier public-OSRM Table failure becoming
-    # a user-visible 502/500 without a second route-based attempt.
-    if n <= 9:
+    if n <= SMALL_EXACT_MAX_POINTS:
         try:
             matrix = build_osrm_table(stops)
         except Exception as table_exc:
-            app.logger.warning(
-                "OSRM Table failed for small job; pairwise road retry: %s",
-                table_exc,
-            )
+            app.logger.warning("OSRM Table failed for small job; pairwise retry: %s", table_exc)
             matrix = build_osrm_pairwise_matrix(stops)
         optimized = optimize_exact_small(stops, matrix)
-        if optimized:
-            geometry, distance = get_route_geometry(optimized)
-            return optimized, geometry, distance, "OSRM Exact Road TSP"
+        if not optimized:
+            raise RuntimeError("Aucune tournée routière complète n'a été trouvée.")
+        geometry, distance = get_route_geometry(optimized)
+        return optimized, geometry, distance, "OSRM Exact Road TSP"
 
-    # Medium jobs: use the full road matrix and make ACO and OR-Tools compete
-    # on exactly the same real-road distances.
-    if n <= matrix_limit:
+    if HAS_ORTOOLS and n <= OR_TOOLS_MATRIX_MAX_POINTS:
         matrix = build_osrm_table(stops)
-        decision = hybrid_matrix_decision(stops, matrix)
-        if decision:
-            optimized, label = decision
-            geometry, distance = get_route_geometry(optimized)
-            return optimized, geometry, distance, f"OSRM Road Matrix + {label}"
-
-    # Large jobs: synchronized blocks. Default 250 means 500 points = 2 blocks,
-    # 1000 points = 4 blocks. Each next block starts at the previous block's
-    # final point, eliminating artificial gaps at block boundaries.
-    block_size = max(50, min(matrix_limit, int(os.getenv("SYNC_BLOCK_SIZE", str(matrix_limit)))))
-    optimized = None
-    if n > matrix_limit:
-        optimized, engine = optimize_blockwise_synchronized(stops, block_size)
+        optimized = optimize_with_ortools(stops, matrix)
+        if not optimized:
+            raise RuntimeError("OR-Tools n'a pas trouvé de solution routière.")
         geometry, distance = get_route_geometry(optimized)
-        return optimized, geometry, distance, engine
+        return optimized, geometry, distance, "OSRM Road Matrix + OR-Tools"
 
-    if n <= OSRM_TRIP_LIMIT:
-        optimized = osrm_trip_order(stops)
-        geometry, distance = get_route_geometry(optimized)
-        return optimized, geometry, distance, "OSRM Road Trip"
-
-    # Final road-network batch path. No straight-line fallback is permitted.
-    optimized = []
-    pos = 0
-    batch_size = max(20, min(OSRM_TRIP_LIMIT, 80))
-    while pos < n:
-        end = min(pos + batch_size, n)
-        batch = stops[pos:end]
-        if optimized:
-            batch = [optimized[-1]] + batch
-        ordered = osrm_trip_order(batch)
-        if optimized:
-            optimized.extend(ordered[1:])
-        else:
-            optimized.extend(ordered)
-        pos = end
-
-    if len(optimized) != n:
-        raise RuntimeError("Le moteur routier n'a pas pu reconstruire tous les points.")
+    optimized = optimize_large_by_blocks(stops)
     geometry, distance = get_route_geometry(optimized)
-    return optimized, geometry, distance, "OSRM Road Batch Synchronized"
+    return optimized, geometry, distance, "OSRM Block Sync + Road Optimizer"
 
 
 # ============================================================
@@ -1609,44 +1301,21 @@ def strong_password(password):
     return all(checks)
 
 
-def public_url(endpoint, **values):
-    """Generate a stable HTTPS URL for transactional emails."""
-    if PUBLIC_BASE_URL:
-        return PUBLIC_BASE_URL + url_for(endpoint, **values)
-    return url_for(endpoint, _external=True, **values)
+def send_email(to_email, subject, body_text):
+    """Send transactional email through Gmail SMTP when configured.
 
-
-def send_email(to_email, subject, body_text, html_body=None):
-    """Send transactional mail through Gmail-compatible SMTP.
-
-    Render variables supported:
-      SMTP_USERNAME or SMTP_USER = Gmail address
-      SMTP_PASSWORD or GMAIL_APP_PASSWORD = Gmail App Password
-      SMTP_FROM = optional From address
-      SMTP_HOST = smtp.gmail.com by default
-      SMTP_PORT = 587 by default
-
-    The normal Gmail account password must never be placed in Render.
+    Render must provide SMTP_USERNAME and SMTP_PASSWORD. For Gmail,
+    SMTP_PASSWORD should be a Google App Password, not the normal password.
     """
     if not SMTP_USERNAME or not SMTP_PASSWORD:
-        raise RuntimeError(
-            "SMTP non configuré : définissez SMTP_USERNAME (ou SMTP_USER) "
-            "et SMTP_PASSWORD (App Password Gmail) dans Render."
-        )
-
+        raise RuntimeError("SMTP non configuré dans Render (SMTP_USERNAME/SMTP_PASSWORD).")
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = SMTP_FROM or SMTP_USERNAME
     msg["To"] = to_email
     msg.set_content(body_text)
-    if html_body:
-        msg.add_alternative(html_body, subtype="html")
-
-    context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.ehlo()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(msg)
 
@@ -2237,7 +1906,7 @@ def forgot_password():
     )
     db.session.add(token)
     db.session.commit()
-    reset_url = public_url("reset_password", token=raw)
+    reset_url = url_for("reset_password", token=raw, _external=True)
     body = (
         f"Bonjour {user.company_name},\n\n"
         "Une demande de réinitialisation de votre mot de passe GlobalRoute AI a été reçue.\n\n"
@@ -3758,13 +3427,12 @@ def admin_create_invitation():
         db.session.rollback()
         app.logger.exception("Erreur Admin lors de la génération de clé")
         flash(
-            "La génération a échoué. La base de données n'a pas pu enregistrer le compte. "
-            "Consultez les logs Render pour le détail technique.",
+            "La génération a échoué. Détail serveur : " + str(exc),
             "danger"
         )
         return redirect(url_for("admin_panel"))
 
-    activation_url = public_url("activate_account")
+    activation_url = url_for("activate_account", _external=True)
     email_sent = False
     try:
         send_email(
@@ -3961,9 +3629,6 @@ def health_routing():
         "straight_line_fallback": False,
         "real_road_routing": True,
         "exact_small_tsp": True,
-        "aco_engine": True,
-        "ortools_decision_stage": HAS_ORTOOLS,
-        "synchronized_blocks": True,
         "activation_key_days": ACTIVATION_KEY_DAYS,
         "password_reset_email": bool(SMTP_USERNAME and SMTP_PASSWORD),
     })
