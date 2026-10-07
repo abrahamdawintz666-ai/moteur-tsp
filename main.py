@@ -4,14 +4,17 @@ import json
 import secrets
 import hashlib
 import hmac
+import math
 import urllib.request
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, make_response, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 
 APP_NAME = "AntStrike Logistics — GlobalRoute AI"
@@ -21,13 +24,19 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", secrets.token_hex(32))
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///antstrike_logistics.db")
+
+# --- CONFIGURATION DATABASE (Compatible Render PostgreSQL / SQLite local) ---
+database_url = os.getenv("DATABASE_URL", "sqlite:///antstrike_logistics.db")
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day", "50 per minute"])
 
-# --- MODÈL BAZ DONE (KONPATIB AK ANSYEN DATABASE A) ---
+# --- MODÈLES DE LA BDD ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     company_name = db.Column(db.String(120), nullable=False)
@@ -84,9 +93,7 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 with app.app_context():
-    db.drop_all()  # Nettoie l'ancienne base corrompue
-    db.create_all() # Recrée proprement toutes les tables avec les bons formats
-
+    db.create_all()
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -139,7 +146,6 @@ def parse_coordinate(val):
         return None
 
 def calculate_distance(lat1, lon1, lat2, lon2):
-    import math
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -195,18 +201,8 @@ def generate_reference():
     return secrets.token_hex(16)
 
 def verify_usdc_payment(order):
-    try:
-        url = "https://public-api.solscan.io/chaininfo"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status != 200:
-                return False, None, "Solscan indisponib kounye a."
-    except Exception:
-        pass
-    
     if os.getenv("FLASK_ENV") == "development" or order.amount_usdc == 0:
         return True, "DEV_MOCK_SIGNATURE_" + secrets.token_hex(8), "Siksè (Mock)"
-        
     return False, None, "Tèk ap tann konfimasyon sou rezo Solana a..."
 
 def activate_paid_order(order, signature):
@@ -337,10 +333,6 @@ function toggleMenu() { document.getElementById("global-menu").classList.toggle(
 </div>
 <footer style="text-align:center; padding:20px; color:var(--muted); font-size:12px; border-top: 1px solid var(--border); margin-top: 30px;">
   <p>© 2026 AntStrike Logistics — GlobalRoute AI. Tout dwa rezève.</p>
-  <p style="margin-top: 5px;">
-    📞 WhatsApp: <a href="https://wa.me/50941817761" target="_blank" style="color: var(--blue); text-decoration: none;">+509 41 81 7761</a> | 
-    ✉️ Imèl: <a href="mailto:abrahamdawintz410@gmail.com" style="color: var(--blue); text-decoration: none;">abrahamdawintz410@gmail.com</a>
-  </p>
 </footer>
 </body>
 </html>
@@ -364,16 +356,6 @@ def index():
       <div style="display:flex; gap:10px; justify-content:center; margin-top:20px;">
         <a href="{url_for('register_form')}" class="btn">Créer un compte entreprise</a>
         <a href="{url_for('login_form')}" class="btn btn-secondary">Connexion</a>
-      </div>
-    </div>
-    <div class="grid">
-      <div class="card stat"><strong>Réseau</strong> Paiement USDC / Solana<br><span class="muted">Instant & Zéro frais</span></div>
-      <div class="card stat"><strong>Moteur Raccourci</strong> Hybride Avancé<br><span class="muted">Optimisation maximale</span></div>
-      <div class="card stat">
-        <strong>Besoin d'aide ?</strong> AntStrike Support<br>
-        <span class="muted">
-          <a href="https://wa.me/50941817761" target="_blank" style="color:var(--blue); text-decoration:none;">💬 WhatsApp (+509 41 81 7761)</a>
-        </span>
       </div>
     </div>
     """
@@ -453,7 +435,6 @@ def login_form():
 def login():
     email = request.form.get("email", "").strip().lower()
     password = request.form.get("password", "")
-    # Utilisez .query.filter_by à la place de db.select pour éviter l'erreur 500
     user = User.query.filter_by(email=email).first()
     if user and check_password_hash(user.password_hash, password):
         session["user_id"] = user.id
@@ -472,59 +453,6 @@ def dashboard():
     if not user_id:
         return redirect(url_for("login_form"))
     user = User.query.get(user_id)
-    key = active_api_key(user)
-    key_text = key.key_string if key else "Aucune clé active"
-    expiry = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
-    remaining = max(0, int(user.tour_limit or 0) - int(user.tours_used or 0))
-    
-    routes = DeliveryRoute.query.filter_by(user_id=user.id).order_by(DeliveryRoute.id.desc()).limit(30).all()
-    route_rows = ""
-    for r in routes:
-        try:
-            stops = json.loads(r.stops_data or "[]")
-            c = len(stops)
-        except Exception:
-            c = 0
-        opt_badge = '<span style="color:var(--green)">⚡ Raccourci optimal</span>' if r.optimized else 'Standard'
-        route_rows += f"""
-        <tr>
-          <td>{r.route_name}</td>
-          <td>{r.driver_name}</td>
-          <td>{c} étapes</td>
-          <td>{opt_badge}</td>
-          <td><a href="{url_for('driver_space', code=r.access_code)}" class="btn" style="padding:6px 12px; font-size:12px;">Ouvrir</a></td>
-        </tr>
-        """
-        
-    payments = PaymentOrder.query.filter_by(user_id=user.id).order_by(PaymentOrder.created_at.desc()).all()
-    payment_rows = ""
-    for p in payments:
-        pdf_btn = f'<a href="{url_for("download_invoice", order_id=p.id)}" class="btn btn-secondary" style="padding:4px 8px; font-size:11px;">📄 PDF</a>' if p.status == "paid" else ""
-        payment_rows += f"""
-        <tr>
-          <td class="mono">{p.order_code}</td>
-          <td>{p.plan.title()}</td>
-          <td>{p.amount_usdc} USDC</td>
-          <td>{p.status}</td>
-          <td>{pdf_btn}</td>
-        </tr>
-        """
-
-    body = f"""
-    <div class="card">
-      <h2>{user.company_name}</h2>
-      <p class="muted">Email : {user.email} | TVA : {user.tax_id or 'Non renseigné'}</p>
-      <div class="grid" style="margin-top:20px;">
-        <div class="stat"><strong>Abonnement</strong>{user.plan.title()}</div>
-        <div class="stat"><strong>Tournées utilisées</strong>{user.tours_used} / {user.tour_limit}</div>
-        <div class="stat"><strong>Restantes</strong>{remaining} (Expiration : {expiry})</div>
-      </div>
-@app.route("/dashboard")
-def dashboard():
-    user_id = session.get("user_id")
-    if not user_id:
-        return redirect(url_for("login_form"))
-    user = User.query.get(user_id)
     if not user:
         session.clear()
         return redirect(url_for("login_form"))
@@ -532,7 +460,6 @@ def dashboard():
     key = active_api_key(user)
     key_text = key.key_string if key else "Aucune clé active"
     
-    # Gestion sécurisée de la date d'expiration
     if user.subscription_expires_at:
         try:
             expiry = user.subscription_expires_at.strftime("%Y-%m-%d")
@@ -629,13 +556,6 @@ def dashboard():
     """
     return page(body, title="Dashboard B2B")
 
-
-@app.route("/import-space")
-def import_space():
-    if not session.get("user_id"):
-        return redirect(url_for("login_form"))
-    return render_template_string(IMPORT_FORM_HTML, style=BASE_STYLE, APP_NAME=APP_NAME, session=session)
-
 IMPORT_FORM_HTML = """<!DOCTYPE html>
 <html lang="fr">
 <head><meta charset="UTF-8"><title>Importer</title><style>{{ style|safe }}</style></head>
@@ -681,6 +601,12 @@ document.getElementById('file-input').addEventListener('change', function(event)
 </body>
 </html>
 """
+
+@app.route("/import-space")
+def import_space():
+    if not session.get("user_id"):
+        return redirect(url_for("login_form"))
+    return render_template_string(IMPORT_FORM_HTML, style=BASE_STYLE, APP_NAME=APP_NAME, session=session)
 
 @app.route("/create-driver-route", methods=["POST"])
 def create_driver_route():
@@ -949,7 +875,6 @@ def driver_space():
                 }}
             }})
             .catch(err => {{
-                console.warn("Erreur OSRM globale, repli sur le tracé de secours", err);
                 fallbackStraightLine();
             }});
     }} else {{
@@ -959,7 +884,7 @@ def driver_space():
     function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
         if (latLngs.length > 0) {{
-            L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map).bindPopup("Route de secours / Raccourci direct");
+            L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map).bindPopup("Route de secours");
         }}
         document.getElementById('total-distance').textContent = "Calcul direct";
     }}
@@ -970,7 +895,7 @@ def driver_space():
     function toggleTracking() {{
         const statusEl = document.getElementById('gps-status');
         if (!trackingActive) {{
-            if (!navigator.geolocation) {{ alert("La géolocalisation n'est pas supportée par votre appareil."); return; }}
+            if (!navigator.geolocation) {{ alert("La géolocalisation n'est pas supportée."); return; }}
             trackingActive = true;
             statusEl.textContent = "Actif (Suivi live)";
             statusEl.style.color = "var(--green)";
@@ -991,7 +916,7 @@ def driver_space():
                 const lat = position.coords.latitude;
                 const lng = position.coords.longitude;
                 if (!driverMarker) {{
-                    driverMarker = L.marker([lat, lng], {{ icon: L.icon({{ iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png', iconSize: [25, 41], iconAnchor: [12, 41] }}) }}).addTo(map).bindPopup("<b>Vous êtes ici (Position en direct)</b>");
+                    driverMarker = L.marker([lat, lng]).addTo(map).bindPopup("<b>Vous êtes ici</b>");
                 }} else {{
                     driverMarker.setLatLng([lat, lng]);
                 }}
@@ -999,7 +924,6 @@ def driver_space():
             }},
             (error) => {{
                 document.getElementById('gps-status').textContent = "Erreur GPS";
-                console.warn("Erreur de géolocalisation: " + error.message);
             }},
             {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
         );
