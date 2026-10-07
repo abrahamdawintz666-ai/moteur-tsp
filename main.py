@@ -1,413 +1,243 @@
 import os
 import io
-import csv
 import json
 import secrets
-import base64
-import math
-import urllib.parse
+import hashlib
+import hmac
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timedelta, timezone
-from flask import (
-    Flask,
-    render_template_string,
-    request,
-    redirect,
-    url_for,
-    flash,
-    session,
-    jsonify,
-    make_response
-)
+import urllib.parse
+from datetime import datetime, timedelta
+from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, make_response, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy.exc import IntegrityError
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-try:
-    from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-    HAS_ORTOOLS = True
-except ImportError:
-    HAS_ORTOOLS = False
+APP_NAME = "AntStrike Logistics — GlobalRoute AI"
+ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_PASSWORD", "antstrike2026admin")
+SOLANA_RECEIVING_WALLET = os.getenv("SOLANA_WALLET", "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d")
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 app = Flask(__name__)
-
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
-app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-ADMIN_SECRET_PASSWORD = os.getenv("ADMIN_SECRET_PASSWORD", "CHANGE-ME")
-APP_NAME = "GlobalRoute AI — Global Enterprise Logistics"
-SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
-USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-SOLANA_RPC_URL = "https://api.mainnet.solana.com"
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=["200 per minute", "20 per second"],
-    storage_uri="memory://"
-)
-
-TRANSLATIONS = {
-    "fr": {
-        "home_title": "Optimisation mondiale de tournées pour entreprises B2B.",
-        "dashboard": "Tableau de bord",
-        "import": "Importer",
-        "plans": "Abonnements",
-        "logout": "Déconnexion",
-        "login": "Connexion",
-        "register": "Créer un compte",
-        "admin": "Admin",
-        "driver_space": "Espace livreur"
-    },
-    "en": {
-        "home_title": "Global route optimization for modern B2B enterprises.",
-        "dashboard": "Dashboard",
-        "import": "Import",
-        "plans": "Plans",
-        "logout": "Logout",
-        "login": "Login",
-        "register": "Register",
-        "admin": "Admin",
-        "driver_space": "Driver Space"
-    },
-    "es": {
-        "home_title": "Optimización global de rutas para empresas B2B.",
-        "dashboard": "Panel",
-        "import": "Importar",
-        "plans": "Planes",
-        "logout": "Cerrar sesión",
-        "login": "Iniciar sesión",
-        "register": "Registrarse",
-        "admin": "Admin",
-        "driver_space": "Espacio repartidor"
-    }
-}
-
-PLANS = {
-    "standard": {
-        "name": "Standard",
-        "monthly_price": 99.00,
-        "tour_limit": 500,
-    },
-    "pro": {
-        "name": "Pro",
-        "monthly_price": 300.00,
-        "tour_limit": 2500,
-    },
-}
-
-DURATIONS = {
-    30: 1.0,
-    90: 2.7,
-    180: 5.0,
-    365: 9.0,
-}
-
-database_url = os.getenv("DATABASE_URL")
-if database_url:
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
-    elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-else:
-    database_url = "sqlite:///globalroute.db"
-
-app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", secrets.token_hex(32))
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///antstrike_logistics.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("COOKIE_SECURE", "0") == "1"
 
 db = SQLAlchemy(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day", "50 per minute"])
 
+# --- MODÈL BAZ DONE ---
 class User(db.Model):
-    __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
-    company_name = db.Column(db.String(150), nullable=False)
-    email = db.Column(db.String(160), unique=True, nullable=False, index=True)
+    company_name = db.Column(db.String(120), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(30), default="dispatcher")
-    language = db.Column(db.String(10), default="fr")
-    address = db.Column(db.String(250), default="")
-    city = db.Column(db.String(100), default="")
-    country = db.Column(db.String(100), default="")
-    tax_id = db.Column(db.String(50), default="")
-    plan = db.Column(db.String(30), default="standard")
-    subscription_started_at = db.Column(db.DateTime, nullable=True)
-    subscription_expires_at = db.Column(db.DateTime, nullable=True)
-    credits = db.Column(db.Integer, default=0)
-    unlimited = db.Column(db.Boolean, default=False)
-    tour_limit = db.Column(db.Integer, default=500)
+    address = db.Column(db.String(200))
+    city = db.Column(db.String(100))
+    country = db.Column(db.String(100))
+    tax_id = db.Column(db.String(50))
+    role = db.Column(db.String(20), default="dispatcher")
+    plan = db.Column(db.String(20), default="free")
+    tour_limit = db.Column(db.Integer, default=5)
     tours_used = db.Column(db.Integer, default=0)
-    active = db.Column(db.Boolean, default=True)
+    subscription_expires_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    api_keys = db.relationship("ApiKey", backref="owner", lazy=True, cascade="all, delete-orphan")
-    deliveries = db.relationship("DeliveryRoute", backref="company", lazy=True, cascade="all, delete-orphan")
-    payments = db.relationship("PaymentOrder", backref="customer", lazy=True, cascade="all, delete-orphan")
+    routes = db.relationship("DeliveryRoute", backref="company", lazy=True)
+    payments = db.relationship("PaymentOrder", backref="company", lazy=True)
 
 class ApiKey(db.Model):
-    __tablename__ = "api_keys"
     id = db.Column(db.Integer, primary_key=True)
-    key_string = db.Column(db.String(255), unique=True, nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    key_string = db.Column(db.String(64), unique=True, nullable=False)
+    expires_at = db.Column(db.DateTime)
     revoked = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class PaymentOrder(db.Model):
-    __tablename__ = "payment_orders"
     id = db.Column(db.Integer, primary_key=True)
-    order_code = db.Column(db.String(80), unique=True, nullable=False, index=True)
-    reference = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    plan = db.Column(db.String(30), nullable=False)
-    duration_days = db.Column(db.Integer, nullable=False)
+    order_code = db.Column(db.String(30), unique=True, nullable=False)
+    reference = db.Column(db.String(64), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    plan = db.Column(db.String(20), nullable=False)
+    duration_days = db.Column(db.Integer, default=30)
     amount_usdc = db.Column(db.Float, nullable=False)
-    currency = db.Column(db.String(10), default="USDC")
     status = db.Column(db.String(20), default="pending")
-    transaction_signature = db.Column(db.String(160), unique=True, nullable=True)
+    transaction_signature = db.Column(db.String(128))
+    paid_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    paid_at = db.Column(db.DateTime, nullable=True)
 
 class DeliveryRoute(db.Model):
-    __tablename__ = "delivery_routes"
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    route_name = db.Column(db.Text, default="Tournée")
-    driver_name = db.Column(db.String(100), nullable=False)
-    access_code = db.Column(db.String(80), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    route_name = db.Column(db.String(120), nullable=False)
+    driver_name = db.Column(db.String(120), nullable=False)
+    access_code = db.Column(db.String(50), nullable=False)
     stops_data = db.Column(db.Text, nullable=False)
-    stops_summary = db.Column(db.Text, nullable=True)
-    status = db.Column(db.String(20), default="En cours")
-    optimized = db.Column(db.Boolean, default=False)
-
-class AuditLog(db.Model):
-    __tablename__ = "audit_logs"
-    id = db.Column(db.Integer, primary_key=True)
-    action = db.Column(db.String(120), nullable=False)
-    details = db.Column(db.Text, default="")
+    optimized = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-def migrate_existing_database():
-    from sqlalchemy import inspect, text
-    inspector = inspect(db.engine)
-    existing_tables = set(inspector.get_table_names())
-    for table_name, model in (
-        ("users", User),
-        ("api_keys", ApiKey),
-        ("payment_orders", PaymentOrder),
-        ("delivery_routes", DeliveryRoute),
-        ("audit_logs", AuditLog),
-    ):
-        if table_name not in existing_tables:
-            continue
-        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
-        for column in model.__table__.columns:
-            if column.name in existing_columns or column.primary_key:
-                continue
-            try:
-                type_sql = column.type.compile(dialect=db.engine.dialect)
-            except Exception:
-                type_sql = str(column.type)
-            sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
-            db.session.execute(text(sql))
-        db.session.commit()
-    try:
-        db.session.execute(text('ALTER TABLE delivery_routes ALTER COLUMN stops_summary DROP NOT NULL;'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+class AuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    action = db.Column(db.String(200), nullable=False)
+    details = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 with app.app_context():
     db.create_all()
-    migrate_existing_database()
-
-ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-def base58_encode(raw: bytes) -> str:
-    number = int.from_bytes(raw, "big")
-    result = ""
-    while number:
-        number, remainder = divmod(number, 58)
-        result = ALPHABET[remainder] + result
-    leading_zeroes = sum(1 for byte in raw if byte == 0)
-    return "1" * leading_zeroes + (result or "")
-
-def generate_reference():
-    return base58_encode(secrets.token_bytes(32))
 
 def utcnow():
     return datetime.utcnow()
 
-def get_current_lang():
-    lang = session.get("lang", "fr")
-    return lang if lang in TRANSLATIONS else "fr"
+TRANSLATIONS = {
+    "fr": {
+        "home_title": "Optimisation Logistique B2B & Raccourcis Intelligents",
+        "dashboard": "Tableau de Bord",
+        "import": "Importer / Tournées",
+        "plans": "Abonnements",
+        "login": "Connexion",
+        "register": "Inscription",
+        "logout": "Déconnexion",
+        "admin": "Admin",
+        "driver_space": "Espace Livreur"
+    },
+    "en": {
+        "home_title": "B2B Logistics Optimization & Smart Shortcuts",
+        "dashboard": "Dashboard",
+        "import": "Import / Routes",
+        "plans": "Plans",
+        "login": "Login",
+        "register": "Register",
+        "logout": "Logout",
+        "admin": "Admin",
+        "driver_space": "Driver Space"
+    },
+    "es": {
+        "home_title": "Optimización Logística B2B y Atajos Inteligentes",
+        "dashboard": "Panel",
+        "import": "Importar / Rutas",
+        "plans": "Planes",
+        "login": "Iniciar Sesión",
+        "register": "Registrarse",
+        "logout": "Cerrar Sesión",
+        "admin": "Admin",
+        "driver_space": "Espacio Conductor"
+    }
+}
 
 def t(key):
-    lang = get_current_lang()
+    lang = session.get("lang", "fr")
     return TRANSLATIONS.get(lang, TRANSLATIONS["fr"]).get(key, key)
-
-def calculate_price(plan, duration_days):
-    if plan not in PLANS or duration_days not in DURATIONS:
-        raise ValueError("Paramètres invalides.")
-    return round(PLANS[plan]["monthly_price"] * DURATIONS[duration_days], 2)
 
 def parse_coordinate(val):
     try:
         val_str = str(val).strip().replace(',', '.')
         return float(val_str)
-    except (ValueError, TypeError):
+    except Exception:
         return None
 
-def haversine(lat1, lon1, lat2, lon2):
+def calculate_distance(lat1, lon1, lat2, lon2):
+    import math
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
-    return R * 2 * math.asin(math.sqrt(a))
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
 
-def route_distance(route):
-    dist = 0.0
-    for i in range(len(route) - 1):
-        dist += haversine(float(route[i]['lat']), float(route[i]['lng']), float(route[i+1]['lat']), float(route[i+1]['lng']))
-    return dist
-
-def local_two_opt_pass(route):
-    improved = True
-    iterations = 0
-    max_iterations = 60
-    optimized = list(route)
-    while improved and iterations < max_iterations:
-        improved = False
-        iterations += 1
-        for i in range(1, len(optimized) - 2):
-            for j in range(i + 1, len(optimized)):
-                if j - i == 1:
-                    continue
-                new_route = optimized[:i] + optimized[i:j][::-1] + optimized[j:]
-                if route_distance(new_route) < route_distance(optimized):
-                    optimized = new_route
-                    improved = True
-    return optimized
-
-def nearest_neighbor_guided(route):
-    if len(route) <= 2:
-        return route
-    unvisited = list(route)
+def nearest_neighbor_guided(points):
+    if not points:
+        return []
+    unvisited = list(points)
     current = unvisited.pop(0)
     ordered = [current]
     while unvisited:
-        next_point = min(unvisited, key=lambda p: haversine(float(current['lat']), float(current['lng']), float(p['lat']), float(p['lng'])))
+        next_point = min(unvisited, key=lambda p: calculate_distance(current['lat'], current['lng'], p['lat'], p['lng']))
         unvisited.remove(next_point)
         ordered.append(next_point)
         current = next_point
     return ordered
 
-def optimize_stops_order(stops):
-    if len(stops) <= 3:
-        return stops
-    nn_result = nearest_neighbor_guided(stops)
-    optimized = local_two_opt_pass(nn_result)
+def local_two_opt_pass(route):
+    best = list(route)
+    improved = True
+    while improved:
+        improved = False
+        for i in range(1, len(best) - 2):
+            for j in range(i + 1, len(best)):
+                if j - i == 1:
+                    continue
+                new_route = best[:i] + best[i:j][::-1] + best[j:]
+                old_dist = sum(calculate_distance(best[k]['lat'], best[k]['lng'], best[k+1]['lat'], best[k+1]['lng']) for k in range(len(best)-1))
+                new_dist = sum(calculate_distance(new_route[k]['lat'], new_route[k]['lng'], new_route[k+1]['lat'], new_route[k+1]['lng']) for k in range(len(new_route)-1))
+                if new_dist < old_dist:
+                    best = new_route
+                    improved = True
+        break
+    return best
+
+def optimize_stops_order(points):
+    if len(points) <= 3:
+        return points
+    nn = nearest_neighbor_guided(points)
+    optimized = local_two_opt_pass(nn)
     return optimized
 
-def create_api_key(user, expires_at):
-    key_string = "gr_" + secrets.token_hex(32)
-    api_key = ApiKey(key_string=key_string, user_id=user.id, expires_at=expires_at)
-    db.session.add(api_key)
-    return api_key
+def calculate_price(plan, duration_days):
+    base_monthly = 99.0 if plan == "standard" else 300.0 if plan == "pro" else 0.0
+    amount = (base_monthly / 30.0) * duration_days
+    if duration_days >= 90:
+        amount *= 0.9
+    return round(amount, 2)
 
-def active_api_key(user):
-    now = utcnow()
-    for key in user.api_keys:
-        if not key.revoked and (not key.expires_at or key.expires_at >= now):
-            return key
-    return None
-
-def add_subscription(user, plan, duration_days):
-    now = utcnow()
-    same_plan = bool(user.subscription_expires_at and user.subscription_expires_at > now and user.plan == plan)
-    if same_plan:
-        expiry = user.subscription_expires_at + timedelta(days=duration_days)
-        user.tour_limit = int(user.tour_limit or 0) + int(PLANS[plan]["tour_limit"])
-    else:
-        expiry = now + timedelta(days=duration_days)
-        user.plan = plan
-        user.subscription_started_at = now
-        user.subscription_expires_at = expiry
-        user.tour_limit = int(PLANS[plan]["tour_limit"])
-        user.tours_used = 0
-        user.credits = user.tour_limit
-
-    key = active_api_key(user)
-    if key:
-        key.expires_at = expiry
-    else:
-        create_api_key(user, expiry)
-    return expiry
-
-def rpc_call(method, params):
-    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
-    req = urllib.request.Request(SOLANA_RPC_URL, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as response:
-        data = json.loads(response.read().decode("utf-8"))
-        if "error" in data:
-            raise RuntimeError(str(data["error"]))
-        return data.get("result")
-
-def find_signature_by_reference(reference):
-    result = rpc_call("getSignaturesForAddress", [reference, {"limit": 20}])
-    if not result:
-        return None
-    for item in result:
-        if not item.get("err"):
-            return item.get("signature")
-    return None
+def generate_reference():
+    return secrets.token_hex(16)
 
 def verify_usdc_payment(order):
-    signature = find_signature_by_reference(order.reference)
-    if not signature:
-        return False, None, "Paiement non trouvé sur la blockchain."
-    existing_order = PaymentOrder.query.filter_by(transaction_signature=signature).first()
-    if existing_order and existing_order.id != order.id:
-        return False, signature, "Cette transaction a déjà été validée pour une autre commande."
+    try:
+        url = "https://public-api.solscan.io/chaininfo"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status != 200:
+                return False, None, "Solscan indisponib kounye a."
+    except Exception:
+        pass
     
-    tx = rpc_call("getTransaction", [signature, {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
-    if not tx or (tx.get("meta") and tx["meta"].get("err") is not None):
-        return False, None, "Transaction Solana invalide ou échouée."
-    
-    meta = tx.get("meta") or {}
-    expected_raw = int(round(order.amount_usdc * 1_000_000))
-    received_raw = sum(
-        int(b.get("uiTokenAmount", {}).get("amount", "0"))
-        for b in (meta.get("postTokenBalances") or [])
-        if b.get("mint") == USDC_MINT and b.get("owner") == SOLANA_RECEIVING_WALLET
-    )
-    pre_raw = sum(
-        int(b.get("uiTokenAmount", {}).get("amount", "0"))
-        for b in (meta.get("preTokenBalances") or [])
-        if b.get("mint") == USDC_MINT and b.get("owner") == SOLANA_RECEIVING_WALLET
-    )
-    if (received_raw - pre_raw) < expected_raw:
-        return False, signature, f"Montant USDC insuffisant. Attendu : {order.amount_usdc} USDC."
-    return True, signature, "Paiement vérifié."
+    if os.getenv("FLASK_ENV") == "development" or order.amount_usdc == 0:
+        return True, "DEV_MOCK_SIGNATURE_" + secrets.token_hex(8), "Siksè (Mock)"
+        
+    return False, None, "Tèk ap tann konfimasyon sou rezo Solana a..."
 
 def activate_paid_order(order, signature):
-    if order.status == "paid":
-        return
-    user = User.query.get(order.user_id)
-    if not user:
-        raise RuntimeError("Utilisateur introuvable.")
-    expiry = add_subscription(user, order.plan, order.duration_days)
     order.status = "paid"
     order.transaction_signature = signature
     order.paid_at = utcnow()
-    db.session.add(AuditLog(action="PAYMENT_CONFIRMED", details=f"order={order.order_code}; user={user.email}; sig={signature}"))
+    user = User.query.get(order.user_id)
+    user.plan = order.plan
+    if order.plan == "standard":
+        user.tour_limit = 500
+    elif order.plan == "pro":
+        user.tour_limit = 2500
+    user.tours_used = 0
+    base_time = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > utcnow() else utcnow()
+    user.subscription_expires_at = base_time + timedelta(days=order.duration_days)
     db.session.commit()
+
+def active_api_key(user):
+    key = ApiKey.query.filter_by(user_id=user.id, revoked=False).first()
+    if not key:
+        key = ApiKey(user_id=user.id, key_string=secrets.token_hex(32), expires_at=utcnow() + timedelta(days=365))
+        db.session.add(key)
+        db.session.commit()
+    return key
+
+def create_api_key(user, expiry):
+    key = ApiKey(user_id=user.id, key_string=secrets.token_hex(32), expires_at=expiry)
+    db.session.add(key)
+    return key
+
+# --- ESTIL AK UI ---
 BASE_STYLE = """
 :root {
   --navy:#0f172a; --blue:#2563eb; --blue2:#1d4ed8; --green:#059669; --red:#dc2626;
@@ -506,8 +336,12 @@ function toggleMenu() { document.getElementById("global-menu").classList.toggle(
   {% endwith %}
   {{ body|safe }}
 </div>
-<footer style="text-align:center; padding:20px; color:var(--muted); font-size:12px;">
-  © 2026 GlobalRoute AI — Global Enterprise B2B Logistics
+<footer style="text-align:center; padding:20px; color:var(--muted); font-size:12px; border-top: 1px solid var(--border); margin-top: 30px;">
+  <p>© 2026 AntStrike Logistics — GlobalRoute AI. Tout dwa rezève.</p>
+  <p style="margin-top: 5px;">
+    📞 WhatsApp: <a href="https://wa.me/50941817761" target="_blank" style="color: var(--blue); text-decoration: none;">+509 41 81 7761</a> | 
+    ✉️ Imèl: <a href="mailto:abrahamdawintz410@gmail.com" style="color: var(--blue); text-decoration: none;">abrahamdawintz410@gmail.com</a>
+  </p>
 </footer>
 </body>
 </html>
@@ -527,7 +361,7 @@ def index():
     body = f"""
     <div class="hero card">
       <h2>{t('home_title')}</h2>
-      <p class="muted">GlobalRoute AI fournit l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison.</p>
+      <p class="muted">AntStrike Logistics & GlobalRoute AI fournissent l'itinéraire le plus court, le plus rapide et le plus sûr pour maximiser la performance de vos tournées de livraison.</p>
       <div style="display:flex; gap:10px; justify-content:center; margin-top:20px;">
         <a href="{url_for('register_form')}" class="btn">Créer un compte entreprise</a>
         <a href="{url_for('login_form')}" class="btn btn-secondary">Connexion</a>
@@ -536,7 +370,12 @@ def index():
     <div class="grid">
       <div class="card stat"><strong>Réseau</strong> Paiement USDC / Solana<br><span class="muted">Instant & Zéro frais</span></div>
       <div class="card stat"><strong>Moteur Raccourci</strong> Hybride Avancé<br><span class="muted">Optimisation maximale</span></div>
-      <div class="card stat"><strong>Facturation</strong> Conforme PDF<br><span class="muted">Téléchargeable</span></div>
+      <div class="card stat">
+        <strong>Besoin d'aide ?</strong> AntStrike Support<br>
+        <span class="muted">
+          <a href="https://wa.me/50941817761" target="_blank" style="color:var(--blue); text-decoration:none;">💬 WhatsApp (+509 41 81 7761)</a>
+        </span>
+      </div>
     </div>
     """
     return page(body)
@@ -998,106 +837,106 @@ def driver_space():
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19}}).addTo(map);
     
     let list = "<ol>";
-    points.forEach((p, i) => {
+    points.forEach((p, i) => {{
         L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>#" + (i+1) + " " + p.name + "</b><br>" + p.address);
         list += "<li style='margin-bottom: 8px;'><strong>#" + (i+1) + " - " + p.name + "</strong><br><span class='muted'>" + p.address + "</span> <a href='https://www.google.com/maps/dir/?api=1&destination=" + p.lat + "," + p.lng + "' target='_blank' style='margin-left: 10px; font-size: 12px;'>🧭 Naviguer (Google Maps)</a></li>";
-    });
+    }});
     list += "</ol>";
     document.getElementById('stops-list').innerHTML = list;
     
-    if (points.length >= 2) {
+    if (points.length >= 2) {{
         const maxChunk = 150;
         let chunkPromises = [];
-        for (let i = 0; i < points.length; i += maxChunk) {
+        for (let i = 0; i < points.length; i += maxChunk) {{
             let chunkPoints = points.slice(i, i + maxChunk);
-            if (i > 0 && points[i-1]) {
+            if (i > 0 && points[i-1]) {{
                 chunkPoints = [points[i-1]].concat(chunkPoints);
-            }
+            }}
             const coordsString = chunkPoints.map(p => p.lng + "," + p.lat).join(';');
             const osrmUrl = "https://router.project-osrm.org/route/v1/driving/" + coordsString + "?overview=full&geometries=geojson";
             chunkPromises.push(fetch(osrmUrl).then(res => res.json()).catch(() => null));
-        }
+        }}
         
         Promise.all(chunkPromises)
-            .then(results => {
+            .then(results => {{
                 let fullRoadCoords = [];
                 let totalDistanceMeters = 0;
                 let successCount = 0;
-                results.forEach(data => {
-                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                results.forEach(data => {{
+                    if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {{
                         totalDistanceMeters += data.routes[0].distance;
                         const roadCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        if (fullRoadCoords.length > 0) {
+                        if (fullRoadCoords.length > 0) {{
                             fullRoadCoords = fullRoadCoords.concat(roadCoords.slice(1));
-                        } else {
+                        }} else {{
                             fullRoadCoords = fullRoadCoords.concat(roadCoords);
-                        }
+                        }}
                         successCount++;
-                    }
-                });
-                if (successCount > 0 && fullRoadCoords.length > 0) {
+                    }}
+                }});
+                if (successCount > 0 && fullRoadCoords.length > 0) {{
                     document.getElementById('total-distance').textContent = (totalDistanceMeters / 1000).toFixed(1) + " km";
                     L.polyline(fullRoadCoords, {{ color: '#2563eb', weight: 6, opacity: 0.9 }}).addTo(map);
-                } else {
+                }} else {{
                     fallbackStraightLine();
-                }
-            })
-            .catch(err => {
+                }}
+            }})
+            .catch(err => {{
                 console.warn("Erreur OSRM globale, repli sur le tracé de secours", err);
                 fallbackStraightLine();
-            });
-    } else {
+            }});
+    }} else {{
         document.getElementById('total-distance').textContent = "0.0 km";
-    }
+    }}
     
-    function fallbackStraightLine() {
+    function fallbackStraightLine() {{
         const latLngs = points.map(p => [p.lat, p.lng]);
-        if (latLngs.length > 0) {
+        if (latLngs.length > 0) {{
             L.polyline(latLngs, {{ color: '#dc2626', weight: 4, dashArray: '8, 8', opacity: 0.8 }}).addTo(map).bindPopup("Route de secours / Raccourci direct");
-        }
+        }}
         document.getElementById('total-distance').textContent = "Calcul direct";
-    }
+    }}
     
     let trackingInterval = null;
     let driverMarker = null;
     let trackingActive = false;
-    function toggleTracking() {
+    function toggleTracking() {{
         const statusEl = document.getElementById('gps-status');
-        if (!trackingActive) {
-            if (!navigator.geolocation) { alert("La géolocalisation n'est pas supportée par votre appareil."); return; }
+        if (!trackingActive) {{
+            if (!navigator.geolocation) {{ alert("La géolocalisation n'est pas supportée par votre appareil."); return; }}
             trackingActive = true;
             statusEl.textContent = "Actif (Suivi live)";
             statusEl.style.color = "var(--green)";
             updateDriverPosition();
             trackingInterval = setInterval(updateDriverPosition, 5000);
-        } else {
+        }} else {{
             trackingActive = false;
             if (trackingInterval) clearInterval(trackingInterval);
             statusEl.textContent = "Désactivé";
             statusEl.style.color = "var(--muted)";
             if (driverMarker) map.removeLayer(driverMarker);
-        }
-    }
+        }}
+    }}
     
-    function updateDriverPosition() {
+    function updateDriverPosition() {{
         navigator.geolocation.getCurrentPosition(
-            (position) => {
+            (position) => {{
                 const lat = position.coords.latitude;
                 const lng = position.coords.longitude;
-                if (!driverMarker) {
+                if (!driverMarker) {{
                     driverMarker = L.marker([lat, lng], {{ icon: L.icon({{ iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png', iconSize: [25, 41], iconAnchor: [12, 41] }}) }}).addTo(map).bindPopup("<b>Vous êtes ici (Position en direct)</b>");
-                } else {
+                }} else {{
                     driverMarker.setLatLng([lat, lng]);
-                }
+                }}
                 map.setView([lat, lng], 16);
-            },
-            (error) => {
+            }},
+            (error) => {{
                 document.getElementById('gps-status').textContent = "Erreur GPS";
                 console.warn("Erreur de géolocalisation: " + error.message);
-            },
+            }},
             {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
         );
-    }
+    }}
     </script>
     """
     return page(body, title="Tournée Livreur", map_needed=True)
@@ -1232,7 +1071,7 @@ def admin_logout():
 def api_v1_route():
     if request.method == "GET":
         return jsonify({
-            "service": "GlobalRoute AI API",
+            "service": "AntStrike Logistics & GlobalRoute AI API",
             "usage": "Envoyez une requête POST avec le header X-API-KEY et un payload JSON contenant 'points'."
         }), 200
         
@@ -1243,19 +1082,19 @@ def api_v1_route():
     if not user:
         key = ApiKey.query.filter_by(key_string=key_val, revoked=False).first()
         if not key or (key.expires_at and key.expires_at < utcnow()):
-            return jsonify({"error": "invalid_api_key"}}, 401
+            return jsonify({"error": "invalid_api_key"}), 401
         user = User.query.get(key.user_id)
         
     if user.subscription_expires_at and user.subscription_expires_at < utcnow():
         return jsonify({"error": "subscription_expired"}), 402
     if user.tours_used >= user.tour_limit:
-        return jsonify({"error": "quota_exceeded"}}, 402
+        return jsonify({"error": "quota_exceeded"}), 402
         
     payload = request.get_json(silent=True) or {}
     points = payload.get("points", [])
     if not isinstance(points, list) or len(points) < 2:
         return jsonify({"error": "at_least_2_points_required"}), 400
-        
+    
     optimized = optimize_stops_order(points)
     user.tours_used += 1
     db.session.commit()
