@@ -180,6 +180,7 @@ class User(db.Model):
     company_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(160), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    payment_method = db.Column(db.String(30), nullable=False, default="USDC", server_default="USDC")
     role = db.Column(db.String(30), default="dispatcher")
     language = db.Column(db.String(10), default="fr")
     address = db.Column(db.String(250), default="")
@@ -219,17 +220,7 @@ class ApiKey(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=True)
     revoked = db.Column(db.Boolean, default=False)
-
-
-class AccountInvitation(db.Model):
-    __tablename__ = "account_invitations"
-
-    id = db.Column(db.Integer, primary_key=True)
-    token = db.Column(db.String(180), unique=True, nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=False)
-    used_at = db.Column(db.DateTime, nullable=True)
+    key_type = db.Column(db.String(20), default="api", nullable=True)
 
 
 class PaymentOrder(db.Model):
@@ -264,7 +255,6 @@ class DeliveryRoute(db.Model):
     optimized = db.Column(db.Boolean, default=False)
     optimization_engine = db.Column(db.String(40), default="OSRM")
     total_road_distance_m = db.Column(db.Float, nullable=True)
-    road_geometry_json = db.Column(db.Text, nullable=True)
     optimization_id = db.Column(db.String(80), nullable=True, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -279,12 +269,7 @@ class AuditLog(db.Model):
 
 
 def migrate_existing_database():
-    """Safely add columns introduced by newer GlobalRoute versions.
-
-    The old version silently ignored ALTER TABLE failures. That can leave
-    columns such as api_keys.key_type missing and turn normal Admin actions
-    into HTTP 500 errors. This version reports migration failures clearly.
-    """
+    """Upgrade old production databases without deleting customer data."""
     from sqlalchemy import inspect, text
 
     inspector = inspect(db.engine)
@@ -292,7 +277,6 @@ def migrate_existing_database():
     models = (
         ("users", User),
         ("api_keys", ApiKey),
-        ("account_invitations", AccountInvitation),
         ("payment_orders", PaymentOrder),
         ("delivery_routes", DeliveryRoute),
         ("audit_logs", AuditLog),
@@ -301,43 +285,56 @@ def migrate_existing_database():
     for table_name, model in models:
         if table_name not in existing_tables:
             continue
-
-        existing_columns = {
-            col["name"] for col in inspector.get_columns(table_name)
-        }
-
+        existing_columns = {c["name"] for c in inspector.get_columns(table_name)}
         for column in model.__table__.columns:
             if column.name in existing_columns or column.primary_key:
                 continue
+            type_sql = column.type.compile(dialect=db.engine.dialect)
+            sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'
+            app.logger.warning("GLOBALROUTE migration: adding %s.%s", table_name, column.name)
+            db.session.execute(text(sql))
+            db.session.commit()
+            inspector = inspect(db.engine)
 
-            try:
-                type_sql = column.type.compile(
-                    dialect=db.engine.dialect
-                )
-                # New columns are nullable here so existing production rows
-                # remain valid on both SQLite and PostgreSQL.
-                sql = (
-                    f'ALTER TABLE "{table_name}" ADD COLUMN '
-                    f'"{column.name}" {type_sql}'
-                )
-                db.session.execute(text(sql))
-                db.session.commit()
-            except Exception as exc:
-                db.session.rollback()
-                # Re-inspect: another worker may have added it concurrently.
-                refreshed = inspect(db.engine)
-                names = {c["name"] for c in refreshed.get_columns(table_name)}
-                if column.name not in names:
-                    raise RuntimeError(
-                        f"Migration base de données impossible : "
-                        f"{table_name}.{column.name}: {exc}"
-                    ) from exc
+    if "users" in existing_tables:
+        for statement in (
+            "UPDATE users SET payment_method = 'USDC' WHERE payment_method IS NULL",
+            "UPDATE users SET role = 'dispatcher' WHERE role IS NULL",
+            "UPDATE users SET language = 'fr' WHERE language IS NULL",
+            "UPDATE users SET address = '' WHERE address IS NULL",
+            "UPDATE users SET city = '' WHERE city IS NULL",
+            "UPDATE users SET country = '' WHERE country IS NULL",
+            "UPDATE users SET tax_id = '' WHERE tax_id IS NULL",
+            "UPDATE users SET plan = 'standard' WHERE plan IS NULL",
+            "UPDATE users SET credits = 0 WHERE credits IS NULL",
+            "UPDATE users SET unlimited = FALSE WHERE unlimited IS NULL",
+            "UPDATE users SET tour_limit = 500 WHERE tour_limit IS NULL",
+            "UPDATE users SET tours_used = 0 WHERE tours_used IS NULL",
+            "UPDATE users SET active = TRUE WHERE active IS NULL",
+        ):
+            db.session.execute(text(statement))
+
+    if "api_keys" in existing_tables:
+        db.session.execute(text("UPDATE api_keys SET revoked = FALSE WHERE revoked IS NULL"))
+        db.session.execute(text("UPDATE api_keys SET key_type = 'api' WHERE key_type IS NULL"))
+
+    if "payment_orders" in existing_tables:
+        db.session.execute(text("UPDATE payment_orders SET currency = 'USDC' WHERE currency IS NULL"))
+        db.session.execute(text("UPDATE payment_orders SET status = 'pending' WHERE status IS NULL"))
+
+    if "delivery_routes" in existing_tables:
+        db.session.execute(text("UPDATE delivery_routes SET route_name = 'Tournée' WHERE route_name IS NULL"))
+        db.session.execute(text("UPDATE delivery_routes SET status = 'En cours' WHERE status IS NULL"))
+        db.session.execute(text("UPDATE delivery_routes SET optimized = FALSE WHERE optimized IS NULL"))
+        db.session.execute(text("UPDATE delivery_routes SET optimization_engine = 'OSRM' WHERE optimization_engine IS NULL"))
+
+    db.session.commit()
+    app.logger.info("GLOBALROUTE: database migration/backfill completed")
 
 
 with app.app_context():
     db.create_all()
     migrate_existing_database()
-
 
 
 # ============================================================
@@ -511,8 +508,8 @@ def generate_driver_code():
     return "GR-" + secrets.token_urlsafe(12)
 
 
-def create_api_key(user, expires_at, revoke_existing=False, prefix="gr_live_"):
-    """Create a strong B2B API key. Invitations are stored separately."""
+def create_api_key(user, expires_at, revoke_existing=False, key_type="api", prefix="gr_live_"):
+    """Crée une clé API B2B forte et liée à une seule entreprise."""
     if revoke_existing:
         ApiKey.query.filter_by(
             user_id=user.id,
@@ -522,19 +519,18 @@ def create_api_key(user, expires_at, revoke_existing=False, prefix="gr_live_"):
             synchronize_session=False
         )
 
-    for _ in range(5):
-        key_str = prefix + secrets.token_urlsafe(36)
-        if not ApiKey.query.filter_by(key_string=key_str).first():
-            key = ApiKey(
-                key_string=key_str,
-                user_id=user.id,
-                expires_at=expires_at,
-                revoked=False,
-            )
-            db.session.add(key)
-            db.session.flush()
-            return key
-    raise RuntimeError("Impossible de générer une clé API unique.")
+    key_str = prefix + secrets.token_urlsafe(36)
+    key = ApiKey(
+        key_string=key_str,
+        user_id=user.id,
+        expires_at=expires_at,
+        revoked=False,
+        key_type=key_type
+    )
+    db.session.add(key)
+    db.session.flush()
+    return key
+
 
 def active_api_key(user):
     now = utcnow()
@@ -633,26 +629,17 @@ def osrm_request(service, stops, params=None):
         }
     )
 
-    last_error = None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(
-                request_obj,
-                timeout=OSRM_TIMEOUT
-            ) as response:
-                data = json.loads(
-                    response.read().decode("utf-8")
-                )
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt < 2:
-                import time
-                time.sleep(0.8 * (attempt + 1))
-    else:
+    try:
+        with urllib.request.urlopen(
+            request_obj,
+            timeout=OSRM_TIMEOUT
+        ) as response:
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+    except Exception as exc:
         raise RuntimeError(
-            "Connexion au moteur routier OSRM impossible après 3 essais. "
-            f"Vérifiez ROUTING_URL dans Render. Détail : {last_error}"
+            f"Connexion OSRM impossible : {exc}"
         )
 
     if data.get("code") != "Ok":
@@ -993,61 +980,61 @@ def get_route_geometry(stops):
 
 def optimize_stops_order(stops):
     """
-    Production routing engine using real road distances.
+    Main optimization engine.
 
-    - 2 points: direct OSRM road route.
-    - Up to 250 points: full OSRM road matrix + OR-Tools when available.
-    - Larger jobs: OSRM Trip is used in road-network batches when possible.
-    - No Haversine distance is used to choose the final route.
-    - No straight-line fallback is ever displayed as a route.
+    1. Validate data.
+    2. Build real road matrix through OSRM.
+    3. Solve with OR-Tools when available.
+    4. Otherwise use OSRM Trip for smaller routes.
+    5. NEVER use straight-line distance for final optimization.
     """
     stops = validate_stops(stops)
-    n = len(stops)
 
-    if n == 2:
+    if len(stops) == 2:
         geometry, distance = get_route_geometry(stops)
+        if distance <= 0:
+            raise RuntimeError("OSRM a retourné une distance routière nulle pour les 2 points.")
         return stops, geometry, distance, "OSRM Road Route"
 
-    matrix_limit = int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "250"))
-
-    if HAS_ORTOOLS and n <= matrix_limit:
+    if HAS_ORTOOLS:
         matrix = build_osrm_table(stops)
-        optimized = optimize_with_ortools(stops, matrix)
-        if optimized:
-            geometry, distance = get_route_geometry(optimized)
-            return optimized, geometry, distance, "OSRM Road Matrix + OR-Tools"
 
-    if n <= OSRM_TRIP_LIMIT:
-        optimized = osrm_trip_order(stops)
-        geometry, distance = get_route_geometry(optimized)
-        return optimized, geometry, distance, "OSRM Road Trip"
-
-    batch_size = max(20, min(OSRM_TRIP_LIMIT, 80))
-    optimized_all = []
-    pos = 0
-
-    while pos < n:
-        end = min(pos + batch_size, n)
-        batch = stops[pos:end]
-        if pos > 0:
-            batch = [stops[pos - 1]] + batch
-
-        if len(batch) >= 2:
-            ordered = osrm_trip_order(batch)
-            if optimized_all:
-                optimized_all.extend(ordered[1:])
-            else:
-                optimized_all.extend(ordered)
-
-        pos = end
-
-    if len(optimized_all) != n:
-        raise RuntimeError(
-            "Le moteur routier n'a pas pu reconstruire tous les points."
+        optimized = optimize_with_ortools(
+            stops,
+            matrix
         )
 
-    geometry, distance = get_route_geometry(optimized_all)
-    return optimized_all, geometry, distance, "OSRM Road Batch Heuristic"
+        if optimized:
+            geometry, distance = get_route_geometry(
+                optimized
+            )
+
+            return (
+                optimized,
+                geometry,
+                distance,
+                "OSRM + OR-Tools"
+            )
+
+    if len(stops) <= OSRM_TRIP_LIMIT:
+        optimized = osrm_trip_order(stops)
+
+        geometry, distance = get_route_geometry(
+            optimized
+        )
+
+        return (
+            optimized,
+            geometry,
+            distance,
+            "OSRM Trip"
+        )
+
+    raise RuntimeError(
+        "OR-Tools n'est pas installé et la tournée dépasse "
+        f"{OSRM_TRIP_LIMIT} points. Installez OR-Tools ou "
+        "utilisez un serveur OSRM de production."
+    )
 
 
 # ============================================================
@@ -1719,6 +1706,7 @@ def register():
             password,
             method="pbkdf2:sha256:600000"
         ),
+        payment_method="USDC",
         address=normalize_text(
             request.form.get("address"), 250
         ),
@@ -2079,36 +2067,27 @@ document.getElementById("file-input").addEventListener(
 
 
 def parse_manual_stops(text):
+    """Parse pipe-separated or CSV route data."""
     stops = []
-
-    for line_number, line in enumerate(
-        text.splitlines(),
-        start=1
-    ):
-        line = line.strip()
-
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
         if not line:
             continue
-
-        # Accept | separated data.
-        parts = [
-            x.strip()
-            for x in line.split("|")
-        ]
-
+        if "|" in line:
+            parts = [x.strip() for x in line.split("|")]
+        else:
+            try:
+                parts = [x.strip() for x in next(csv.reader([line]))]
+            except Exception as exc:
+                raise ValueError(f"Ligne {line_number}: CSV invalide.") from exc
         if len(parts) < 4:
-            raise ValueError(
-                f"Ligne {line_number}: "
-                "format attendu Nom | Adresse | Lat | Lng."
-            )
-
-        stops.append({
-            "name": parts[0],
-            "address": parts[1],
-            "lat": parts[2],
-            "lng": parts[3],
-        })
-
+            raise ValueError(f"Ligne {line_number}: format attendu Nom | Adresse | Latitude | Longitude ou CSV Nom,Adresse,Latitude,Longitude.")
+        header = " ".join(parts[:4]).lower()
+        if "lat" in header and ("lon" in header or "lng" in header or "longitude" in header):
+            continue
+        stops.append({"name":parts[0],"address":parts[1],"lat":parts[2],"lng":parts[3]})
+    if not stops:
+        raise ValueError("Aucun point exploitable trouvé dans les données.")
     return stops
 
 
@@ -2216,12 +2195,11 @@ def create_driver_route():
         optimized=True,
         optimization_engine=engine,
         total_road_distance_m=distance,
-        road_geometry_json=json.dumps(geometry, ensure_ascii=False),
         optimization_id=optimization_id,
         status="Optimisée",
     )
 
-    user.tours_used += 1
+    user.tours_used = int(user.tours_used or 0) + 1
 
     db.session.add(route)
 
@@ -2242,13 +2220,14 @@ def create_driver_route():
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
-        app.logger.exception("Erreur DB après optimisation")
+        app.logger.exception("GLOBALROUTE route database commit failed")
         flash(
-            "La route a été calculée, mais l'enregistrement en base a échoué : "
-            + str(exc),
+            "La route a été calculée, mais son enregistrement a échoué. "
+            "La base PostgreSQL doit être migrée. "
+            f"Détail : {exc}",
             "danger"
         )
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("import_space"))
 
     flash(
         f"Tournée optimisée : {len(optimized)} points · "
@@ -2292,11 +2271,8 @@ def activate_account():
     invite_key = request.form.get("invite_key", "").strip()
     password = request.form.get("password", "")
     confirm = request.form.get("password_confirm", "")
-    invitation = AccountInvitation.query.filter_by(
-        token=invite_key,
-        used_at=None,
-    ).first()
-    if not invitation or invitation.expires_at < utcnow():
+    invitation = ApiKey.query.filter_by(key_string=invite_key, key_type="invite", revoked=False).first()
+    if not invitation or (invitation.expires_at and invitation.expires_at < utcnow()):
         flash("Clé d'activation invalide ou expirée.", "danger")
         return redirect(url_for("activate_account"))
     user = User.query.get(invitation.user_id)
@@ -2313,7 +2289,8 @@ def activate_account():
         return redirect(url_for("activate_account"))
     user.password_hash = generate_password_hash(password)
     user.active = True
-    invitation.used_at = utcnow()
+    invitation.revoked = True
+    invitation.expires_at = utcnow()
     db.session.add(AuditLog(action="ACCOUNT_ACTIVATED", details=f"user={user.email}; invitation_id={invitation.id}"))
     db.session.commit()
     session.clear()
@@ -2765,18 +2742,6 @@ def driver_space():
         ensure_ascii=False
     )
 
-    try:
-        stored_geometry = json.loads(
-            route.road_geometry_json or "[]"
-        )
-    except Exception:
-        stored_geometry = []
-
-    geometry_json = json.dumps(
-        stored_geometry,
-        ensure_ascii=False
-    )
-
     distance_km = (
         route.total_road_distance_m / 1000
         if route.total_road_distance_m
@@ -2897,33 +2862,126 @@ def driver_space():
         .replaceAll("'", "&#039;");
     }}
 
-    function drawRealRoadRoute() {{
-      const road = {geometry_json};
+    async function drawRealRoadRoute() {{
+      if (points.length < 2) return;
 
-      if (!road.length) {{
-        const warning = document.createElement("div");
-        warning.className = "alert alert-danger";
-        warning.textContent =
-          "La géométrie routière n'est pas disponible. Aucune ligne droite de secours n'est affichée.";
-        document.getElementById("map").before(warning);
-        return;
-      }}
+      const maxChunk = 80;
+      let allCoords = [];
 
-      const polyline = L.polyline(
-        road,
-        {{
-          color:"#2563eb",
-          weight:6,
-          opacity:.9
+      try {{
+        for (
+          let start = 0;
+          start < points.length - 1;
+          start += maxChunk - 1
+        ) {{
+
+          const end = Math.min(
+            start + maxChunk,
+            points.length
+          );
+
+          const chunk = points.slice(
+            start,
+            end
+          );
+
+          const coords = chunk.map(
+            p => p.lng + "," + p.lat
+          ).join(";");
+
+          const url =
+            "https://router.project-osrm.org/"
+            + "route/v1/driving/"
+            + coords
+            + "?overview=full"
+            + "&geometries=geojson";
+
+          const response =
+            await fetch(url);
+
+          if (!response.ok) {{
+            throw new Error(
+              "OSRM HTTP " + response.status
+            );
+          }}
+
+          const data =
+            await response.json();
+
+          if (
+            data.code !== "Ok"
+            || !data.routes
+            || !data.routes.length
+          ) {{
+            throw new Error(
+              "OSRM n'a pas trouvé de route."
+            );
+          }}
+
+          const road =
+            data.routes[0]
+              .geometry
+              .coordinates
+              .map(c => [c[1], c[0]]);
+
+          if (allCoords.length) {{
+            allCoords =
+              allCoords.concat(
+                road.slice(1)
+              );
+          }} else {{
+            allCoords =
+              allCoords.concat(road);
+          }}
+
+          if (end === points.length) break;
         }}
-      ).addTo(map);
 
-      map.fitBounds(
-        polyline.getBounds(),
-        {{padding:[30,30]}}
-      );
+        if (!allCoords.length) {{
+          throw new Error(
+            "Géométrie routière vide."
+          );
+        }}
+
+        const polyline =
+          L.polyline(
+            allCoords,
+            {{
+              color:"#2563eb",
+              weight:6,
+              opacity:.9
+            }}
+          ).addTo(map);
+
+        map.fitBounds(
+          polyline.getBounds(),
+          {{padding:[30,30]}}
+        );
+
+      }} catch(error) {{
+        console.error(error);
+
+        document.getElementById(
+          "total-distance"
+        ).textContent =
+          "Route indisponible";
+
+        const warning =
+          document.createElement("div");
+
+        warning.className =
+          "alert alert-danger";
+
+        warning.textContent =
+          "Le réseau routier OSRM n'a pas pu "
+          + "être chargé. Aucune ligne droite "
+          + "de secours n'est affichée.";
+
+        document.getElementById(
+          "map"
+        ).before(warning);
+      }}
     }}
-
 
     drawRealRoadRoute();
 
@@ -3199,100 +3257,32 @@ def admin_panel():
 def admin_create_invitation():
     if not session.get("is_admin"):
         return redirect(url_for("admin_panel"))
-
-    company = normalize_text(request.form.get("company_name"), 150)
-    email = normalize_text(request.form.get("email"), 160).lower()
-    country = normalize_text(request.form.get("country"), 100)
-
-    if not company or not email or "@" not in email:
-        flash("Nom d'entreprise et email professionnel valides obligatoires.", "danger")
-        return redirect(url_for("admin_panel"))
-
-    try:
-        user = User.query.filter_by(email=email).first()
-
-        if user and user.active:
-            flash("Un compte actif existe déjà avec cet email.", "danger")
-            return redirect(url_for("admin_panel"))
-
-        if not user:
-            user = User(
-                company_name=company,
-                email=email,
-                password_hash=generate_password_hash(secrets.token_urlsafe(32)),
-                role="dispatcher",
-                country=country,
-                active=False,
-            )
-            db.session.add(user)
-            db.session.flush()
-        else:
-            user.company_name = company
-            user.country = country
-            user.active = False
-
-        AccountInvitation.query.filter_by(
-            user_id=user.id,
-            used_at=None,
-        ).update(
-            {"used_at": utcnow()},
-            synchronize_session=False,
-        )
-
-        token = None
-        for _ in range(5):
-            candidate = "GRI-" + secrets.token_urlsafe(36)
-            if not AccountInvitation.query.filter_by(token=candidate).first():
-                token = candidate
-                break
-
-        if not token:
-            raise RuntimeError("Impossible de générer une clé d'activation unique.")
-
-        invitation = AccountInvitation(
-            token=token,
-            user_id=user.id,
-            expires_at=utcnow() + timedelta(days=7),
-        )
-        db.session.add(invitation)
-        db.session.flush()
-
-        db.session.add(AuditLog(
-            action="ACCOUNT_INVITATION_CREATED",
-            details=f"user={email}; invitation_id={invitation.id}"
-        ))
-        db.session.commit()
-
-    except Exception as exc:
-        db.session.rollback()
-        app.logger.exception("Erreur Admin lors de la génération de clé")
-        flash(
-            "La génération a échoué. Détail serveur : " + str(exc),
-            "danger"
-        )
-        return redirect(url_for("admin_panel"))
-
-    activation_url = url_for("activate_account", _external=True)
-
-    body = f"""
-    <div class="card" style="max-width:650px;margin:0 auto">
-      <h2>✅ Clé d'activation générée</h2>
-      <p><strong>Entreprise :</strong> {user.company_name}</p>
-      <p><strong>Email :</strong> {user.email}</p>
-      <label>Clé à envoyer au client</label>
-      <div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">
-        {invitation.token}
-      </div>
-      <label>Lien d'activation</label>
-      <div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">
-        {activation_url}
-      </div>
-      <p class="muted">Valable 7 jours et utilisable une seule fois. Le client crée son mot de passe.</p>
-      <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a>
-    </div>
-    """
-    return page(body, title="Clé d'activation")
-
+    company=request.form.get("company_name","").strip()
+    email=request.form.get("email","").strip().lower()
+    country=request.form.get("country","").strip()
+    if not company or not email:
+        flash("Nom de l'entreprise et email obligatoires.","danger"); return redirect(url_for("admin_panel"))
+    user=User.query.filter_by(email=email).first()
+    if user and user.active:
+        flash("Un compte actif existe déjà avec cet email.","danger"); return redirect(url_for("admin_panel"))
+    if user:
+        user.company_name=company; user.country=country
+        ApiKey.query.filter_by(user_id=user.id,key_type="invite",revoked=False).update({"revoked":True},synchronize_session=False)
+    else:
+        user=User(company_name=company,email=email,password_hash=generate_password_hash(secrets.token_urlsafe(32)),payment_method="USDC",role="dispatcher",country=country,active=False)
+        db.session.add(user); db.session.flush()
+    expires=utcnow()+timedelta(days=7)
+    invitation=create_api_key(user,expires,key_type="invite",prefix="GRI-")
+    db.session.add(AuditLog(action="ACCOUNT_INVITATION_CREATED",details=f"user={email}; invitation_id={invitation.id}"))
+    db.session.commit()
+    activation_url=url_for("activate_account",_external=True)
+    body=f"""<div class="card" style="max-width:650px;margin:0 auto"><h2>✅ Clé d'activation générée</h2>
+    <p><strong>Entreprise :</strong> {user.company_name}</p><p><strong>Email :</strong> {user.email}</p>
+    <label>Clé à envoyer au client</label><div class="mono" style="background:#0f172a;color:white;padding:16px;border-radius:8px;font-size:16px;text-align:center">{invitation.key_string}</div>
+    <label>Lien d'activation</label><div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">{activation_url}</div>
+    <p class="muted">Valable 7 jours et utilisable une seule fois. Le client créera lui-même son mot de passe.</p>
+    <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a></div>"""
+    return page(body,title="Clé d'activation")
 
 @app.route("/admin-logout")
 def admin_logout():
@@ -3444,21 +3434,6 @@ def api_v1_route():
 # ============================================================
 # HEALTH
 # ============================================================
-
-@app.route("/health/routing")
-def health_routing():
-    return jsonify({
-        "status": "ok",
-        "routing_url": ROUTING_URL,
-        "profile": OSRM_PROFILE,
-        "ortools_installed": HAS_ORTOOLS,
-        "max_route_points": MAX_ROUTE_POINTS,
-        "matrix_max_points": int(os.getenv("OR_TOOLS_MATRIX_MAX_POINTS", "250")),
-        "trip_limit": OSRM_TRIP_LIMIT,
-        "straight_line_fallback": False,
-        "real_road_routing": True,
-    })
-
 
 @app.route("/health")
 def health():
