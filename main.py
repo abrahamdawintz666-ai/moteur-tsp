@@ -9,6 +9,7 @@ import random
 import hashlib
 import urllib.parse
 import urllib.request
+import urllib.error
 import smtplib
 import re
 from email.message import EmailMessage
@@ -198,6 +199,35 @@ else:
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# Render PostgreSQL can close an idle TLS connection while SQLAlchemy still
+# has it in the pool. Without pre-ping, the next innocent SELECT can become
+# the exact error seen in production: psycopg2.OperationalError /
+# "SSL SYSCALL error: EOF detected" -> HTTP 500/502.
+# Keep the pool small on the free instance, recycle old connections, and
+# validate a connection before handing it to a request.
+if "postgresql" in database_url:
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 240,
+        "pool_size": 3,
+        "max_overflow": 2,
+        "pool_timeout": 20,
+        "pool_reset_on_return": "rollback",
+        "connect_args": {
+            "connect_timeout": 15,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "sslmode": "require",
+        },
+    }
+else:
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+    }
+
 db = SQLAlchemy(app)
 
 
@@ -687,6 +717,16 @@ def osrm_request(service, stops, params=None):
                     response.read().decode("utf-8")
                 )
             break
+        except urllib.error.HTTPError as exc:
+            # A 400 is normally a malformed/too-large OSRM request; retrying
+            # the identical request cannot repair it and only wastes time.
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                detail = str(exc)
+            raise RuntimeError(
+                f"OSRM HTTP {exc.code}: {detail or exc.reason}"
+            ) from exc
         except Exception as exc:
             last_error = exc
             if attempt < 2:
@@ -911,6 +951,22 @@ def ant_colony_optimize_indices(distance_matrix, seed=None):
         return list(range(n))
 
     rng = random.Random(seed if seed is not None else 20261007)
+
+    # Adaptive workload: keep the same AntStrike architecture, but prevent
+    # a web request from spending tens of seconds doing Python-side ACO on
+    # larger matrices. The algorithm is still executed; only the number of
+    # ants/waves/iterations is scaled to the problem size.
+    if n <= 20:
+        ants, worker_waves, engineer_waves, iterations = (12, 2, 1, 4)
+    elif n <= 50:
+        ants, worker_waves, engineer_waves, iterations = (12, 2, 1, 5)
+    elif n <= 100:
+        ants, worker_waves, engineer_waves, iterations = (12, 2, 1, 4)
+    elif n <= 150:
+        ants, worker_waves, engineer_waves, iterations = (10, 2, 1, 3)
+    else:
+        ants, worker_waves, engineer_waves, iterations = (8, 1, 1, 3)
+
     finite_edges = [
         float(distance_matrix[i][j])
         for i in range(n)
@@ -932,7 +988,7 @@ def ant_colony_optimize_indices(distance_matrix, seed=None):
         nonlocal best, best_cost, pheromone
         for _ in range(max(1, iterations)):
             candidates = []
-            for _ant in range(max(2, ACO_ANTS)):
+            for _ant in range(max(2, ants)):
                 route = _aco_construct_solution(distance_matrix, pheromone, rng)
                 route = two_opt_indices(route, distance_matrix, ACO_2OPT_PASSES)
                 cost = route_cost(route, distance_matrix)
@@ -961,16 +1017,16 @@ def ant_colony_optimize_indices(distance_matrix, seed=None):
                     pheromone[b][a] += deposit * 0.5
 
     # Worker waves: exploration.
-    for _ in range(max(1, ACO_WORKER_WAVES)):
-        wave(ACO_ITERATIONS_PER_WAVE, "worker")
+    for _ in range(max(1, worker_waves)):
+        wave(iterations, "worker")
 
     # Saboteur correction: strongest deterministic 2-opt cleanup.
     best = two_opt_indices(best, distance_matrix, ACO_2OPT_PASSES + 2)
     best_cost = route_cost(best, distance_matrix)
 
     # Engineer waves: intensification around the best discovered route.
-    for _ in range(max(1, ACO_ENGINEER_WAVES)):
-        wave(ACO_ITERATIONS_PER_WAVE, "engineer")
+    for _ in range(max(1, engineer_waves)):
+        wave(iterations, "engineer")
         best = two_opt_indices(best, distance_matrix, ACO_2OPT_PASSES + 1)
         best_cost = route_cost(best, distance_matrix)
 
@@ -1021,7 +1077,22 @@ def optimize_with_ortools(stops, distance_matrix):
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.seconds = max(1, OR_TOOLS_SECONDS)
+    # Keep a single web request bounded on Render. Small jobs may use the full
+    # configured budget; large synchronized blocks get a shorter second-opinion
+    # pass so one HTTP request does not sit behind OR-Tools for minutes.
+    # Hard web-request budget. OR-Tools remains the second opinion, but it
+    # must not hold the Flask request open long enough for Render/Chrome to
+    # return 502.
+    block_seconds = min(OR_TOOLS_SECONDS, 4)
+    if n <= 20:
+        block_seconds = min(block_seconds, 2)
+    elif n <= 50:
+        block_seconds = min(block_seconds, 3)
+    elif n <= 150:
+        block_seconds = min(block_seconds, 4)
+    else:
+        block_seconds = min(block_seconds, 2)
+    params.time_limit.seconds = max(1, block_seconds)
 
     solution = routing.SolveWithParameters(params)
     if not solution:
@@ -1193,7 +1264,10 @@ def get_route_geometry(stops):
 
     geometries = []
     total_distance = 0.0
-    chunk_size = max(10, min(OSRM_TRIP_LIMIT, 80))
+    # Public OSRM instances can reject large coordinate lists. Keeping the
+    # final geometry request at <=50 points is conservative and matches the
+    # matrix block strategy used above.
+    chunk_size = max(10, min(OSRM_TRIP_LIMIT, 50))
 
     for start in range(0, len(stops) - 1, chunk_size - 1):
         end = min(start + chunk_size, len(stops))
@@ -1424,13 +1498,33 @@ def current_user():
     if not user_id:
         return None
 
-    user = User.query.get(user_id)
+    # A stale PostgreSQL connection can still fail during the actual SELECT
+    # even with pool_pre_ping. Retry once after disposing the broken pool.
+    # This keeps a transient Render/Postgres disconnect from becoming a
+    # customer-facing HTTP 500/502 on every dashboard request.
+    from sqlalchemy.exc import OperationalError
 
-    if not user or not user.active:
-        session.pop("user_id", None)
-        return None
+    for attempt in range(2):
+        try:
+            user = db.session.get(User, user_id)
+            if not user or not user.active:
+                session.pop("user_id", None)
+                return None
+            return user
+        except OperationalError as exc:
+            db.session.rollback()
+            if attempt == 0:
+                app.logger.warning(
+                    "PostgreSQL connection dropped while loading user; "
+                    "disposing pool and retrying: %s",
+                    exc,
+                )
+                db.engine.dispose()
+                continue
+            app.logger.exception("PostgreSQL unavailable after retry")
+            raise
 
-    return user
+    return None
 
 
 def strong_password(password):
@@ -1468,6 +1562,25 @@ def send_email(to_email, subject, body_text):
 
 def hash_reset_token(raw_token):
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def safe_db_commit(action="database commit", retries=1):
+    """Commit with one controlled reconnect for transient PostgreSQL EOFs."""
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(retries + 1):
+        try:
+            db.session.commit()
+            return
+        except OperationalError as exc:
+            db.session.rollback()
+            if attempt >= retries:
+                raise
+            app.logger.warning(
+                "%s failed with a transient DB connection error; retrying: %s",
+                action, exc,
+            )
+            db.engine.dispose()
 
 
 def admin_required():
@@ -2148,13 +2261,25 @@ def dashboard():
         - int(user.tours_used or 0)
     )
 
-    routes = (
-        DeliveryRoute.query
-        .filter_by(user_id=user.id)
-        .order_by(DeliveryRoute.id.desc())
-        .limit(30)
-        .all()
-    )
+    try:
+        routes = (
+            DeliveryRoute.query
+            .filter_by(user_id=user.id)
+            .order_by(DeliveryRoute.id.desc())
+            .limit(30)
+            .all()
+        )
+    except Exception as exc:
+        # Do not expose a raw SQLAlchemy traceback to the customer. The most
+        # common Render failure here is a dropped PostgreSQL SSL connection.
+        db.session.rollback()
+        app.logger.exception("Dashboard database read failed")
+        flash(
+            "Connexion temporaire à la base de données. "
+            "Actualisez la page dans quelques secondes.",
+            "danger",
+        )
+        return redirect(url_for("dashboard"))
 
     route_rows = ""
 
@@ -2474,6 +2599,7 @@ def create_driver_route():
     try:
         raw_stops = parse_manual_stops(manual)
         stops = validate_stops(raw_stops)
+        app.logger.info("ROUTE_OPTIMIZATION_START points=%s user=%s", len(stops), user.email)
 
         if len(stops) > MAX_ROUTE_POINTS:
             raise ValueError(
@@ -2483,6 +2609,7 @@ def create_driver_route():
         optimized, geometry, distance, engine = (
             optimize_stops_order(stops)
         )
+        app.logger.info("ROUTE_OPTIMIZATION_DONE points=%s distance_m=%s engine=%s", len(optimized), distance, engine)
 
     except Exception as exc:
         flash(
@@ -2543,7 +2670,7 @@ def create_driver_route():
     )
 
     try:
-        db.session.commit()
+        safe_db_commit("route persistence", retries=1)
     except Exception as exc:
         db.session.rollback()
         app.logger.exception("Erreur DB après optimisation")
@@ -3737,7 +3864,7 @@ def api_v1_route():
         )
     )
 
-    db.session.commit()
+    safe_db_commit("API route audit commit", retries=1)
 
     return jsonify({
         "success": True,
@@ -3782,8 +3909,18 @@ def health_routing():
 
 @app.route("/health")
 def health():
+    db_status = "unknown"
+    try:
+        from sqlalchemy import text
+        db.session.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception as exc:
+        db.session.rollback()
+        db_status = "error"
+        app.logger.warning("Health database check failed: %s", exc)
+
     return jsonify({
-        "status": "healthy",
+        "status": "healthy" if db_status == "ok" else "degraded",
         "service": APP_NAME,
         "routing_engine": "OSRM",
         "optimization_engine": (
@@ -3799,6 +3936,9 @@ def health():
             if "postgresql" in database_url
             else "sqlite"
         ),
+        "database_status": db_status,
+        "db_pool_pre_ping": True,
+        "db_pool_recycle_seconds": 240,
     })
 
 
