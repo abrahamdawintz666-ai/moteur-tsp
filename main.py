@@ -741,7 +741,12 @@ def osrm_request(service, stops, params=None):
     if data.get("code") != "Ok":
         code = data.get("code", "erreur inconnue")
         message = data.get("message", code)
-        raise RuntimeError(f"OSRM {code}: {message}")
+        # Keep the routing error structured so the caller can distinguish
+        # a disconnected road network (NoRoute) from an HTTP/service error.
+        err = RuntimeError(f"OSRM {code}: {message}")
+        setattr(err, "osrm_code", code)
+        setattr(err, "osrm_message", message)
+        raise err
 
     return data
 
@@ -818,19 +823,64 @@ def build_osrm_table(stops):
                 for i in dest_indices
             ]
 
-            data = osrm_request(
-                "table",
-                local_stops,
-                {
-                    "sources": ";".join(
-                        map(str, source_positions)
-                    ),
-                    "destinations": ";".join(
-                        map(str, destination_positions)
-                    ),
-                    "annotations": "distance,duration",
-                }
-            )
+            try:
+                data = osrm_request(
+                    "table",
+                    local_stops,
+                    {
+                        "sources": ";".join(
+                            map(str, source_positions)
+                        ),
+                        "destinations": ";".join(
+                            map(str, destination_positions)
+                        ),
+                        "annotations": "distance,duration",
+                    }
+                )
+            except RuntimeError as exc:
+                # OSRM Table can fail with NoRoute when one or more submitted
+                # coordinates are not connected in the driving graph. Do not
+                # silently substitute straight-line distances. Re-run the
+                # affected block as small direct routes so we can identify
+                # the exact disconnected pair and give the user a useful
+                # diagnostic.
+                if getattr(exc, "osrm_code", None) == "NoRoute":
+                    bad_pairs = []
+                    for gi in source_indices:
+                        for gj in dest_indices:
+                            if gi == gj:
+                                continue
+                            try:
+                                pair = osrm_request("route", [stops[gi], stops[gj]], {
+                                    "overview": "false",
+                                    "steps": "false",
+                                    "alternatives": "false",
+                                })
+                                routes = pair.get("routes") or []
+                                if not routes:
+                                    bad_pairs.append((gi, gj))
+                            except RuntimeError as pair_exc:
+                                if getattr(pair_exc, "osrm_code", None) == "NoRoute":
+                                    bad_pairs.append((gi, gj))
+                                else:
+                                    raise
+                    if bad_pairs:
+                        sample = []
+                        for gi, gj in bad_pairs[:5]:
+                            a, b = stops[gi], stops[gj]
+                            sample.append(
+                                f"#{gi+1} ({a['lat']:.6f},{a['lng']:.6f}) -> "
+                                f"#{gj+1} ({b['lat']:.6f},{b['lng']:.6f})"
+                            )
+                        raise RuntimeError(
+                            "OSRM NoRoute : certaines coordonnées ne sont pas "
+                            "reliées par le réseau routier 'driving'. "
+                            "Points concernés : " + "; ".join(sample) +
+                            (" …" if len(bad_pairs) > 5 else "") +
+                            ". Vérifiez les coordonnées/adresses ou utilisez "
+                            "un moteur routier couvrant cette zone."
+                        ) from exc
+                raise
 
             distances = data.get("distances") or []
 
