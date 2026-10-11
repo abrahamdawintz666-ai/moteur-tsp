@@ -414,9 +414,33 @@ def migrate_existing_database():
                     ) from exc
 
 
+def remove_legacy_driver_code_unique_constraint():
+    """Remove an obsolete global UNIQUE constraint left by older deployments.
+
+    Driver codes are already generated with cryptographic randomness and checked
+    before insertion. This migration specifically fixes the legacy PostgreSQL
+    constraint shown in production logs: delivery_routes_access_code_key.
+    """
+    if not str(app.config.get("SQLALCHEMY_DATABASE_URI", "")).startswith("postgresql"):
+        return
+    try:
+        with db.engine.begin() as connection:
+            connection.execute(text(
+                'ALTER TABLE delivery_routes '
+                'DROP CONSTRAINT IF EXISTS delivery_routes_access_code_key'
+            ))
+        app.logger.info("Legacy delivery_routes_access_code_key constraint checked/removed")
+    except Exception:
+        app.logger.exception("Could not remove legacy driver-code constraint")
+        # Do not hide migration failure: it is the direct cause of repeated code
+        # allocation failures and should be visible in Render logs.
+        raise
+
+
 with app.app_context():
     db.create_all()
     migrate_existing_database()
+    remove_legacy_driver_code_unique_constraint()
 
 
 
@@ -588,7 +612,8 @@ def check_access_code(route, supplied):
 
 
 def generate_driver_code():
-    return "GR-" + secrets.token_urlsafe(12)
+    # 128 bits of cryptographic randomness; compact and safe to share.
+    return "GR-" + secrets.token_hex(16).upper()
 
 
 def create_api_key(user, expires_at, revoke_existing=False, prefix="gr_live_"):
@@ -2559,10 +2584,10 @@ def dashboard():
           <td>{count}</td>
           <td>{route.optimization_engine}</td>
           <td>
-            <a href="{url_for('driver_space', code=route.access_code)}"
-               class="btn"
+            <a href="{url_for('driver_login')}"
+               class="btn btn-secondary"
                style="padding:6px 10px;font-size:12px;">
-              Ouvrir
+              Code requis
             </a>
           </td>
         </tr>
@@ -2898,10 +2923,16 @@ def create_driver_route():
         app.logger.info("ROUTE_OPTIMIZATION_DONE points=%s return_to_start=%s distance_m=%s engine=%s", len(optimized), return_to_start, distance, engine)
 
     except Exception as exc:
-        flash(
-            "Optimisation impossible : " + str(exc),
-            "danger"
-        )
+        app.logger.exception("Route optimization failed")
+        # Customer-facing messages stay short; technical details belong in Render logs.
+        message = str(exc).lower()
+        if "coordonnées dupliquées" in message or "coordinates duplicated" in message:
+            notice = "Optimisation impossible : coordonnées en double. Vérifiez les points importés."
+        elif "format attendu" in message or "latitude" in message or "longitude" in message:
+            notice = "Optimisation impossible : vérifiez le format et les coordonnées du fichier."
+        else:
+            notice = "Optimisation impossible pour le moment. Vérifiez les données ou réessayez plus tard."
+        flash(notice, "danger")
         return redirect(url_for("import_space"))
 
     optimization_id = (
@@ -2920,20 +2951,18 @@ def create_driver_route():
         "created_at": datetime.utcnow().isoformat(),
     })
 
-    # Persist the optimized route. A global UNIQUE constraint may still exist
-    # in an older Render database. If a generated code collides at commit time,
-    # retry with a fresh code automatically instead of asking the user to retry.
-    previous_code = access_code
+    # Persist the route with a fresh cryptographically random code on each
+    # database-level collision. Flush first so the exact constraint failure is
+    # detected before updating the account quota.
     code_was_regenerated = False
     last_db_error = None
     saved = False
+    route = None
 
-    for attempt in range(8):
-        # Pre-check existing codes, then still handle a database-level race below.
-        if DeliveryRoute.query.filter_by(access_code=access_code).first():
+    for attempt in range(12):
+        if attempt > 0 or DeliveryRoute.query.filter_by(access_code=access_code).first():
             code_was_regenerated = True
             access_code = generate_driver_code()
-            continue
 
         route = DeliveryRoute(
             user_id=user.id,
@@ -2959,6 +2988,7 @@ def create_driver_route():
         )
         try:
             db.session.add(route)
+            db.session.flush()  # unique access_code / optimization_id checked here
             db.session.add(audit)
             user.tours_used = int(user.tours_used or 0) + 1
             safe_db_commit("route persistence", retries=1)
@@ -2966,52 +2996,54 @@ def create_driver_route():
             break
         except Exception as exc:
             last_db_error = exc
-            db.session.rollback()
             error_text = str(exc).lower()
-            is_code_collision = (
-                "access_code" in error_text
+            # PostgreSQL exposes the actual violated constraint on the driver
+            # exception. Prefer that over parsing localized SQL error text.
+            original = getattr(exc, "orig", None)
+            diag = getattr(original, "diag", None)
+            constraint_name = str(getattr(diag, "constraint_name", "") or "").lower()
+            db.session.rollback()
+            is_access_code_collision = (
+                constraint_name in {"delivery_routes_access_code_key", "ix_delivery_routes_access_code"}
                 or "delivery_routes_access_code_key" in error_text
-                or "uniqueviolation" in error_text
-                or "duplicate key value violates unique constraint" in error_text
+                or ("unique" in error_text and "access_code" in error_text)
             )
-            if not is_code_collision:
-                app.logger.exception("Erreur DB après optimisation")
-                flash(
-                    "La route a été calculée, mais l'enregistrement en base a échoué. "
-                    "Vérifiez les journaux du serveur ou réessayez.",
-                    "danger",
+            if is_access_code_collision:
+                code_was_regenerated = True
+                app.logger.warning(
+                    "Driver access code collision; retrying with a new code (attempt %s)",
+                    attempt + 1,
                 )
-                return redirect(url_for("dashboard"))
+                continue
 
-            code_was_regenerated = True
-            access_code = generate_driver_code()
-            app.logger.warning(
-                "Driver access code collision; generated a replacement (attempt %s)",
-                attempt + 1,
+            app.logger.exception("Route persistence failed")
+            flash(
+                "La tournée a été calculée, mais n’a pas pu être enregistrée. Réessayez plus tard.",
+                "danger",
             )
+            return redirect(url_for("dashboard"))
 
     if not saved:
         app.logger.error(
-            "Could not persist route after generating replacement driver codes: %s",
+            "Could not persist route after code retries; last error type=%s",
             type(last_db_error).__name__ if last_db_error else "unknown",
         )
         flash(
-            "Impossible de réserver un code livreur unique après plusieurs essais. "
-            "Aucune tournée n'a été enregistrée. Réessayez une fois.",
+            "La tournée n’a pas été enregistrée. Impossible de réserver un code livreur ; contactez l’administrateur.",
             "danger",
         )
         return redirect(url_for("dashboard"))
 
+    # Keep driver access separate: creation never logs the dispatcher into the
+    # driver's workspace. The driver must enter the code on /driver-login.
     if code_was_regenerated:
         flash(
-            f"Le code précédent était déjà utilisé. Un nouveau code livreur a été "
-            f"généré automatiquement : {access_code}. Conservez-le pour le livreur.",
-            "warning",
+            f"Tournée créée. Un nouveau code livreur a été généré automatiquement : {access_code}",
+            "success",
         )
     else:
         flash(
-            f"Code d'accès du livreur généré automatiquement : {access_code}. "
-            "Conservez-le pour ouvrir cette tournée.",
+            f"Tournée créée. Code d’accès à transmettre au livreur : {access_code}",
             "success",
         )
 
@@ -3022,12 +3054,7 @@ def create_driver_route():
         "success"
     )
 
-    return redirect(
-        url_for(
-            "driver_space",
-            code=access_code
-        )
-    )
+    return redirect(url_for("dashboard"))
 
 
 # ============================================================
@@ -3482,11 +3509,9 @@ def driver_login():
 @app.route("/driver-space", methods=["GET", "POST"])
 @limiter.limit("30 per minute")
 def driver_space():
-    code = (
-        request.form.get("access_code")
-        if request.method == "POST"
-        else request.args.get("code")
-    )
+    # Driver workspace is accessible only after explicit code submission.
+    # Do not allow dashboard links or a guessed query-string to bypass the form.
+    code = request.form.get("access_code") if request.method == "POST" else None
 
     code = normalize_text(
         code,
