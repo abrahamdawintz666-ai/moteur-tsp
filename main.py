@@ -78,6 +78,9 @@ ROUTING_URL = os.getenv(
 ).rstrip("/")
 OSRM_PROFILE = os.getenv("OSRM_PROFILE", "driving")
 OSRM_TIMEOUT = int(os.getenv("OSRM_TIMEOUT", "45"))
+# Optional Valhalla fallback. Configure VALHALLA_URL in Render to enable it.
+# Example: https://valhalla1.openstreetmap.de (public demo; rate limits apply).
+VALHALLA_URL = os.getenv("VALHALLA_URL", "").rstrip("/")
 
 # Keep below common public OSRM coordinate limits.
 OSRM_MATRIX_BLOCK = int(os.getenv("OSRM_MATRIX_BLOCK", "50"))
@@ -773,7 +776,7 @@ def build_osrm_pairwise_matrix(stops):
     return matrix
 
 
-def build_osrm_table(stops):
+def _build_osrm_table_osrm(stops):
     """
     Builds a road-distance matrix in meters.
 
@@ -838,48 +841,65 @@ def build_osrm_table(stops):
                     }
                 )
             except RuntimeError as exc:
-                # OSRM Table can fail with NoRoute when one or more submitted
-                # coordinates are not connected in the driving graph. Do not
-                # silently substitute straight-line distances. Re-run the
-                # affected block as small direct routes so we can identify
-                # the exact disconnected pair and give the user a useful
-                # diagnostic.
+                # Do not test every pair in a failed block: a 50x50 block can
+                # otherwise trigger thousands of extra HTTP calls and time out
+                # the Render request. Probe only a small, deterministic sample
+                # and report the block if OSRM cannot build its table.
                 if getattr(exc, "osrm_code", None) == "NoRoute":
                     bad_pairs = []
+                    tested = 0
                     for gi in source_indices:
                         for gj in dest_indices:
                             if gi == gj:
                                 continue
+                            tested += 1
                             try:
                                 pair = osrm_request("route", [stops[gi], stops[gj]], {
                                     "overview": "false",
                                     "steps": "false",
                                     "alternatives": "false",
                                 })
-                                routes = pair.get("routes") or []
-                                if not routes:
+                                if not (pair.get("routes") or []):
                                     bad_pairs.append((gi, gj))
                             except RuntimeError as pair_exc:
                                 if getattr(pair_exc, "osrm_code", None) == "NoRoute":
                                     bad_pairs.append((gi, gj))
+                                elif getattr(pair_exc, "osrm_code", None) in ("NoSegment",):
+                                    bad_pairs.append((gi, gj))
                                 else:
                                     raise
-                    if bad_pairs:
-                        sample = []
-                        for gi, gj in bad_pairs[:5]:
-                            a, b = stops[gi], stops[gj]
-                            sample.append(
-                                f"#{gi+1} ({a['lat']:.6f},{a['lng']:.6f}) -> "
-                                f"#{gj+1} ({b['lat']:.6f},{b['lng']:.6f})"
-                            )
-                        raise RuntimeError(
-                            "OSRM NoRoute : certaines coordonnées ne sont pas "
-                            "reliées par le réseau routier 'driving'. "
-                            "Points concernés : " + "; ".join(sample) +
-                            (" …" if len(bad_pairs) > 5 else "") +
-                            ". Vérifiez les coordonnées/adresses ou utilisez "
-                            "un moteur routier couvrant cette zone."
-                        ) from exc
+                            if tested >= 8:
+                                break
+                        if tested >= 8:
+                            break
+                    sample = []
+                    for gi, gj in bad_pairs[:5]:
+                        a, b = stops[gi], stops[gj]
+                        sample.append(
+                            f"#{gi+1} {a['name']} ({a['lat']:.6f},{a['lng']:.6f}) -> "
+                            f"#{gj+1} {b['name']} ({b['lat']:.6f},{b['lng']:.6f})"
+                        )
+                    detail = (
+                        " Paires impossibles détectées : " + "; ".join(sample)
+                        if sample else
+                        f" Le contrôle de {tested} paires n'a pas suffi à isoler "
+                        "le point fautif."
+                    )
+                    raise RuntimeError(
+                        "OSRM n'a pas pu construire la matrice pour le bloc "
+                        f"sources {source_start+1}-{source_end}, "
+                        f"destinations {dest_start+1}-{dest_end}. "
+                        "Cela peut indiquer un réseau routier déconnecté ou une "
+                        "limite du serveur public OSRM." + detail +
+                        " Aucune distance fictive n'a été ajoutée. "
+                        "ACTION REQUISE : vérifiez les points A et B. S'ils ne sont "
+                        "pas reliés par la route (par exemple deux îles ou deux pays "
+                        "séparés par la mer), changez le moyen de transport et demandez "
+                        "la création d'un itinéraire multimodal par ferry/bateau ou avion. "
+                        "Le moteur routier actuel ne peut pas inventer ni confirmer seul "
+                        "un trajet de ferry ou un vol : il faut des horaires, ports/aéroports "
+                        "et données de transport vérifiables."
+                    ) from exc
                 raise
 
             distances = data.get("distances") or []
@@ -902,16 +922,128 @@ def build_osrm_table(stops):
     ]
 
     if missing:
-        raise RuntimeError(
-            f"OSRM n'a pas fourni {len(missing)} "
-            "distances routières."
-        )
+        # OSRM Table can return code=Ok while individual cells are null.
+        # Diagnose a bounded sample with direct Route calls, and never replace
+        # missing road distances with geodesic/straight-line estimates.
+        diagnosed = []
+        for i, j in missing[:8]:
+            if i == j:
+                matrix[i][j] = 0
+                continue
+            try:
+                pair = osrm_request("route", [stops[i], stops[j]], {
+                    "overview": "false",
+                    "steps": "false",
+                    "alternatives": "false",
+                })
+                routes = pair.get("routes") or []
+                if routes:
+                    matrix[i][j] = int(round(float(routes[0].get("distance", 0))))
+                else:
+                    diagnosed.append((i, j, "aucune route retournée"))
+            except RuntimeError as pair_exc:
+                code = getattr(pair_exc, "osrm_code", None)
+                if code in ("NoRoute", "NoSegment"):
+                    diagnosed.append((i, j, str(code)))
+                else:
+                    diagnosed.append((i, j, str(pair_exc)[:100]))
+
+        missing = [
+            (i, j) for i in range(n) for j in range(n)
+            if matrix[i][j] is None
+        ]
+        if missing:
+            examples = []
+            for i, j, reason in diagnosed[:5]:
+                examples.append(
+                    f"#{i+1} {stops[i]['name']} -> #{j+1} "
+                    f"{stops[j]['name']} ({reason})"
+                )
+            details = "; ".join(examples) if examples else "aucune paire isolée"
+            raise RuntimeError(
+                f"Matrice routière incomplète : {len(missing)} distances manquantes. "
+                f"Exemples vérifiés : {details}. Vérifiez le point d'accrochage "
+                "au réseau routier ou configurez un fournisseur routier couvrant "
+                "la zone. Aucune distance fictive n'a été ajoutée. "
+                "ACTION REQUISE : si A et B ne sont pas accessibles par la route, "
+                "choisissez un autre moyen et demandez un itinéraire multimodal par "
+                "ferry/bateau ou avion. Le moteur routier ne peut pas confirmer seul "
+                "un ferry ou un vol ; il faut des données vérifiables sur les ports, "
+                "aéroports, liaisons et horaires."
+            )
 
     return [
         [int(round(float(x))) for x in row]
         for row in matrix
     ]
 
+
+
+def valhalla_request(endpoint, payload):
+    """Call an explicitly configured Valhalla instance; never fabricate distances."""
+    if not VALHALLA_URL:
+        raise RuntimeError("VALHALLA_URL n'est pas configuré.")
+    req = urllib.request.Request(
+        f"{VALHALLA_URL}/{endpoint.lstrip('/')}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "GlobalRoute-AI/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OSRM_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Valhalla indisponible: {exc}") from exc
+    if data.get("error") or data.get("error_code"):
+        raise RuntimeError(f"Valhalla: {data.get('error', data)}")
+    return data
+
+
+def build_valhalla_table(stops):
+    """Fallback real-road distance matrix using Valhalla sources_to_targets."""
+    n = len(stops)
+    matrix = [[None for _ in range(n)] for _ in range(n)]
+    # Keep payload sizes bounded; Valhalla distances are returned in km.
+    block = max(5, min(OSRM_MATRIX_BLOCK, 25))
+    for i in range(n):
+        matrix[i][i] = 0
+    for ss in range(0, n, block):
+        se = min(ss + block, n)
+        for ds in range(0, n, block):
+            de = min(ds + block, n)
+            payload = {
+                "sources": [{"lat": float(stops[i]["lat"]), "lon": float(stops[i]["lng"])} for i in range(ss, se)],
+                "targets": [{"lat": float(stops[j]["lat"]), "lon": float(stops[j]["lng"])} for j in range(ds, de)],
+                "costing": "auto",
+                "units": "kilometers",
+            }
+            data = valhalla_request("sources_to_targets", payload)
+            rows = data.get("sources_to_targets") or []
+            if len(rows) != se - ss:
+                raise RuntimeError("Valhalla a retourné une matrice incomplète.")
+            for ri, row in enumerate(rows):
+                for ci, cell in enumerate(row):
+                    if not isinstance(cell, dict) or cell.get("distance") is None:
+                        raise RuntimeError(f"Liaison non confirmée entre les points {ss+ri+1} et {ds+ci+1}; aucune distance inventée.")
+                    matrix[ss + ri][ds + ci] = int(round(float(cell["distance"]) * 1000))
+    return matrix
+
+
+def build_osrm_table(stops):
+    """OSRM first, configured Valhalla road matrix as a real-road fallback."""
+    try:
+        return _build_osrm_table_osrm(stops)
+    except Exception as osrm_error:
+        if not VALHALLA_URL:
+            raise
+        app.logger.warning("OSRM table failed; trying configured Valhalla fallback: %s", osrm_error)
+        try:
+            return build_valhalla_table(stops)
+        except Exception as valhalla_error:
+            raise RuntimeError(
+                f"OSRM indisponible ({osrm_error}); Valhalla indisponible ({valhalla_error}). "
+                "Liaison non confirmée : vérifiez les coordonnées et la connectivité réelle."
+            ) from valhalla_error
 
 def route_cost(order, distance_matrix):
     """Cost of an index order using the real OSRM road-distance matrix."""
@@ -922,20 +1054,41 @@ def route_cost(order, distance_matrix):
 
 
 def two_opt_indices(order, distance_matrix, max_passes=ACO_2OPT_PASSES):
-    """Deterministic 2-opt improvement while preserving fixed endpoints."""
+    """Directed-road 2-opt; preserves fixed endpoints and asymmetric costs.
+
+    Road distances are directional in real networks. The classic symmetric
+    2-opt boundary-only delta is therefore incorrect here. This version also
+    accounts for every reversed internal edge before accepting a reversal.
+    """
     route = list(order)
-    if len(route) < 4:
+    n = len(route)
+    if n < 4:
         return route
 
     for _ in range(max(1, max_passes)):
+        # Prefix sum of the cost change caused by reversing each directed edge.
+        reverse_delta_prefix = [0]
+        for k in range(n - 1):
+            forward = float(distance_matrix[route[k]][route[k + 1]])
+            reverse = float(distance_matrix[route[k + 1]][route[k]])
+            reverse_delta_prefix.append(
+                reverse_delta_prefix[-1] + reverse - forward
+            )
+
         improved = False
-        for i in range(1, len(route) - 2):
+        for i in range(1, n - 2):
             a, b = route[i - 1], route[i]
-            for j in range(i + 1, len(route) - 1):
+            for j in range(i + 1, n - 1):
                 c, d = route[j], route[j + 1]
-                old = distance_matrix[a][b] + distance_matrix[c][d]
-                new = distance_matrix[a][c] + distance_matrix[b][d]
-                if new < old:
+                delta = (
+                    float(distance_matrix[a][c])
+                    + float(distance_matrix[b][d])
+                    - float(distance_matrix[a][b])
+                    - float(distance_matrix[c][d])
+                    + reverse_delta_prefix[j]
+                    - reverse_delta_prefix[i]
+                )
+                if delta < -1e-9:
                     route[i:j + 1] = reversed(route[i:j + 1])
                     improved = True
                     break
@@ -1325,19 +1478,50 @@ def get_route_geometry(stops):
         if len(chunk) < 2:
             continue
 
-        data = osrm_request("route", chunk, {
-            "overview": "full",
-            "geometries": "geojson",
-            "steps": "false",
-            "alternatives": "false",
-        })
-        routes = data.get("routes") or []
-        if not routes:
-            raise RuntimeError("OSRM n'a pas retourné la géométrie routière finale.")
-
-        route = routes[0]
-        total_distance += float(route.get("distance", 0))
-        geometry = route.get("geometry", {}).get("coordinates", [])
+        try:
+            data = osrm_request("route", chunk, {
+                "overview": "full",
+                "geometries": "geojson",
+                "steps": "false",
+                "alternatives": "false",
+            })
+            routes = data.get("routes") or []
+            if not routes:
+                raise RuntimeError("OSRM n'a pas retourné la géométrie routière finale.")
+            route = routes[0]
+            chunk_distance = float(route.get("distance", 0))
+            geometry = route.get("geometry", {}).get("coordinates", [])
+        except Exception as osrm_error:
+            if not VALHALLA_URL:
+                raise RuntimeError(
+                    f"Géométrie routière non confirmée par OSRM: {osrm_error}. "
+                    "Aucune ligne droite ni liaison maritime/ferroviaire n'a été inventée. "
+                    "ACTION REQUISE : si les points A et B ne sont pas reliés par la route, "
+                    "changez de moyen de transport et demandez la création d'un itinéraire "
+                    "multimodal par ferry/bateau ou avion. Pour générer réellement cette "
+                    "portion, il faut intégrer des données fiables de ports/aéroports, "
+                    "liaisons et horaires ; le moteur routier seul ne peut pas confirmer "
+                    "un ferry ou un vol. Configurez aussi VALHALLA_URL dans Render pour "
+                    "activer le secours routier."
+                ) from osrm_error
+            try:
+                locations = [{"lat": float(p["lat"]), "lon": float(p["lng"])} for p in chunk]
+                fallback = valhalla_request("route", {"locations": locations, "costing": "auto", "units": "kilometers", "shape_format": "geojson"})
+                trip = fallback.get("trip") or {}
+                legs = trip.get("legs") or []
+                shape = trip.get("shape")
+                if not shape:
+                    raise RuntimeError("Valhalla n'a retourné aucune géométrie routière.")
+                # Valhalla may return an encoded polyline; do not treat it as GeoJSON.
+                if isinstance(shape, str):
+                    raise RuntimeError("Format de géométrie Valhalla non exploitable; configurez une réponse GeoJSON compatible.")
+                geometry = shape.get("coordinates", []) if isinstance(shape, dict) else []
+                if not geometry:
+                    raise RuntimeError("Géométrie Valhalla vide.")
+                chunk_distance = sum(float(leg.get("summary", {}).get("length", 0)) for leg in legs) * 1000
+            except Exception as fallback_error:
+                raise RuntimeError(f"Liaison routière non confirmée. OSRM: {osrm_error}; Valhalla: {fallback_error}. Aucune route fictive n'a été tracée.") from fallback_error
+        total_distance += chunk_distance
         if geometries and geometry:
             geometries.extend(geometry[1:])
         else:
@@ -3670,6 +3854,14 @@ def admin_panel():
         <label>Nom de l'entreprise</label><input type="text" name="company_name" required maxlength="150">
         <label>Email de l'entreprise</label><input type="email" name="email" required maxlength="160">
         <label>Pays (optionnel)</label><input type="text" name="country" maxlength="100">
+        <label>Durée de validité de la clé d’activation</label>
+        <select name="key_duration_days" required>
+          <option value="1">1 jour</option><option value="7">7 jours</option>
+          <option value="15">15 jours</option><option value="30" selected>30 jours</option>
+          <option value="60">60 jours</option><option value="90">90 jours</option>
+          <option value="180">180 jours</option><option value="365">365 jours</option>
+        </select>
+        <p class="muted">Cette durée concerne uniquement la clé d’activation. Elle ne change pas les commandes de paiement crypto USDC ni la durée d’abonnement achetée.</p>
         <div style="margin-top:15px"><button type="submit" class="btn">🔑 Générer la clé d'activation</button></div>
       </form>
     </div>
@@ -3686,6 +3878,14 @@ def admin_create_invitation():
     company = normalize_text(request.form.get("company_name"), 150)
     email = normalize_text(request.form.get("email"), 160).lower()
     country = normalize_text(request.form.get("country"), 100)
+    try:
+        key_duration_days = int(request.form.get("key_duration_days", str(ACTIVATION_KEY_DAYS)))
+    except (TypeError, ValueError):
+        key_duration_days = ACTIVATION_KEY_DAYS
+    allowed_key_durations = {1, 7, 15, 30, 60, 90, 180, 365}
+    if key_duration_days not in allowed_key_durations:
+        flash("Durée de clé invalide. Choisissez une durée proposée.", "danger")
+        return redirect(url_for("admin_panel"))
 
     if not company or not email or "@" not in email:
         flash("Nom d'entreprise et email professionnel valides obligatoires.", "danger")
@@ -3735,7 +3935,7 @@ def admin_create_invitation():
         invitation = AccountInvitation(
             token=token,
             user_id=user.id,
-            expires_at=utcnow() + timedelta(days=ACTIVATION_KEY_DAYS),
+            expires_at=utcnow() + timedelta(days=key_duration_days),
         )
         db.session.add(invitation)
         db.session.flush()
@@ -3761,7 +3961,7 @@ def admin_create_invitation():
         send_email(
             user.email,
             "GlobalRoute AI — Activation de votre compte",
-            f"Bonjour {user.company_name},\n\nVotre compte GlobalRoute AI a été préparé.\n\nClé d'activation : {invitation.token}\nLien : {activation_url}\n\nCette clé est valable {ACTIVATION_KEY_DAYS} jours et ne peut être utilisée qu'une fois. Vous créerez votre mot de passe lors de l'activation.\n"
+            f"Bonjour {user.company_name},\n\nVotre compte GlobalRoute AI a été préparé.\n\nClé d'activation : {invitation.token}\nLien : {activation_url}\n\nCette clé est valable {key_duration_days} jour(s) et ne peut être utilisée qu'une fois. Vous créerez votre mot de passe lors de l'activation.\n"
         )
         email_sent = True
     except Exception:
@@ -3780,7 +3980,7 @@ def admin_create_invitation():
       <div class="mono" style="background:#f1f5f9;padding:12px;border-radius:8px">
         {activation_url}
       </div>
-      <p class="muted">Valable {ACTIVATION_KEY_DAYS} jours et utilisable une seule fois. Le client crée son mot de passe.</p>
+      <p class="muted">Valable {key_duration_days} jour(s) et utilisable une seule fois. Le client crée son mot de passe.</p>
       <div class="alert alert-{'success' if email_sent else 'danger'}">{'E-mail d’activation envoyé automatiquement.' if email_sent else 'E-mail non envoyé : configurez SMTP dans Render. La clé reste disponible pour un envoi manuel.'}</div>
       <a href="{url_for('admin_panel')}" class="btn">Retour Admin</a>
     </div>
@@ -3896,9 +4096,21 @@ def api_v1_route():
         }), 400
 
     except Exception as exc:
+        # Routing failures are converted to a controlled API response; malformed
+        # inputs and unavailable roads must never crash the Flask worker.
+        message = str(exc) or "Le moteur routier n'a pas pu confirmer cet itinéraire."
+        multimodal = any(term in message.lower() for term in (
+            "no route", "noroute", "aucune route", "liaison routière",
+            "non confirmée", "non confirmee", "géométrie routière"
+        ))
         return jsonify({
-            "error": "routing_failed",
-            "message": str(exc),
+            "error": "multimodal_required" if multimodal else "routing_failed",
+            "message": message,
+            "next_action": (
+                "Aucune liaison terrestre vérifiée. Vérifiez les coordonnées, puis choisissez un itinéraire multimodal (ferry/bateau ou avion). Les segments de transport doivent être confirmés par une source de données fiable."
+                if multimodal else
+                "Vérifiez les adresses et coordonnées (latitude -90 à 90, longitude -180 à 180), retirez les doublons et réessayez. Le service a refusé l'itinéraire sans inventer de route."
+            ),
         }), 503
 
     user.tours_used += 1
