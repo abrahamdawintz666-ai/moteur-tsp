@@ -2920,55 +2920,100 @@ def create_driver_route():
         "created_at": datetime.utcnow().isoformat(),
     })
 
-    route = DeliveryRoute(
-        user_id=user.id,
-        route_name=route_name or "Tournée",
-        driver_name=driver_name or "Livreur",
-        access_code=access_code,
-        access_code_hash=hash_access_code(access_code),
-        stops_data=json.dumps(
-            optimized,
-            ensure_ascii=False
-        ),
-        stops_summary=summary,
-        optimized=True,
-        optimization_engine=engine,
-        total_road_distance_m=distance,
-        road_geometry_json=json.dumps(geometry, ensure_ascii=False),
-        optimization_id=optimization_id,
-        status="Optimisée",
-    )
+    # Persist the optimized route. A global UNIQUE constraint may still exist
+    # in an older Render database. If a generated code collides at commit time,
+    # retry with a fresh code automatically instead of asking the user to retry.
+    previous_code = access_code
+    code_was_regenerated = False
+    last_db_error = None
+    saved = False
 
-    user.tours_used += 1
+    for attempt in range(8):
+        # Pre-check existing codes, then still handle a database-level race below.
+        if DeliveryRoute.query.filter_by(access_code=access_code).first():
+            code_was_regenerated = True
+            access_code = generate_driver_code()
+            continue
 
-    db.session.add(route)
-
-    db.session.add(
-        AuditLog(
+        route = DeliveryRoute(
+            user_id=user.id,
+            route_name=route_name or "Tournée",
+            driver_name=driver_name or "Livreur",
+            access_code=access_code,
+            access_code_hash=hash_access_code(access_code),
+            stops_data=json.dumps(optimized, ensure_ascii=False),
+            stops_summary=summary,
+            optimized=True,
+            optimization_engine=engine,
+            total_road_distance_m=distance,
+            road_geometry_json=json.dumps(geometry, ensure_ascii=False),
+            optimization_id=optimization_id,
+            status="Optimisée",
+        )
+        audit = AuditLog(
             action="ROUTE_OPTIMIZED",
             details=(
-                f"user={user.email}; "
-                f"optimization={optimization_id}; "
-                f"points={len(optimized)}; "
-                f"engine={engine}; "
-                f"distance_m={distance}"
-            )
+                f"user={user.email}; optimization={optimization_id}; "
+                f"points={len(optimized)}; engine={engine}; distance_m={distance}"
+            ),
         )
-    )
+        try:
+            db.session.add(route)
+            db.session.add(audit)
+            user.tours_used = int(user.tours_used or 0) + 1
+            safe_db_commit("route persistence", retries=1)
+            saved = True
+            break
+        except Exception as exc:
+            last_db_error = exc
+            db.session.rollback()
+            error_text = str(exc).lower()
+            is_code_collision = (
+                "access_code" in error_text
+                or "delivery_routes_access_code_key" in error_text
+                or "uniqueviolation" in error_text
+                or "duplicate key value violates unique constraint" in error_text
+            )
+            if not is_code_collision:
+                app.logger.exception("Erreur DB après optimisation")
+                flash(
+                    "La route a été calculée, mais l'enregistrement en base a échoué. "
+                    "Vérifiez les journaux du serveur ou réessayez.",
+                    "danger",
+                )
+                return redirect(url_for("dashboard"))
 
-    try:
-        safe_db_commit("route persistence", retries=1)
-    except Exception as exc:
-        db.session.rollback()
-        app.logger.exception("Erreur DB après optimisation")
-        error_text = str(exc).lower()
-        if "access_code" in error_text or "delivery_routes_access_code_key" in error_text or "uniqueviolation" in error_text:
-            message = "L'enregistrement a échoué car le code d'accès du livreur est déjà utilisé. Revenez à l'importation et laissez le champ du code vide pour en générer un nouveau. L'itinéraire calculé n'a pas été enregistré."
-        else:
-            message = "La route a été calculée, mais son enregistrement a échoué. Vérifiez les journaux du serveur ou réessayez."
-        app.logger.error("ROUTE_PERSISTENCE_FAILED optimization_id=%s error_type=%s", optimization_id, type(exc).__name__)
-        flash(message, "danger")
+            code_was_regenerated = True
+            access_code = generate_driver_code()
+            app.logger.warning(
+                "Driver access code collision; generated a replacement (attempt %s)",
+                attempt + 1,
+            )
+
+    if not saved:
+        app.logger.error(
+            "Could not persist route after generating replacement driver codes: %s",
+            type(last_db_error).__name__ if last_db_error else "unknown",
+        )
+        flash(
+            "Impossible de réserver un code livreur unique après plusieurs essais. "
+            "Aucune tournée n'a été enregistrée. Réessayez une fois.",
+            "danger",
+        )
         return redirect(url_for("dashboard"))
+
+    if code_was_regenerated:
+        flash(
+            f"Le code précédent était déjà utilisé. Un nouveau code livreur a été "
+            f"généré automatiquement : {access_code}. Conservez-le pour le livreur.",
+            "warning",
+        )
+    else:
+        flash(
+            f"Code d'accès du livreur généré automatiquement : {access_code}. "
+            "Conservez-le pour ouvrir cette tournée.",
+            "success",
+        )
 
     loop_text = " · retour au point de départ inclus" if return_to_start else " · fin au dernier point"
     flash(
