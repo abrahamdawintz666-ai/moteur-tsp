@@ -66,6 +66,10 @@ app.config["SESSION_COOKIE_SECURE"] = os.getenv("COOKIE_SECURE", "0") == "1"
 app.config["SESSION_COOKIE_NAME"] = "globalroute_session"
 
 APP_NAME = "GlobalRoute AI — Global Enterprise Logistics"
+COMPANY_NAME = "AntStrike Commercial"
+COMPANY_EMAIL = "abrahamdawintz410@gmail.com"
+COMPANY_WHATSAPP = "+509 41 81 7761"
+COMPANY_WHATSAPP_URL = "https://wa.me/50941817761"
 
 SOLANA_RECEIVING_WALLET = "22BzBEYLewJkKe2FXD6EHJYqX4NNshMw9roNw9qFxV9d"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGkZwyTDt1v"
@@ -2054,7 +2058,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <header>
   <button class="menu-toggle" onclick="toggleMenu()">☰</button>
-  <h1>{{ APP_NAME }}</h1>
+  <div style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+    <h1 style="margin:0;">{{ APP_NAME }}</h1>
+    <div style="font-size:12px;color:#94a3b8;">{{ COMPANY_NAME }}</div>
+  </div>
   <select class="lang-selector"
           onchange="location.href='/set-lang/' + this.value">
     <option value="fr" {% if session.get('lang','fr') == 'fr' %}selected{% endif %}>Français</option>
@@ -2092,8 +2099,13 @@ function toggleMenu() {
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer style="text-align:center;padding:20px;color:#64748b;font-size:12px;">
-© 2026 GlobalRoute AI — Global Enterprise B2B Logistics
+<footer style="text-align:center;padding:22px 14px;color:#64748b;font-size:12px;">
+  <strong style="display:block;color:#334155;font-size:14px;margin-bottom:7px;">{{ COMPANY_NAME }}</strong>
+  <div style="display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:8px;">
+    <a href="mailto:{{ COMPANY_EMAIL }}">✉ {{ COMPANY_EMAIL }}</a>
+    <a href="{{ COMPANY_WHATSAPP_URL }}" target="_blank" rel="noopener">WhatsApp : {{ COMPANY_WHATSAPP }}</a>
+  </div>
+  © 2026 GlobalRoute AI — Global Enterprise B2B Logistics
 </footer>
 </body>
 </html>
@@ -2107,6 +2119,10 @@ def page(body, title=APP_NAME, map_needed=False):
         title=title,
         style=BASE_STYLE,
         APP_NAME=APP_NAME,
+        COMPANY_NAME=COMPANY_NAME,
+        COMPANY_EMAIL=COMPANY_EMAIL,
+        COMPANY_WHATSAPP=COMPANY_WHATSAPP,
+        COMPANY_WHATSAPP_URL=COMPANY_WHATSAPP_URL,
         map_needed=map_needed,
         session=session,
         t=t,
@@ -2137,6 +2153,16 @@ def index():
         et optimise les tournées B2B à partir de données géographiques
         validées.
       </p>
+      <div class="card" style="margin:20px auto;max-width:760px;text-align:left;">
+        <h3 style="margin-top:0;">AntStrike Commercial</h3>
+        <p style="margin:6px 0;"><strong>E-mail :</strong> <a href="mailto:abrahamdawintz410@gmail.com">abrahamdawintz410@gmail.com</a></p>
+        <p style="margin:6px 0;"><strong>WhatsApp :</strong> <a href="https://wa.me/50941817761" target="_blank" rel="noopener">+509 41 81 7761</a></p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0;">
+        <img src="https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=900&q=80" alt="Entrepôt et logistique commerciale" loading="lazy" style="width:100%;height:170px;object-fit:cover;border-radius:14px;">
+        <img src="https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=900&q=80" alt="Transport routier de marchandises" loading="lazy" style="width:100%;height:170px;object-fit:cover;border-radius:14px;">
+        <img src="https://images.unsplash.com/photo-1566576721346-d4a3b4eaeb55?auto=format&fit=crop&w=900&q=80" alt="Préparation et livraison de colis" loading="lazy" style="width:100%;height:170px;object-fit:cover;border-radius:14px;">
+      </div>
       <div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
         <a href="{url_for('register_form')}" class="btn">
           Créer un compte entreprise
@@ -2678,6 +2704,12 @@ Format : Nom | Adresse | Latitude | Longitude
        value=""
        placeholder="Laisser vide pour générer automatiquement">
 
+<label style="display:flex;align-items:center;gap:10px;margin-top:16px;">
+  <input type="checkbox" name="return_to_start" value="1" style="width:auto;">
+  <span>Retourner au point de départ (tournée en boucle)</span>
+</label>
+<p class="muted">Si cette option est cochée, l'itinéraire routier se termine au point de départ.</p>
+
 <label>Fichier CSV / TXT</label>
 <input type="file"
        id="file-input"
@@ -2823,6 +2855,20 @@ def create_driver_route():
     if not access_code:
         access_code = generate_driver_code()
 
+    # Older PostgreSQL deployments may still have a global UNIQUE constraint
+    # on access_code. Check before spending time on road optimization.
+    if DeliveryRoute.query.filter_by(access_code=access_code).first():
+        requested_code = access_code
+        access_code = generate_driver_code()
+        while DeliveryRoute.query.filter_by(access_code=access_code).first():
+            access_code = generate_driver_code()
+        flash(
+            f"Le code {requested_code} était déjà utilisé. Un code unique a été généré : {access_code}",
+            "danger",
+        )
+
+    return_to_start = request.form.get("return_to_start") == "1"
+
     if not manual:
         flash(
             "Aucune donnée de tournée.",
@@ -2843,7 +2889,13 @@ def create_driver_route():
         optimized, geometry, distance, engine = (
             optimize_stops_order(stops)
         )
-        app.logger.info("ROUTE_OPTIMIZATION_DONE points=%s distance_m=%s engine=%s", len(optimized), distance, engine)
+        if return_to_start:
+            # Request an actual road leg back to the first stop. Never draw a
+            # straight-line closure when the routing provider cannot confirm it.
+            loop_stops = list(optimized) + [optimized[0]]
+            geometry, distance = get_route_geometry(loop_stops)
+            engine += " + retour au départ"
+        app.logger.info("ROUTE_OPTIMIZATION_DONE points=%s return_to_start=%s distance_m=%s engine=%s", len(optimized), return_to_start, distance, engine)
 
     except Exception as exc:
         flash(
@@ -2863,6 +2915,7 @@ def create_driver_route():
         "optimization_id": optimization_id,
         "engine": engine,
         "points": len(optimized),
+        "return_to_start": return_to_start,
         "road_distance_m": distance,
         "created_at": datetime.utcnow().isoformat(),
     })
@@ -2908,16 +2961,19 @@ def create_driver_route():
     except Exception as exc:
         db.session.rollback()
         app.logger.exception("Erreur DB après optimisation")
-        flash(
-            "La route a été calculée, mais l'enregistrement en base a échoué : "
-            + str(exc),
-            "danger"
-        )
+        error_text = str(exc).lower()
+        if "access_code" in error_text or "delivery_routes_access_code_key" in error_text or "uniqueviolation" in error_text:
+            message = "L'enregistrement a échoué car le code d'accès du livreur est déjà utilisé. Revenez à l'importation et laissez le champ du code vide pour en générer un nouveau. L'itinéraire calculé n'a pas été enregistré."
+        else:
+            message = "La route a été calculée, mais son enregistrement a échoué. Vérifiez les journaux du serveur ou réessayez."
+        app.logger.error("ROUTE_PERSISTENCE_FAILED optimization_id=%s error_type=%s", optimization_id, type(exc).__name__)
+        flash(message, "danger")
         return redirect(url_for("dashboard"))
 
+    loop_text = " · retour au point de départ inclus" if return_to_start else " · fin au dernier point"
     flash(
         f"Tournée optimisée : {len(optimized)} points · "
-        f"{distance / 1000:.2f} km · {engine}.",
+        f"{distance / 1000:.2f} km · {engine}{loop_text}.",
         "success"
     )
 
