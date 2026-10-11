@@ -2880,17 +2880,30 @@ def create_driver_route():
     if not access_code:
         access_code = generate_driver_code()
 
-    # Older PostgreSQL deployments may still have a global UNIQUE constraint
-    # on access_code. Check before spending time on road optimization.
-    if DeliveryRoute.query.filter_by(access_code=access_code).first():
-        requested_code = access_code
-        access_code = generate_driver_code()
-        while DeliveryRoute.query.filter_by(access_code=access_code).first():
+    # Check the requested code before optimization. Keep database lookup errors
+    # from escaping as an unhandled HTTP 500.
+    try:
+        if DeliveryRoute.query.filter_by(access_code=access_code).first():
+            requested_code = access_code
             access_code = generate_driver_code()
+            for _ in range(20):
+                if not DeliveryRoute.query.filter_by(access_code=access_code).first():
+                    break
+                access_code = generate_driver_code()
+            else:
+                raise RuntimeError("Impossible de réserver un code livreur unique.")
+            flash(
+                f"Le code {requested_code} était déjà utilisé. Un nouveau code a été attribué.",
+                "warning",
+            )
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Driver-code preflight database check failed")
         flash(
-            f"Le code {requested_code} était déjà utilisé. Un code unique a été généré : {access_code}",
+            "Impossible de vérifier le code livreur auprès de la base de données. Réessayez dans un instant.",
             "danger",
         )
+        return redirect(url_for("import_space"))
 
     return_to_start = request.form.get("return_to_start") == "1"
 
@@ -2923,7 +2936,13 @@ def create_driver_route():
         app.logger.info("ROUTE_OPTIMIZATION_DONE points=%s return_to_start=%s distance_m=%s engine=%s", len(optimized), return_to_start, distance, engine)
 
     except Exception as exc:
-        app.logger.exception("Route optimization failed")
+        app.logger.exception(
+            "Route optimization failed: points=%s user_id=%s error_type=%s",
+            len(locals().get("stops", [])),
+            getattr(user, "id", None),
+            type(exc).__name__,
+        )
+        db.session.rollback()
         # Customer-facing messages stay short; technical details belong in Render logs.
         message = str(exc).lower()
         if "coordonnées dupliquées" in message or "coordinates duplicated" in message:
@@ -4333,6 +4352,23 @@ def health():
 # ============================================================
 # START
 # ============================================================
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    # Keep technical traces in Render logs, not in the user's browser.
+    app.logger.exception("Unhandled HTTP 500 error")
+    try:
+        db.session.rollback()
+    except Exception:
+        pass
+    flash(
+        "Une erreur interne est survenue. Votre demande n'a pas été confirmée. "
+        "Réessayez ; si cela persiste, consultez les journaux Render.",
+        "danger",
+    )
+    return redirect(url_for("dashboard")), 500
+
 
 if __name__ == "__main__":
     port = int(
